@@ -6,6 +6,7 @@ import {
   LEDGER_EVENT_TYPES,
   appendEvent,
   eventsOfRun,
+  interruptedMerge,
   latestGate,
   ledgerPath,
   readLedger,
@@ -169,6 +170,26 @@ describe("run selection and gate evidence", () => {
     const events = [event({ type: "drift", run: "a" }), event({ type: "gate", run: "b" })];
     expect(eventsOfRun(events, "a")).toHaveLength(1);
     expect(eventsOfRun(events)).toHaveLength(2);
+  });
+
+  it("finds the merge-started that never got its completion", () => {
+    const events = [
+      event({ type: "merge-started", issue: 1, at: "2026-07-26T10:00:00Z" }),
+      event({ type: "merge-completed", issue: 1, at: "2026-07-26T11:00:00Z" }),
+      event({ type: "merge-started", issue: 1, at: "2026-07-26T12:00:00Z" }),
+    ];
+    expect(interruptedMerge(events, 1)?.at).toBe("2026-07-26T12:00:00Z");
+  });
+
+  it("reports nothing for a complete pair or another ticket", () => {
+    const events = [
+      event({ type: "merge-started", issue: 1 }),
+      event({ type: "merge-completed", issue: 1 }),
+      event({ type: "merge-started", issue: 2 }),
+    ];
+    expect(interruptedMerge(events, 1)).toBeUndefined();
+    expect(interruptedMerge(events, 3)).toBeUndefined();
+    expect(interruptedMerge(events, 2)).toBeDefined();
   });
 
   it("picks the newest gate of a ticket, narrowed to one profile", () => {

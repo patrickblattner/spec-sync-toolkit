@@ -314,6 +314,19 @@ describe("a violated precondition is exit 4 and changes nothing (§12 M3)", () =
     );
   });
 
+  // §7.4 binds `--dry-run` to "changes nothing", and the ledger is part of the
+  // repo. A `blocked` from a question nobody acted on turned up in `report`'s
+  // open list as a merge that never happened.
+  it("writes nothing to the ledger in --dry-run, not even the refusal", async () => {
+    const { deps, root } = fakeDeps(world({ dirty: true }));
+    recordGreenGate(root, 42);
+
+    const result = await runMerge(deps, { ...options, dryRun: true }, NORM_DEFAULTS);
+
+    expect(result.exit).toBe(EXIT.PRECONDITION);
+    expect(readLedger(root).events.filter((event) => event.type === "blocked")).toEqual([]);
+  });
+
   it("records the refusal in the ledger as a blocked event with its reason", async () => {
     const { deps, root } = fakeDeps(world({ dirty: true }));
     recordGreenGate(root, 42);
@@ -471,6 +484,165 @@ describe("the executed sequence and its postconditions (§7.4)", () => {
       issue: 42,
       reason: "pushed",
     });
+  });
+});
+
+/**
+ * `DECISION (merge-resumable)`, spec §7.4. The world of every test here is the
+ * one a merge leaves behind when it dies between two mutating steps: pushed and
+ * closed, but branch and worktree still standing. Without the resume path the
+ * re-run fails on `issue-open` with exit 4 "nothing was changed" — and `doctor`
+ * advises exactly this re-run.
+ */
+describe("a merge that died halfway is resumed, not refused (§7.4)", () => {
+  /** Pushed and closed, worktree and branch still there. */
+  const halfFinished = (): World =>
+    world({
+      headSubject: "add CSV export #42",
+      unpushed: "0",
+      issueState: "CLOSED",
+      issueLabels: ["spec-sync", DONE_LABEL],
+    });
+
+  /** The trace of a merge that never reported completion. */
+  function recordInterruptedMerge(root: string, issue: number): void {
+    appendEvent(root, { type: "merge-started", issue, branch: "feat/csv" });
+  }
+
+  it("executes only the steps whose postcondition is false", async () => {
+    const { deps, calls, root } = fakeDeps(halfFinished());
+    recordGreenGate(root, 42);
+    recordInterruptedMerge(root, 42);
+
+    const result = await runMerge(deps, options, NORM_DEFAULTS);
+
+    expect(result.exit).toBe(EXIT.OK);
+    expect(result.data.resumed).toBe(true);
+    // No second push, no second close — only what was missing.
+    expect(mutations(calls)).toEqual(["worktree remove", "branch -D"]);
+  });
+
+  it("closes the pair with a merge-completed once the postconditions hold", async () => {
+    const { deps, root } = fakeDeps(halfFinished());
+    recordGreenGate(root, 42);
+    recordInterruptedMerge(root, 42);
+
+    await runMerge(deps, { ...options, run: "run-7" }, NORM_DEFAULTS);
+
+    const events = readLedger(root).events;
+    expect(events.filter((event) => event.type === "merge-completed")[0]).toMatchObject({
+      issue: 42,
+      ok: true,
+      resumed: true,
+      run: "run-7",
+    });
+    // The resume must not open a second start it never closes.
+    expect(events.filter((event) => event.type === "merge-started")).toHaveLength(1);
+  });
+
+  it("does nothing twice when it is called twice", async () => {
+    const state = halfFinished();
+    const { deps, calls, root } = fakeDeps(state);
+    recordGreenGate(root, 42);
+    recordInterruptedMerge(root, 42);
+
+    await runMerge(deps, options, NORM_DEFAULTS);
+    const afterFirst = calls.length;
+    const second = await runMerge(deps, options, NORM_DEFAULTS);
+
+    expect(mutations(calls.slice(afterFirst))).toEqual([]);
+    expect(second.ok).toBe(false);
+  });
+
+  it("changes nothing in --dry-run and reports the remaining steps", async () => {
+    const { deps, calls, root } = fakeDeps(halfFinished());
+    recordGreenGate(root, 42);
+    recordInterruptedMerge(root, 42);
+
+    const result = await runMerge(deps, { ...options, dryRun: true }, NORM_DEFAULTS);
+
+    expect(result.ok).toBe(true);
+    expect(result.data.resumed).toBe(true);
+    expect((result.data.steps as { name: string }[]).map((step) => step.name)).toEqual([
+      "remove-worktree",
+      "delete-branch",
+    ]);
+    expect(mutations(calls)).toEqual([]);
+    const types = readLedger(root).events.map((event) => event.type);
+    expect(types).toEqual(["gate", "merge-started"]);
+  });
+
+  it("is exit 1 when a postcondition is still broken after the resume", async () => {
+    const { deps, root } = fakeDeps(halfFinished());
+    recordGreenGate(root, 42);
+    recordInterruptedMerge(root, 42);
+    // The branch deletion does not take — the repo stays half-finished.
+    const brokenDeps: MergeDeps = {
+      ...deps,
+      git: async (args) => (args[0] === "branch" && args[1] === "-D" ? "" : deps.git(args)),
+    };
+
+    const result = await runMerge(brokenDeps, options, NORM_DEFAULTS);
+
+    expect(result.exit).toBe(EXIT.FAILED);
+    expect((result.data.postconditions as { name: string }[]).map((c) => c.name)).toEqual([
+      "branch-deleted",
+    ]);
+    expect(readLedger(root).events.filter((event) => event.type === "blocked")[0]).toMatchObject({
+      issue: 42,
+      reason: "branch-deleted",
+    });
+  });
+
+  // The resume queries the postconditions BEFORE the push, so on a repo that
+  // never pushed, `<remote>/main` does not exist and git errors instead of
+  // counting. That must read as "not pushed", not end the run without a verdict.
+  it("reads an unreadable remote ref as not-pushed and repairs it", async () => {
+    const { deps, calls, root } = fakeDeps(
+      world({ headSubject: "add CSV export #42", branches: ["main"], worktrees: [] }),
+    );
+    recordGreenGate(root, 42);
+    recordInterruptedMerge(root, 42);
+    const noRemoteRef: MergeDeps = {
+      ...deps,
+      git: async (args) => {
+        if (args[0] === "rev-list")
+          throw new Error("fatal: ambiguous argument 'origin/main..main'");
+        return deps.git(args);
+      },
+    };
+
+    const result = await runMerge(noRemoteRef, options, NORM_DEFAULTS);
+
+    expect(mutations(calls)).toContain("push origin");
+    expect(result.exit).toBe(EXIT.FAILED);
+    const failed = result.data.postconditions as { name: string; detail?: string }[];
+    expect(failed[0]).toMatchObject({ name: "pushed" });
+    expect(failed[0]?.detail).toMatch(/unreadable/);
+  });
+
+  it("takes the normal path when the ledger shows a completed pair", async () => {
+    const { deps, calls, root } = fakeDeps(halfFinished());
+    recordGreenGate(root, 42);
+    appendEvent(root, { type: "merge-started", issue: 42, branch: "feat/csv" });
+    appendEvent(root, { type: "merge-completed", issue: 42, ok: true, branch: "feat/csv" });
+
+    const result = await runMerge(deps, options, NORM_DEFAULTS);
+
+    expect(result.exit).toBe(EXIT.PRECONDITION);
+    expect(result.data.resumed).toBeUndefined();
+    expect(mutations(calls)).toEqual([]);
+  });
+
+  it("resumes only the ticket that was interrupted", async () => {
+    const { deps, root } = fakeDeps(world());
+    recordGreenGate(root, 42);
+    appendEvent(root, { type: "merge-started", issue: 7, branch: "feat/other" });
+
+    const result = await runMerge(deps, options, NORM_DEFAULTS);
+
+    expect(result.data.resumed).toBeUndefined();
+    expect(result.exit).toBe(EXIT.OK);
   });
 });
 

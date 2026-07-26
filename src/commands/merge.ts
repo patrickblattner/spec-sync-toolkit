@@ -15,14 +15,22 @@
  * second means the repo is in a half-finished state.
  *
  * `--dry-run` is mandatory functionality: it checks the preconditions, reports
- * the complete sequence and changes nothing.
+ * the complete sequence and changes nothing — **including the ledger**.
+ *
+ * A script is not a transaction, so the command is resumable
+ * (`DECISION (merge-resumable)`): a `merge-started` without its
+ * `merge-completed` means a previous run died between two mutating steps, and
+ * the next call re-queries every postcondition and executes only the steps that
+ * are still missing. Without that path the second call fails on `issue-open` —
+ * the very state a half-finished merge leaves behind.
  *
  * `TaskStop` of sub-agents stays with the driver — the toolkit knows no agents.
  */
 
 import { simpleGit } from "simple-git";
 import { EXIT, ToolkitError } from "../output.js";
-import { appendEvent, latestGate, readLedger } from "../ledger.js";
+import { appendEvent, interruptedMerge, latestGate, readLedger } from "../ledger.js";
+import type { LedgerEvent } from "../ledger.js";
 import { ghRunner, type GhRunner } from "./queue.js";
 import { loadNorms, type Norms } from "../norms.js";
 import type { Command, CommandContext } from "../cli.js";
@@ -144,7 +152,11 @@ interface Facts {
   gateDetail: string;
 }
 
-async function gather(deps: MergeDeps, options: MergeOptions): Promise<Facts> {
+async function gather(
+  deps: MergeDeps,
+  options: MergeOptions,
+  events: LedgerEvent[],
+): Promise<Facts> {
   const currentBranch = (await deps.git(["rev-parse", "--abbrev-ref", "HEAD"])).trim();
   const isClean = (await deps.git(["status", "--porcelain"])).trim() === "";
   const branches = (await deps.git(["branch", "--list", options.branch])).trim();
@@ -155,7 +167,7 @@ async function gather(deps: MergeDeps, options: MergeOptions): Promise<Facts> {
     await deps.gh(["issue", "view", String(options.issue), "--json", "state,title,labels"]),
   ) as GhIssueView;
 
-  const gate = latestGate(readLedger(deps.repoRoot).events, options.issue, MERGE_GATE_PROFILE);
+  const gate = latestGate(events, options.issue, MERGE_GATE_PROFILE);
 
   return {
     currentBranch,
@@ -265,16 +277,77 @@ export function plan(facts: Facts, options: MergeOptions): MergeStep[] {
   return steps;
 }
 
-async function execute(deps: MergeDeps, facts: Facts, options: MergeOptions): Promise<void> {
-  await deps.git(["merge", "--squash", options.branch]);
-  await deps.git(["commit", "-m", commitMessage(options.issue, facts.issue.title)]);
-  await deps.git(["push", facts.remote ?? "origin", MAIN_BRANCH]);
-  await deps.gh(["issue", "edit", String(options.issue), "--add-label", DONE_LABEL]);
-  await deps.gh(["issue", "close", String(options.issue)]);
-  if (facts.worktreePath !== undefined) {
-    await deps.git(["worktree", "remove", facts.worktreePath]);
+/**
+ * Executes one named step. The switch is the single definition of what a step
+ * *does*, so the full sequence and the resume path can never drift apart: both
+ * walk `MergeStep[]`, the first the whole plan, the second a subset of it.
+ */
+async function runStep(
+  deps: MergeDeps,
+  facts: Facts,
+  options: MergeOptions,
+  name: string,
+): Promise<void> {
+  switch (name) {
+    case "squash-merge":
+      await deps.git(["merge", "--squash", options.branch]);
+      return;
+    case "commit":
+      await deps.git(["commit", "-m", commitMessage(options.issue, facts.issue.title)]);
+      return;
+    case "push":
+      await deps.git(["push", facts.remote ?? "origin", MAIN_BRANCH]);
+      return;
+    case "label-issue":
+      await deps.gh(["issue", "edit", String(options.issue), "--add-label", DONE_LABEL]);
+      return;
+    case "close-issue":
+      await deps.gh(["issue", "close", String(options.issue)]);
+      return;
+    case "remove-worktree":
+      if (facts.worktreePath !== undefined)
+        await deps.git(["worktree", "remove", facts.worktreePath]);
+      return;
+    case "delete-branch":
+      await deps.git(["branch", "-D", options.branch]);
+      return;
+    default:
+      throw new ToolkitError(`unknown merge step "${name}"`, EXIT.FAILED);
   }
-  await deps.git(["branch", "-D", options.branch]);
+}
+
+async function execute(
+  deps: MergeDeps,
+  facts: Facts,
+  options: MergeOptions,
+  steps: MergeStep[],
+): Promise<void> {
+  for (const step of steps) await runStep(deps, facts, options, step.name);
+}
+
+/**
+ * Which step repairs which postcondition — the whole map the resume path needs.
+ *
+ * `worktree-clean` is deliberately absent: no step of §7.4 cleans a working
+ * tree, so a dirty tree after a half-finished merge is a diagnosis for the
+ * driver, not something to re-run.
+ */
+const REPAIRS: Record<string, readonly string[]> = {
+  "commit-on-main": ["squash-merge", "commit"],
+  pushed: ["push"],
+  "issue-closed": ["label-issue", "close-issue"],
+  "worktree-removed": ["remove-worktree"],
+  "branch-deleted": ["delete-branch"],
+};
+
+/**
+ * The steps still missing, in the order of §7.4. A postcondition that already
+ * holds contributes nothing — that is what makes a resume idempotent: run it
+ * twice and the second run finds nothing left to do.
+ */
+export function remainingSteps(failed: Check[], steps: MergeStep[]): MergeStep[] {
+  const wanted = new Set(failed.flatMap((check) => REPAIRS[check.name] ?? []));
+  return steps.filter((step) => wanted.has(step.name));
 }
 
 /** Every postcondition, re-queried against the world after execution (§7.4). */
@@ -288,9 +361,15 @@ export async function postconditions(
   const branchGone = (await deps.git(["branch", "--list", options.branch])).trim() === "";
   const worktreeGone = (await findWorktree(deps, options.branch)) === undefined;
   const remote = facts.remote ?? "origin";
-  const unpushed = (
-    await deps.git(["rev-list", "--count", `${remote}/${MAIN_BRANCH}..${MAIN_BRANCH}`])
-  ).trim();
+  // On the resume path this runs BEFORE the push, so `<remote>/main` may not
+  // exist yet — git answers that with an error, not with a number. An
+  // unreadable ref is the strongest possible evidence for "not pushed", and
+  // reporting it as such keeps the resume able to repair it; letting the raw
+  // git error escape would end the run with exit 1 and no verdict at all.
+  const unpushed = await deps
+    .git(["rev-list", "--count", `${remote}/${MAIN_BRANCH}..${MAIN_BRANCH}`])
+    .then((out) => out.trim())
+    .catch(() => undefined);
   const issue = JSON.parse(
     await deps.gh(["issue", "view", String(options.issue), "--json", "state"]),
   ) as GhIssueView;
@@ -306,7 +385,11 @@ export async function postconditions(
       name: "pushed",
       ok: unpushed === "0",
       detail:
-        unpushed === "0" ? undefined : `${unpushed} commit(s) not on ${remote}/${MAIN_BRANCH}`,
+        unpushed === "0"
+          ? undefined
+          : unpushed === undefined
+            ? `${remote}/${MAIN_BRANCH} is unreadable — nothing was pushed there yet`
+            : `${unpushed} commit(s) not on ${remote}/${MAIN_BRANCH}`,
     },
     {
       name: "issue-closed",
@@ -334,12 +417,92 @@ export interface MergeResult {
   data: Record<string, unknown>;
 }
 
+/**
+ * Resumes a merge whose `merge-started` never got its `merge-completed`
+ * (spec §7.4, `DECISION (merge-resumable)`).
+ *
+ * The preconditions are deliberately **not** checked here: a merge that died
+ * after the push violates half of them by construction — the issue is closed,
+ * the branch may be gone — and failing on them is precisely the dead end this
+ * path exists to remove. The postconditions replace them: they describe the
+ * target state, so what they report missing is exactly what is left to do.
+ */
+async function resume(deps: MergeDeps, facts: Facts, options: MergeOptions): Promise<MergeResult> {
+  const before = await postconditions(deps, facts, options);
+  const open = before.filter((check) => !check.ok);
+  const steps = remainingSteps(open, plan(facts, options));
+
+  if (options.dryRun) {
+    return {
+      ok: true,
+      notes: [
+        steps.length === 0
+          ? "resume dry run — every postcondition already holds, nothing left to do"
+          : `resume dry run — ${steps.length} step(s) left of an interrupted merge, nothing changed`,
+      ],
+      data: {
+        issue: options.issue,
+        branch: options.branch,
+        resumed: true,
+        dryRun: true,
+        steps,
+        postconditions: open,
+      },
+    };
+  }
+
+  await execute(deps, facts, options, steps);
+  // Nothing ran, nothing can have changed — re-querying would only cost calls.
+  const after = steps.length === 0 ? before : await postconditions(deps, facts, options);
+  const failed = after.filter((check) => !check.ok);
+
+  appendEvent(deps.repoRoot, {
+    type: failed.length === 0 ? "merge-completed" : "blocked",
+    issue: options.issue,
+    run: options.run,
+    ok: failed.length === 0,
+    branch: options.branch,
+    resumed: true,
+    ...(failed.length === 0 ? {} : { reason: failed.map((check) => check.name).join(", ") }),
+  });
+
+  return {
+    ok: failed.length === 0,
+    exit: failed.length === 0 ? EXIT.OK : EXIT.FAILED,
+    notes:
+      failed.length === 0
+        ? [
+            steps.length === 0
+              ? "resumed an interrupted merge — every postcondition already held"
+              : `resumed an interrupted merge — ${steps.length} missing step(s) executed`,
+          ]
+        : [
+            `${failed.length} postcondition(s) still failing after the resume — repo needs diagnosis`,
+          ],
+    data: {
+      issue: options.issue,
+      branch: options.branch,
+      resumed: true,
+      steps,
+      postconditions: failed.length === 0 ? after : failed,
+    },
+  };
+}
+
 export async function runMerge(
   deps: MergeDeps,
   options: MergeOptions,
   norms: Norms = loadNorms().norms,
 ): Promise<MergeResult> {
-  const facts = await gather(deps, options);
+  const events = readLedger(deps.repoRoot).events;
+  const facts = await gather(deps, options, events);
+
+  // Before the preconditions, because a half-finished merge fails them by
+  // construction — see `resume`.
+  if (interruptedMerge(events, options.issue) !== undefined) {
+    return resume(deps, facts, options);
+  }
+
   const checks = preconditions(facts, options, norms);
   const violated = checks.filter((check) => !check.ok);
   const steps = plan(facts, options);
@@ -347,12 +510,18 @@ export async function runMerge(
   if (violated.length > 0) {
     // Not a merge verdict — only the statement that a merge is not mechanically
     // admissible yet. The driver fixes the cause and calls again.
-    appendEvent(deps.repoRoot, {
-      type: "blocked",
-      issue: options.issue,
-      run: options.run,
-      reason: violated.map((check) => check.name).join(", "),
-    });
+    //
+    // A dry run writes nothing: §7.4 binds `--dry-run` to "changes nothing", and
+    // the ledger is part of the repo, not a log. A phantom `blocked` from a
+    // question nobody acted on would surface in `report`'s open list.
+    if (!options.dryRun) {
+      appendEvent(deps.repoRoot, {
+        type: "blocked",
+        issue: options.issue,
+        run: options.run,
+        reason: violated.map((check) => check.name).join(", "),
+      });
+    }
     return {
       ok: false,
       exit: EXIT.PRECONDITION,
@@ -380,7 +549,7 @@ export async function runMerge(
     branch: options.branch,
   });
 
-  await execute(deps, facts, options);
+  await execute(deps, facts, options, steps);
   const after = await postconditions(deps, facts, options);
   const failed = after.filter((check) => !check.ok);
 

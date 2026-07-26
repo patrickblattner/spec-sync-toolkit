@@ -2,6 +2,7 @@
  * `gate` — run the phases of a profile, cheapest first (spec §7.1).
  *
  *   spec-sync gate --profile local|merge|nightly [--changed]
+ *                 [--issue <nr>] [--run <id>]
  *
  * Three promises hold this command together:
  *
@@ -16,9 +17,17 @@
  *
  * The response stays inside the line budget of spec §3 by carrying nothing
  * beyond what §7.1 asks for: `phases[]`, `firstError` when red, `logDir`.
+ *
+ * With `--issue` the run is recorded in the ledger as a `gate` event (spec §8).
+ * That event is not bookkeeping on the side: `merge` checks it as its
+ * `gate-evidence-green` precondition (§7.4), and two of the four numbers §8
+ * demands per ticket — gate runs and retries — are counted from it. Without
+ * `--issue` nothing is written, because a gate run without a ticket belongs to
+ * no ticket and must not be counted against one.
  */
 
 import { EXIT, ToolkitError, progress } from "../output.js";
+import { appendEvent } from "../ledger.js";
 import { createLogDir, firstError, writePhaseLog } from "../logs.js";
 import { phasesOfProfile, type GatePhase } from "../config.js";
 import { acquireGateLock } from "../gate/lock.js";
@@ -33,6 +42,25 @@ const MEASUREMENT_LOG = "_measurement";
 export interface GateArgs {
   profile: string;
   changed: boolean;
+  /** Ticket this run belongs to. Absent means: record nothing. */
+  issue?: number;
+  /** Groups the event with the rest of a worker-loop run (`report --run <id>`). */
+  run?: string;
+}
+
+/**
+ * Reads `--flag value` and `--flag=value` as the same thing, and refuses a
+ * missing value with exit 4 naming the flag — an option swallowing the next
+ * flag as its value is how a `--changed` run silently becomes a full one.
+ */
+function readValue(flag: string, args: readonly string[], index: number): [string, number] {
+  const token = args[index] as string;
+  const attached = token.startsWith(`${flag}=`);
+  const value = attached ? token.slice(flag.length + 1) : args[index + 1];
+  if (value === undefined || value === "" || value.startsWith("-")) {
+    throw new ToolkitError(`${flag} needs a value`, EXIT.PRECONDITION, { field: flag });
+  }
+  return [value, attached ? 0 : 1];
 }
 
 /**
@@ -46,19 +74,29 @@ export interface GateArgs {
 export function parseGateArgs(args: readonly string[]): GateArgs {
   let profile: string | undefined;
   let changed = false;
+  let issue: number | undefined;
+  let run: string | undefined;
 
   for (let i = 0; i < args.length; i += 1) {
     const token = args[i] as string;
     if (token === "--profile" || token.startsWith("--profile=")) {
-      const attached = token.startsWith("--profile=");
-      const value = attached ? token.slice("--profile=".length) : args[i + 1];
-      if (value === undefined || value === "" || value.startsWith("-")) {
-        throw new ToolkitError("--profile needs a value", EXIT.PRECONDITION, {
-          field: "--profile",
+      const [value, consumed] = readValue("--profile", args, i);
+      profile = value;
+      i += consumed;
+    } else if (token === "--issue" || token.startsWith("--issue=")) {
+      const [value, consumed] = readValue("--issue", args, i);
+      const parsed = Number.parseInt(value.replace(/^#/, ""), 10);
+      if (!Number.isInteger(parsed)) {
+        throw new ToolkitError(`not an issue number: ${value}`, EXIT.PRECONDITION, {
+          field: "--issue",
         });
       }
-      profile = value;
-      if (!attached) i += 1;
+      issue = parsed;
+      i += consumed;
+    } else if (token === "--run" || token.startsWith("--run=")) {
+      const [value, consumed] = readValue("--run", args, i);
+      run = value;
+      i += consumed;
     } else if (token === "--changed") {
       changed = true;
     } else {
@@ -73,7 +111,7 @@ export function parseGateArgs(args: readonly string[]): GateArgs {
       field: "--profile",
     });
   }
-  return { profile, changed };
+  return { profile, changed, issue, run };
 }
 
 /** One entry of the response's `phases[]` (spec §7.1). */
@@ -85,7 +123,7 @@ interface PhaseReport {
 }
 
 async function run(ctx: CommandContext): Promise<CommandResult> {
-  const { profile, changed } = parseGateArgs(ctx.args);
+  const { profile, changed, issue, run: runId } = parseGateArgs(ctx.args);
   const config = ctx.config;
   if (config === undefined) {
     throw new ToolkitError("gate needs a config", EXIT.PRECONDITION, { field: "gate" });
@@ -108,11 +146,29 @@ async function run(ctx: CommandContext): Promise<CommandResult> {
     notes.push(`took over an orphaned gate.lock — pid ${lock.previousPid ?? "?"} no longer exists`);
   }
 
+  // The clock starts behind the lock: what the ledger calls the duration of a
+  // gate run is the work, not the queue in front of it — the wait is already in
+  // `notes` and belongs to another run's phases.
+  const startedAt = Date.now();
+  let result: CommandResult;
   try {
-    return await runPhases({ ctx, phases, diff, notes });
+    result = await runPhases({ ctx, phases, diff, notes });
   } finally {
     lock.release();
   }
+
+  if (issue !== undefined) {
+    appendEvent(ctx.repoRoot, {
+      type: "gate",
+      issue,
+      run: runId,
+      profile,
+      ok: result.ok,
+      exit: result.exit ?? EXIT.OK,
+      durationMs: Date.now() - startedAt,
+    });
+  }
+  return result;
 }
 
 async function runPhases({

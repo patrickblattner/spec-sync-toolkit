@@ -235,6 +235,29 @@ export function ticketMetrics(events: LedgerEvent[]): TicketMetrics[] {
 }
 
 /**
+ * The `merge-started` of a merge that never reported its completion — the newest
+ * start for the ticket with no `merge-completed` behind it (spec §7.4,
+ * `DECISION (merge-resumable)`).
+ *
+ * This is the only marker that separates "never merged" from "merge died
+ * halfway": `merge` branches into its resume path on it instead of re-running
+ * the full sequence, and §7.7 makes it a finding for `doctor`.
+ *
+ * The scan follows file order, which for an append-only ledger *is* the order
+ * the events happened in — no timestamp comparison can be more truthful than
+ * that when two events share a millisecond.
+ */
+export function interruptedMerge(events: LedgerEvent[], issue: number): LedgerEvent | undefined {
+  let started: LedgerEvent | undefined;
+  for (const event of events) {
+    if (event.issue !== issue) continue;
+    if (event.type === "merge-started") started = event;
+    else if (event.type === "merge-completed") started = undefined;
+  }
+  return started;
+}
+
+/**
  * The gate evidence `merge` checks as a precondition (spec §7.4, "Gate-Beleg
  * grün"): the newest `gate` event of the ticket. The caller decides what to do
  * with a missing or red one — this function only reports what the ledger holds.

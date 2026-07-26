@@ -13,6 +13,7 @@ import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { gateCommand, parseGateArgs } from "../src/commands/gate.js";
 import { loadConfig, type GatePhase } from "../src/config.js";
+import { latestGate, readLedger, ticketMetrics } from "../src/ledger.js";
 import { EXIT, ToolkitError, formatJson, type Response } from "../src/output.js";
 import type { CommandContext, CommandResult } from "../src/cli.js";
 
@@ -132,6 +133,104 @@ describe("parseGateArgs", () => {
     expect(error).toBeInstanceOf(ToolkitError);
     expect((error as ToolkitError).exit).toBe(EXIT.PRECONDITION);
     expect((error as ToolkitError).field).toBe("gate.profiles.nightly");
+  });
+});
+
+describe("parseGateArgs — the ledger flags (spec §8)", () => {
+  it("reads --issue and --run, attached or separate", () => {
+    expect(parseGateArgs(["--profile", "merge", "--issue", "42", "--run", "run-1"])).toEqual({
+      profile: "merge",
+      changed: false,
+      issue: 42,
+      run: "run-1",
+    });
+    expect(parseGateArgs(["--profile=merge", "--issue=42", "--run=run-1"])).toEqual({
+      profile: "merge",
+      changed: false,
+      issue: 42,
+      run: "run-1",
+    });
+    expect(parseGateArgs(["--profile", "merge", "--issue", "#42"]).issue).toBe(42);
+  });
+
+  it("leaves both undefined when they are not given", () => {
+    expect(parseGateArgs(["--profile", "local"])).toEqual({
+      profile: "local",
+      changed: false,
+      issue: undefined,
+      run: undefined,
+    });
+  });
+
+  it.each([
+    [["--profile", "local", "--issue"], "--issue"],
+    [["--profile", "local", "--issue="], "--issue"],
+    [["--profile", "local", "--issue", "--changed"], "--issue"],
+    [["--profile", "local", "--issue", "latest"], "--issue"],
+    [["--profile", "local", "--run"], "--run"],
+    [["--profile", "local", "--isue", "42"], "--isue"],
+  ])("refuses %s with exit 4 naming the field", (args, field) => {
+    const error = (() => {
+      try {
+        parseGateArgs(args);
+        return undefined;
+      } catch (e) {
+        return e;
+      }
+    })();
+    expect(error).toBeInstanceOf(ToolkitError);
+    expect((error as ToolkitError).exit).toBe(EXIT.PRECONDITION);
+    expect((error as ToolkitError).field).toBe(field);
+  });
+});
+
+/**
+ * Nobody but `gate` can honestly write this event, and `merge` refuses without
+ * it (§7.4 `gate-evidence-green`). As long as `gate` wrote nothing, the merge
+ * precondition was unfulfillable by the toolkit itself, and the `gateRuns` and
+ * `retries` of §8 stayed 0 forever.
+ */
+describe("gate records its run in the ledger (spec §8)", () => {
+  it("appends a gate event carrying profile, verdict, exit and duration", async () => {
+    const root = makeRepo([{ name: "unit", cmd: "true" }], "merge");
+    await runGate(root, ["--profile", "merge", "--issue", "42", "--run", "run-1"]);
+
+    const events = readLedger(root).events;
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: "gate",
+      issue: 42,
+      run: "run-1",
+      profile: "merge",
+      ok: true,
+      exit: EXIT.OK,
+    });
+    expect(typeof events[0]?.durationMs).toBe("number");
+  });
+
+  it("writes the evidence merge reads as its precondition", async () => {
+    const root = makeRepo([{ name: "unit", cmd: "true" }], "merge");
+    await runGate(root, ["--profile", "merge", "--issue", "42"]);
+
+    expect(latestGate(readLedger(root).events, 42, "merge")?.ok).toBe(true);
+  });
+
+  it("records a red run as red, so it counts as a retry and blocks a merge", async () => {
+    const root = makeRepo([{ name: "unit", cmd: "echo 'Error: boom'; exit 1" }], "merge");
+    await runGate(root, ["--profile", "merge", "--issue", "42"]);
+
+    const event = latestGate(readLedger(root).events, 42, "merge");
+    expect(event?.ok).toBe(false);
+    expect(event?.exit).toBe(EXIT.FAILED);
+    expect(ticketMetrics(readLedger(root).events)[0]).toMatchObject({ gateRuns: 1, retries: 1 });
+  });
+
+  it("writes nothing without --issue — a run without a ticket belongs to none", async () => {
+    const root = makeRepo([{ name: "unit", cmd: "true" }]);
+    await runGate(root, ["--profile", "local"]);
+
+    expect(readLedger(root).events).toEqual([]);
+    expect(existsSync(join(root, ".spec-sync", "ledger.jsonl"))).toBe(false);
   });
 });
 
