@@ -114,7 +114,12 @@ export function parseArgv(argv: string[]): ParsedArgv {
     } else if (token === "--dry-run") {
       flags.dryRun = true;
     } else if (token.startsWith("-")) {
-      throw new ToolkitError(`unknown flag ${token}`, EXIT.PRECONDITION, { field: token });
+      // Command-specific flags (`--profile`, `--check`, `--branch`, `--base`, `--run`, …)
+      // are passed through untouched. The dispatcher deliberately does NOT know them:
+      // a central flag catalogue would make cli.ts a file every command has to edit.
+      // Each command parses and validates its own options and raises exit 4 with the
+      // offending field — typo detection stays, ownership moves to where it belongs.
+      args.push(token);
     } else if (command === undefined) {
       command = token;
     } else {

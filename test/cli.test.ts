@@ -52,8 +52,20 @@ describe("parseArgv (spec §7, common flags)", () => {
     expect(() => parseArgv(["ping", "--config"])).toThrow(/--config needs a value/);
   });
 
-  it("rejects an unknown flag instead of ignoring it", () => {
-    expect(() => parseArgv(["ping", "--force"])).toThrow(/unknown flag --force/);
+  it("passes command-specific flags through to args instead of rejecting them", () => {
+    // The dispatcher must not know every command's options — a central catalogue would
+    // turn cli.ts into a file every command has to edit. Validation (and typo detection)
+    // belongs to the command, which raises exit 4 with the offending field.
+    const parsed = parseArgv(["gate", "--profile", "local", "--changed"]);
+    expect(parsed.command).toBe("gate");
+    expect(parsed.args).toEqual(["--profile", "local", "--changed"]);
+  });
+
+  it("keeps common flags out of args even when mixed with command flags", () => {
+    const parsed = parseArgv(["queue", "--check", "--human", "--repo", "/tmp/x"]);
+    expect(parsed.args).toEqual(["--check"]);
+    expect(parsed.flags.human).toBe(true);
+    expect(parsed.flags.repo).toBe("/tmp/x");
   });
 });
 
