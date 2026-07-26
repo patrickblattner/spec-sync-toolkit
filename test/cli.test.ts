@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { cpSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -138,6 +138,24 @@ describe("the built binary (process boundary)", () => {
     expect(stdout.trimEnd().endsWith("}")).toBe(true);
     expect(stderr).toContain("spec-sync ping");
     expect(stderr).not.toContain("{");
+  });
+
+  // The regression that only a real installation shows: npm links a `bin` as
+  // `node_modules/.bin/<name> -> ../<pkg>/dist/cli.js`, so an installed call hands
+  // the entry point the SYMLINK while `import.meta.url` is the real file. Compared
+  // unresolved, the program did nothing and exited 0 — silently, and never in this
+  // repo. Found by installing the package from GitHub before it shipped.
+  it("runs when invoked through a symlink, the way npm links a bin", () => {
+    const home = mkdtempSync(join(tmpdir(), "spec-sync-bin-"));
+    const link = join(home, "spec-sync");
+    symlinkSync(binary, link);
+
+    const result = spawnSync(process.execPath, [link, "ping", "--human"], {
+      cwd: scratchRepo(),
+      encoding: "utf8",
+    });
+    expect(result.status).toBe(EXIT.OK);
+    expect(result.stdout).toContain("OK  ping  exit 0");
   });
 
   it("renders --human as text rather than JSON", () => {

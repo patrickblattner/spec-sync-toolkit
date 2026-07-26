@@ -9,7 +9,9 @@
  * and never touches stdout itself (spec §3).
  */
 
+import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { loadConfig, type Config } from "./config.js";
 import { loadNorms } from "./norms.js";
 import { EXIT, ToolkitError, emit, progress, type ExitCode, type Response } from "./output.js";
@@ -221,9 +223,26 @@ function isHumanFlag(argv: string[]): boolean {
   return human !== -1 && human > json;
 }
 
-const invokedDirectly =
-  process.argv[1] !== undefined && import.meta.url === `file://${resolve(process.argv[1])}`;
+/**
+ * Is this module the program, or was it imported by a test?
+ *
+ * `process.argv[1]` must be resolved through symlinks before comparing: npm links
+ * a `bin` as `node_modules/.bin/<name> -> ../<pkg>/dist/cli.js`, so an installed
+ * invocation hands us the **link** while `import.meta.url` is the **real file**.
+ * Comparing them unresolved made the installed binary do nothing and exit 0 —
+ * silently, and only when installed, never in this repo. Measured against a real
+ * `npm i -D github:…` before it shipped.
+ */
+function invokedAsProgram(): boolean {
+  const entry = process.argv[1];
+  if (entry === undefined) return false;
+  try {
+    return realpathSync(resolve(entry)) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+}
 
-if (invokedDirectly) {
+if (invokedAsProgram()) {
   process.exitCode = await run(process.argv.slice(2));
 }
