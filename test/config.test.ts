@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { CONFIG_FILENAME, loadConfig, phasesOfProfile } from "../src/config.js";
+import { DEFAULT_LOG_RETENTION } from "../src/logs.js";
 import { EXIT, ToolkitError } from "../src/output.js";
 
 const valid = {
@@ -48,6 +49,15 @@ describe("loadConfig (spec §5)", () => {
       hold: "owner-hold",
     });
     expect(config.lenses).toEqual({});
+  });
+
+  it("defaults logRetention to 20 when the config does not name it", () => {
+    expect(loadConfig(repoWith(valid)).logRetention).toBe(DEFAULT_LOG_RETENTION);
+    expect(DEFAULT_LOG_RETENTION).toBe(20);
+  });
+
+  it("takes a logRetention the config does name", () => {
+    expect(loadConfig(repoWith({ ...valid, logRetention: 5 })).logRetention).toBe(5);
   });
 
   it("reads a config from an explicit --config path", () => {
@@ -109,6 +119,17 @@ describe("invalid config → exit 4 naming the field (spec §5)", () => {
     const error = expectPrecondition(() => loadConfig(repoWith(broken)));
     expect(error.field).toBe("gate.profiles.local[1]");
     expect(error.message).toContain('unknown phase "typecheck"');
+  });
+
+  it.each([
+    ["zero", 0],
+    ["negative", -3],
+    ["fractional", 2.5],
+    ["a string", "20"],
+  ])("names logRetention when it is %s", (_label, logRetention) => {
+    const error = expectPrecondition(() => loadConfig(repoWith({ ...valid, logRetention })));
+    expect(error.field).toBe("logRetention");
+    expect(error.message).toContain("logRetention");
   });
 
   it("rejects an unknown profile at use time", () => {

@@ -27,8 +27,8 @@
  */
 
 import { EXIT, ToolkitError, progress } from "../output.js";
-import { appendEvent } from "../ledger.js";
-import { createLogDir, firstError, writePhaseLog } from "../logs.js";
+import { appendEvent, readLedger } from "../ledger.js";
+import { createLogDir, firstError, protectedLogDirs, writePhaseLog } from "../logs.js";
 import { phasesOfProfile, type GatePhase } from "../config.js";
 import { acquireGateLock } from "../gate/lock.js";
 import { changedFiles, phaseRuns, DIFF_BASE } from "../gate/changed.js";
@@ -166,6 +166,9 @@ async function run(ctx: CommandContext): Promise<CommandResult> {
       ok: result.ok,
       exit: result.exit ?? EXIT.OK,
       durationMs: Date.now() - startedAt,
+      // The only link from a run's logs back to its ticket — `protectedLogDirs`
+      // reads it to keep the logs of an unfinished merge out of the pruning.
+      logDir: result.logDir,
     });
   }
   return result;
@@ -182,7 +185,10 @@ async function runPhases({
   diff: string[] | undefined;
   notes: string[];
 }): Promise<CommandResult> {
-  const logDir = createLogDir(ctx.repoRoot);
+  const logDir = createLogDir(ctx.repoRoot, {
+    retention: ctx.config?.logRetention,
+    keep: protectedLogDirs(readLedger(ctx.repoRoot).events),
+  });
   const reports: PhaseReport[] = [];
   let failed: { name: string; output: string; signal: NodeJS.Signals | null } | undefined;
 

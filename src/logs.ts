@@ -7,11 +7,22 @@
  * lines, truncated with `…`.
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, readdirSync, rmSync, writeFileSync, type Dirent } from "node:fs";
+import { basename, join } from "node:path";
 
 /** Directory the toolkit keeps its runtime state in, relative to the repo root. */
 export const STATE_DIR = ".spec-sync";
+
+/** Runs kept under `.spec-sync/logs/` when the config names no `logRetention` (spec §5). */
+export const DEFAULT_LOG_RETENTION = 20;
+
+/**
+ * The shape of a run directory's name — `logDirName` above, as a matcher.
+ *
+ * Only entries of this shape are ours. Anything else under `.spec-sync/logs/`
+ * belongs to someone else and is never touched, whatever it is.
+ */
+const RUN_DIR_NAME = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z$/;
 
 /**
  * Timestamp form used for log directories: ISO 8601 with the characters that
@@ -25,14 +36,128 @@ export function logDirName(at: Date = new Date()): string {
     .replace(/:/g, "-");
 }
 
+/** What a caller may say about the log directory it is about to create. */
+export interface CreateLogDirOptions {
+  at?: Date;
+  /** Runs to keep, including the one being created. Defaults to `DEFAULT_LOG_RETENTION`. */
+  retention?: number;
+  /** Run directory names that survive regardless of age — see `protectedLogDirs`. */
+  keep?: ReadonlySet<string>;
+}
+
 /**
  * Creates this run's log directory and returns its repo-relative path — the
  * value that goes into the response's `logDir`.
+ *
+ * `DECISION (logs-pruned-on-write)`: the old runs are cleared out **here**, at
+ * the moment a new one is created — not by a cleanup run. There is no cron, no
+ * daemon and no command for it: the only moment the directory is known to grow
+ * is the moment something writes to it, so that is the moment it is bounded.
  */
-export function createLogDir(repoRoot: string, at: Date = new Date()): string {
-  const relative = join(STATE_DIR, "logs", logDirName(at));
+export function createLogDir(repoRoot: string, options: CreateLogDirOptions = {}): string {
+  const { at = new Date(), retention = DEFAULT_LOG_RETENTION, keep } = options;
+  const name = logDirName(at);
+  const relative = join(STATE_DIR, "logs", name);
   mkdirSync(join(repoRoot, relative), { recursive: true });
+  // The run that is starting is never a candidate for its own pruning — it is
+  // the newest, but "newest" stops protecting it as soon as protected older
+  // runs push the budget down the list.
+  pruneLogs(repoRoot, { retention, keep: new Set([...(keep ?? []), name]) });
   return relative;
+}
+
+/**
+ * Deletes the oldest runs until at most `retention` are left, and returns the
+ * names it removed.
+ *
+ * Three properties this has to hold, because a log directory is bookkeeping and
+ * bookkeeping must never be the reason a gate fails:
+ *
+ * - **Order comes from the name, not from `mtime`.** The name is the run's
+ *   timestamp and never changes; `mtime` moves every time a phase appends its
+ *   log, so the oldest run by `mtime` is merely the one that finished first.
+ *   ISO 8601 sorts lexically, so sorting the names *is* sorting by time.
+ * - **A directory that will not go is skipped, not thrown on.** Held open by a
+ *   reader, owned by another user — none of that says anything about the run
+ *   that is starting. The next run tries again.
+ * - **Only run directories are candidates.** Foreign entries stay.
+ */
+export function pruneLogs(
+  repoRoot: string,
+  options: { retention?: number; keep?: ReadonlySet<string> } = {},
+): string[] {
+  const { retention = DEFAULT_LOG_RETENTION, keep } = options;
+  const logsRoot = join(repoRoot, STATE_DIR, "logs");
+
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(logsRoot, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  const runs = entries
+    .filter((entry) => entry.isDirectory() && RUN_DIR_NAME.test(entry.name))
+    .map((entry) => entry.name)
+    .sort();
+
+  const excess = runs.length - Math.max(retention, 0);
+  if (excess <= 0) return [];
+
+  // The budget is spent on the oldest deletable runs, and a failed delete does
+  // not hand its slot to a younger one: losing a newer log to compensate for an
+  // older one that would not go is a worse outcome than staying one over the
+  // limit until the next run.
+  const targets = runs.filter((name) => keep === undefined || !keep.has(name)).slice(0, excess);
+
+  const removed: string[] = [];
+  for (const name of targets) {
+    try {
+      rmSync(join(logsRoot, name), { recursive: true, force: true });
+      removed.push(name);
+    } catch {
+      // Skipped on purpose — see above.
+    }
+  }
+  return removed;
+}
+
+/**
+ * The minimum a ledger line has to look like for the protection below. Declared
+ * structurally so this module keeps its one-way dependency: `ledger.ts` reads
+ * `STATE_DIR` from here, so nothing here may import `ledger.ts` back.
+ */
+interface LedgerLine {
+  type: string;
+  issue?: number;
+  logDir?: unknown;
+}
+
+/**
+ * Run directories that must survive pruning: those of a ticket whose merge
+ * started and never reported completion (spec §7.4, `DECISION (merge-resumable)`).
+ *
+ * Such a run belongs to an unfinished operation — `doctor` points at it and a
+ * resumed `merge` is judged against it, so age is not a reason to drop it. This
+ * is `interruptedMerge` of `ledger.ts` in its plural form: same scan, same
+ * meaning, over every ticket at once.
+ */
+export function protectedLogDirs(events: readonly LedgerLine[]): Set<string> {
+  const openMerges = new Set<number>();
+  for (const event of events) {
+    if (typeof event.issue !== "number") continue;
+    if (event.type === "merge-started") openMerges.add(event.issue);
+    else if (event.type === "merge-completed") openMerges.delete(event.issue);
+  }
+
+  const protectedNames = new Set<string>();
+  for (const event of events) {
+    if (typeof event.issue !== "number" || !openMerges.has(event.issue)) continue;
+    if (typeof event.logDir === "string" && event.logDir !== "") {
+      protectedNames.add(basename(event.logDir));
+    }
+  }
+  return protectedNames;
 }
 
 /**

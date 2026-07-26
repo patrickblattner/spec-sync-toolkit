@@ -10,6 +10,7 @@ import { readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { EXIT, ToolkitError } from "./output.js";
+import { DEFAULT_LOG_RETENTION } from "./logs.js";
 import { NORM_DEFAULTS } from "./norms.js";
 
 export const CONFIG_FILENAME = "spec-sync.config.json";
@@ -43,6 +44,12 @@ const configSchema = z
     labels: labelsSchema.prefault({}),
     nightlyWorkflow: z.string().min(1).optional(),
     codegraphProject: z.string().min(1).optional(),
+    /**
+     * Runs kept under `.spec-sync/logs/` (spec §3, `DECISION (logs-pruned-on-write)`).
+     * Whole and positive: keeping "0.5 runs" or "-3 runs" is not a thing, and a
+     * caller who wrote one of those meant something else.
+     */
+    logRetention: z.number().int().positive().default(DEFAULT_LOG_RETENTION),
   })
   .superRefine((config, ctx) => {
     // A profile may only name phases that exist — otherwise `gate --profile x`

@@ -18,13 +18,13 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Command, CommandContext, CommandResult } from "../cli.js";
 import { loadConfig, type Config } from "../config.js";
-import { createLogDir, writePhaseLog } from "../logs.js";
+import { readLedger } from "../ledger.js";
+import { createLogDir, protectedLogDirs, writePhaseLog } from "../logs.js";
 import { PINNED_NORM_SECTION, checkNormDrift } from "../norms.js";
 import { EXIT } from "../output.js";
 import { checkFlags } from "../pack/args.js";
 import { defaultTools, failureLine, type Tools } from "../pack/exec.js";
 import { findOrphans } from "../pack/orphans.js";
-import { SpecGateway } from "../pack/spec.js";
 
 /** Where the norm expects the agent definitions and the skill, below `$HOME`. */
 const AGENTS_DIR = join(".claude", "agents");
@@ -95,7 +95,10 @@ export async function runDoctor(ctx: CommandContext, deps: DoctorDeps): Promise<
   notes.push(...orphans.notes);
   details.push(...orphans.details);
 
-  const logDir = findings.length === 0 ? undefined : writeReport(ctx.repoRoot, findings, details);
+  const logDir =
+    findings.length === 0
+      ? undefined
+      : writeReport(ctx.repoRoot, findings, details, ctx.config?.logRetention);
   const listed = findings
     .slice(0, MAX_LISTED_FINDINGS)
     .map((finding) => `${finding.check}: ${finding.detail}`);
@@ -284,10 +287,12 @@ function checkLock(repoRoot: string, add: Add): void {
 
 /** Has the pinned norm section moved? Transitional state, spec §6. */
 async function checkNormHash(tools: Tools, add: Add): Promise<void> {
-  const gateway = new SpecGateway(tools);
   const drift = await checkNormDrift(async (unit, section) => {
-    const manifest = await gateway.manifest(SpecGateway.projectOf(unit));
-    return manifest.get(unit)?.sections[section];
+    // The lock manifest, not `ticket_context`: the pinned hash is a lock hash.
+    const payload = await tools.spec<{
+      snapshot?: { entries?: { id: string; sections?: Record<string, string> }[] };
+    }>("get_manifest", { project: unit.split(".")[0] ?? unit });
+    return payload.snapshot?.entries?.find((entry) => entry.id === unit)?.sections?.[section];
   });
 
   if (drift.unreachable !== undefined) {
@@ -334,8 +339,16 @@ function openIssues(tools: Tools): Set<number> | undefined {
 }
 
 /** The full report goes to the log directory; the response carries the path (spec §3). */
-function writeReport(repoRoot: string, findings: Finding[], details: string[]): string {
-  const logDir = createLogDir(repoRoot);
+function writeReport(
+  repoRoot: string,
+  findings: Finding[],
+  details: string[],
+  retention?: number,
+): string {
+  const logDir = createLogDir(repoRoot, {
+    retention,
+    keep: protectedLogDirs(readLedger(repoRoot).events),
+  });
   const report = [
     `spec-sync doctor — ${findings.length} finding(s)`,
     "",
