@@ -1,47 +1,75 @@
 /**
  * Turning ticket references into packable sections (spec §7.3).
  *
- * Every section that goes into a pack is **resolved** — overlays composed via
- * `resolve_effective_spec` — and carries `unit@version` plus its section hash.
- * The hash is what makes the pack falsifiable: a sub-agent (or a later `pack`
- * run) can ask the server whether the section still hashes to that value
- * instead of trusting a copy of unknown age. A section whose hash cannot be
- * determined is therefore not packed; it is reported as unresolved.
+ * Every section that goes into a pack is **resolved** — overlays composed —
+ * and carries `unit@version` plus its section hash. The hash is what makes the
+ * pack falsifiable: a sub-agent (or a later `pack` run) can ask the server
+ * whether the section still hashes to that value instead of trusting a copy of
+ * unknown age. A section whose hash cannot be determined is therefore not
+ * packed; it is reported as unresolved.
  *
- * Hashes come from a `spec.lock/v3` manifest (`get_manifest`), which carries
- * per-section subtree hashes; one call per project covers that project **and**
- * foundation, so the whole resolution is a handful of round trips.
+ * Content and hashes come from **one** `ticket_context` call covering all units
+ * (`spec-mcp.build-spec` §21.2): it composes `extends` itself and takes the
+ * section hash from the same function as the lock, so the hash stays comparable
+ * to `spec.lock.json` and `check_drift`.
+ *
+ * That call wants slugs, and a ticket writes prose ("§7.3", "§Worker-Loop").
+ * So each unit is first read as an **outline** — `get_spec` without a body, a
+ * fraction of the unit's size — and only the matched sections are requested.
+ * An outline is not composed, though: a unit that `extends` another has more
+ * sections in its effective view than in its own file. Those units are asked
+ * for whole, in the same call, and matched against the composed answer.
  */
 
+import { EXIT, ToolkitError } from "../output.js";
 import type { Tools } from "./exec.js";
 import type { SpecReference } from "./refs.js";
 
-interface EffectiveSection {
+/** What matching needs — the shape an outline and a context section share. */
+export interface SectionOutline {
   slug: string;
   path: string;
   heading: string;
-  level: number;
-  content: string;
 }
 
-interface EffectiveSpec {
+/** A section as `ticket_context` returns it: outline plus content and hash. */
+interface ContextSection extends SectionOutline {
+  content: string;
+  hash: string;
+}
+
+interface ContextUnit {
   id: string;
-  effective_version: string;
-  sections?: EffectiveSection[];
-  /** overlay-level slug -> id of the unit that contributed it */
-  provenance?: Record<string, string>;
+  version: string;
+  sections?: ContextSection[];
   composed_from?: { id: string; version: string }[];
 }
 
-interface ManifestEntry {
+/** A unit's table of contents, plus whether its effective view is composed. */
+interface Outline {
   version: string;
-  /** slug path -> section subtree hash */
-  sections: Record<string, string>;
+  /** true when the unit `extends` another — then this outline is incomplete. */
+  composed: boolean;
+  sections: SectionOutline[];
+}
+
+/** The shape every spec-server error carries (§21.2, like `get_section`). */
+interface SpecError {
+  code: string;
+  message: string;
 }
 
 /** One resolved section, ready to be written into a pack. */
 export interface PackedSection {
-  /** The unit that contributes this section — with overlays, the base unit. */
+  /**
+   * The unit the ticket referenced — the effective view's own id.
+   *
+   * For a section inherited through `extends` this is the overlay, not the base
+   * that wrote it: `ticket_context` carries `composed_from` per unit, not
+   * provenance per section, and buying that provenance back would cost the
+   * extra `resolve_effective_spec` call this whole path exists to avoid. The
+   * contributors stay visible in `composedFrom`; the hash is unaffected.
+   */
   unit: string;
   version: string;
   slug: string;
@@ -69,50 +97,76 @@ export interface Resolution {
 
 /** Caching view of the spec-mcp server. One instance per command run. */
 export class SpecGateway {
-  private readonly manifests = new Map<string, Promise<Map<string, ManifestEntry>>>();
-  private readonly effectives = new Map<string, Promise<EffectiveSpec>>();
+  private readonly outlines = new Map<string, Promise<Outline | undefined>>();
 
   constructor(private readonly tools: Tools) {}
 
-  /** The project a unit id belongs to — its first dot-separated segment. */
-  static projectOf(unit: string): string {
-    return unit.split(".")[0] ?? unit;
-  }
-
-  manifest(project: string): Promise<Map<string, ManifestEntry>> {
-    const cached = this.manifests.get(project);
+  /** A unit's table of contents; `undefined` when the server does not know it. */
+  outline(unit: string): Promise<Outline | undefined> {
+    const cached = this.outlines.get(unit);
     if (cached !== undefined) return cached;
-    const pending = this.loadManifest(project);
-    this.manifests.set(project, pending);
-    return pending;
-  }
-
-  effective(unit: string): Promise<EffectiveSpec> {
-    const cached = this.effectives.get(unit);
-    if (cached !== undefined) return cached;
-    const pending = this.tools.spec<EffectiveSpec>("resolve_effective_spec", { id: unit });
-    this.effectives.set(unit, pending);
+    const pending = this.loadOutline(unit);
+    this.outlines.set(unit, pending);
     return pending;
   }
 
   async knows(unit: string): Promise<boolean> {
-    const manifest = await this.manifest(SpecGateway.projectOf(unit));
-    return manifest.has(unit);
+    return (await this.outline(unit)) !== undefined;
   }
 
-  private async loadManifest(project: string): Promise<Map<string, ManifestEntry>> {
-    const payload = await this.tools.spec<{
-      snapshot?: {
-        entries?: { id: string; version?: string; sections?: Record<string, string> }[];
-      };
-    }>("get_manifest", { project });
-
-    const entries = new Map<string, ManifestEntry>();
-    for (const entry of payload.snapshot?.entries ?? []) {
-      entries.set(entry.id, { version: entry.version ?? "?", sections: entry.sections ?? {} });
+  /**
+   * The one call that carries the payload (§21.2). Its errors are faults, not
+   * findings: the unit ids and slugs it is given come from the server's own
+   * outlines, so a `NOT_FOUND` or `SECTION_NOT_FOUND` here means the index
+   * moved under us — passing that on beats packing a half-filled paket.
+   */
+  async context(units: { id: string; sections?: string[] }[]): Promise<ContextUnit[]> {
+    const payload = await this.tools.spec<{ units?: ContextUnit[] } & Partial<SpecError>>(
+      "ticket_context",
+      { units },
+    );
+    const failure = asError(payload);
+    if (failure !== undefined) {
+      throw new ToolkitError(
+        `spec-mcp ticket_context failed: ${failure.code} — ${failure.message}`,
+        EXIT.PRECONDITION,
+        { field: "spec-mcp", reason: failure.code },
+      );
     }
-    return entries;
+    return payload.units ?? [];
   }
+
+  private async loadOutline(unit: string): Promise<Outline | undefined> {
+    const payload = await this.tools.spec<
+      {
+        version?: string;
+        sections?: SectionOutline[];
+        frontmatter?: { extends?: string };
+      } & Partial<SpecError>
+    >("get_spec", { id: unit, body: false });
+
+    if (asError(payload) !== undefined) return undefined;
+    return {
+      version: payload.version ?? "?",
+      composed: payload.frontmatter?.extends !== undefined,
+      sections: payload.sections ?? [],
+    };
+  }
+}
+
+/** An error payload, told apart from a result by its `code`/`message` pair. */
+function asError(payload: Partial<SpecError>): SpecError | undefined {
+  return typeof payload.code === "string" && typeof payload.message === "string"
+    ? (payload as SpecError)
+    : undefined;
+}
+
+/** What one unit contributes to the single `ticket_context` call. */
+interface UnitPlan {
+  /** Matched paths — `undefined` for a composed unit, which is asked for whole. */
+  paths?: string[];
+  /** `§…` text -> the path it matched, so the second pass need not match again. */
+  matched: Map<string, string>;
 }
 
 /**
@@ -124,18 +178,26 @@ export async function resolveReferences(
   references: SpecReference[],
   gateway: SpecGateway,
 ): Promise<Resolution> {
-  const sections: PackedSection[] = [];
   const unresolved: UnresolvedReference[] = [];
-  const packed = new Set<string>();
+  const plans = new Map<string, UnitPlan>();
 
   for (const reference of references) {
-    if (!(await gateway.knows(reference.unit))) {
+    const outline = await gateway.outline(reference.unit);
+    if (outline === undefined) {
       unresolved.push({ ...reference, reason: "unknown-unit" });
       continue;
     }
 
-    const effective = await gateway.effective(reference.unit);
-    const match = matchSection(effective.sections ?? [], reference.section);
+    let plan = plans.get(reference.unit);
+    if (plan === undefined) {
+      plan = { paths: outline.composed ? undefined : [], matched: new Map() };
+      plans.set(reference.unit, plan);
+    }
+    // A composed outline is incomplete; that unit is matched against the
+    // effective view the server sends back instead.
+    if (plan.paths === undefined) continue;
+
+    const match = matchSection(outline.sections, reference.section);
     if (match.section === undefined) {
       unresolved.push({
         ...reference,
@@ -144,49 +206,85 @@ export async function resolveReferences(
       });
       continue;
     }
+    plan.matched.set(reference.section, match.section.path);
+    if (!plan.paths.includes(match.section.path)) plan.paths.push(match.section.path);
+  }
 
-    const owner = effective.provenance?.[match.section.slug] ?? reference.unit;
-    const manifest = await gateway.manifest(SpecGateway.projectOf(owner));
-    const entry = manifest.get(owner);
-    const hash = entry === undefined ? undefined : hashOf(entry, match.section);
-    if (entry === undefined || hash === undefined) {
+  const request = [...plans]
+    .filter(([, plan]) => plan.paths === undefined || plan.paths.length > 0)
+    .map(([id, plan]) => (plan.paths === undefined ? { id } : { id, sections: plan.paths }));
+  if (request.length === 0) return { sections: [], unresolved };
+
+  const answered = new Map<string, ContextUnit>();
+  for (const unit of await gateway.context(request)) answered.set(unit.id, unit);
+
+  return { sections: assemble(references, plans, answered, unresolved), unresolved };
+}
+
+/**
+ * Walks the references a second time, now with the answer in hand, so the pack
+ * keeps the ticket's order. A composed unit is matched here — its effective
+ * sections exist only in that answer.
+ */
+function assemble(
+  references: SpecReference[],
+  plans: Map<string, UnitPlan>,
+  answered: Map<string, ContextUnit>,
+  unresolved: UnresolvedReference[],
+): PackedSection[] {
+  const sections: PackedSection[] = [];
+  const packed = new Set<string>();
+
+  for (const reference of references) {
+    const plan = plans.get(reference.unit);
+    const unit = answered.get(reference.unit);
+    if (plan === undefined || unit === undefined) continue;
+    const available = unit.sections ?? [];
+
+    let path = plan.matched.get(reference.section);
+    if (plan.paths === undefined) {
+      const match = matchSection(available, reference.section);
+      if (match.section === undefined) {
+        unresolved.push({
+          ...reference,
+          reason: match.candidates === undefined ? "no-such-section" : "ambiguous-section",
+          candidates: match.candidates,
+        });
+        continue;
+      }
+      path = match.section.path;
+    }
+
+    const section = available.find((entry) => entry.path === path);
+    if (section === undefined) continue;
+    if (typeof section.hash !== "string" || section.hash === "") {
       unresolved.push({ ...reference, reason: "no-hash" });
       continue;
     }
 
-    const key = `${owner}#${match.section.path}`;
+    const key = `${unit.id}#${section.path}`;
     if (packed.has(key)) continue;
     packed.add(key);
 
-    const composedFrom = (effective.composed_from ?? []).map((source) => source.id);
+    const composedFrom = (unit.composed_from ?? []).map((source) => source.id);
     sections.push({
-      unit: owner,
-      version: entry.version,
-      slug: match.section.slug,
-      path: match.section.path,
-      heading: match.section.heading,
-      hash,
-      content: match.section.content,
+      unit: unit.id,
+      version: unit.version,
+      slug: section.slug,
+      path: section.path,
+      heading: section.heading,
+      hash: section.hash,
+      content: section.content,
       requestedAs: reference.section,
       ...(composedFrom.length > 1 ? { composedFrom } : {}),
     });
   }
 
-  return { sections, unresolved };
-}
-
-/** The section hash, by path; overlay composition can shift it, so slug is the fallback. */
-function hashOf(entry: ManifestEntry, section: EffectiveSection): string | undefined {
-  const direct = entry.sections[section.path];
-  if (direct !== undefined) return direct;
-  for (const [path, hash] of Object.entries(entry.sections)) {
-    if (path === section.slug || path.endsWith(`/${section.slug}`)) return hash;
-  }
-  return undefined;
+  return sections;
 }
 
 export interface SectionMatch {
-  section?: EffectiveSection;
+  section?: SectionOutline;
   /** Set when a name matched several sections — ambiguity is reported, never resolved. */
   candidates?: string[];
 }
@@ -203,7 +301,7 @@ export interface SectionMatch {
  * comes back unresolved — picking one would be exactly the guess spec §2
  * forbids.
  */
-export function matchSection(sections: EffectiveSection[], name: string): SectionMatch {
+export function matchSection(sections: SectionOutline[], name: string): SectionMatch {
   const words = name.split(/\s+/u).filter((word) => word !== "");
 
   for (let end = words.length; end > 0; end -= 1) {
@@ -219,7 +317,7 @@ export function matchSection(sections: EffectiveSection[], name: string): Sectio
     const pathSlug = parts.map(slugify).join("/");
     if (tailSlug === "") continue;
 
-    const rules: ((section: EffectiveSection) => boolean)[] = [
+    const rules: ((section: SectionOutline) => boolean)[] = [
       (section) =>
         section.path === pathSlug ||
         section.path.endsWith(`/${pathSlug}`) ||
@@ -240,7 +338,7 @@ export function matchSection(sections: EffectiveSection[], name: string): Sectio
 }
 
 /** Heading text as a ticket would write it — backticks dropped, numbering kept (`§7.3`). */
-function headingOf(section: EffectiveSection): string {
+function headingOf(section: SectionOutline): string {
   return section.heading.replace(/`/gu, "").trim().toLowerCase();
 }
 

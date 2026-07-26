@@ -35,6 +35,7 @@ const specSections = [
     path: "build-spec/7-befehle/73-pack",
     heading: "7.3 `pack`",
     level: 3,
+    hash: PACK_HASH,
     content: "### 7.3 `pack`\n\nErzeugt `.spec-sync/ticket-<nr>.md`, das Wissenspaket.",
   },
   {
@@ -42,6 +43,7 @@ const specSections = [
     path: "build-spec/7-befehle/75-lenses",
     heading: "7.5 `lenses`",
     level: 3,
+    hash: LENSES_HASH,
     content: "### 7.5 `lenses`\n\nLeitet das Lens-Set aus dem Diff ab.",
   },
 ];
@@ -111,36 +113,74 @@ function fakeTools(fakes: Fakes = {}): Tools {
     },
 
     async spec<T>(tool: string, args: Record<string, unknown>): Promise<T> {
-      if (tool === "get_manifest") {
-        return {
-          snapshot: {
-            entries: [
-              {
-                id: UNIT,
-                version: "0.1.1",
-                sections: {
-                  "build-spec/7-befehle/73-pack": PACK_HASH,
-                  "build-spec/7-befehle/75-lenses": LENSES_HASH,
-                },
-              },
-              { id: "spec-sync-toolkit.cli-not-mcp.adr", version: "1.0.0", sections: {} },
-            ],
-          },
-        } as T;
-      }
-      if (tool === "resolve_effective_spec") {
-        expect(args.id).toBe(UNIT);
-        return {
-          id: UNIT,
-          effective_version: "0.1.1",
-          sections: specSections,
-          provenance: { "73-pack": UNIT, "75-lenses": UNIT },
-          composed_from: [{ id: UNIT, version: "0.1.1" }],
-        } as T;
-      }
-      throw new Error(`unexpected spec tool: ${tool}`);
+      return specTool(tool, args) as T;
     },
   };
+}
+
+/**
+ * The spec server as `pack` sees it since `ticket_context` (spec-mcp §21.2):
+ * `get_spec` without a body for the outline, then one call for the content.
+ * Errors arrive as payloads, not as throws — that is how the MCP client
+ * surfaces `isError` responses.
+ */
+function specTool(tool: string, args: Record<string, unknown>): unknown {
+  if (tool === "get_spec") {
+    expect(args.body).toBe(false);
+    if (args.id !== UNIT) {
+      return { code: "NOT_FOUND", message: `spec unit "${String(args.id)}" not found` };
+    }
+    return {
+      id: UNIT,
+      version: "0.1.1",
+      frontmatter: { id: UNIT },
+      sections: specSections.map(({ slug, path, heading, level }) => ({
+        slug,
+        path,
+        heading,
+        level,
+      })),
+    };
+  }
+
+  if (tool === "ticket_context") {
+    const requested = args.units as { id: string; sections?: string[] }[];
+    const units = requested.map((entry) => {
+      if (entry.id !== UNIT) {
+        return { code: "NOT_FOUND", message: `spec unit "${entry.id}" not found` };
+      }
+      const wanted = entry.sections;
+      const unknown = (wanted ?? []).find(
+        (slug) => !specSections.some((section) => section.path === slug),
+      );
+      if (unknown !== undefined) {
+        return {
+          code: "SECTION_NOT_FOUND",
+          message: `section "${unknown}" not found in unit "${entry.id}"`,
+        };
+      }
+      return {
+        id: UNIT,
+        version: "0.1.1",
+        hash: "0".repeat(64),
+        effective: false,
+        composed_from: [{ source: "spec-sync-toolkit", id: UNIT, version: "0.1.1" }],
+        sections: specSections
+          .filter((section) => wanted === undefined || wanted.includes(section.path))
+          .map(({ slug, path, heading, hash, content }) => ({
+            slug,
+            path,
+            heading,
+            hash,
+            content,
+          })),
+      };
+    });
+    const failed = units.find((unit) => "code" in unit);
+    return failed ?? { units };
+  }
+
+  throw new Error(`unexpected spec tool: ${tool}`);
 }
 
 function scratchRepo(): string {
