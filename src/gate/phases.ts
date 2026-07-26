@@ -35,7 +35,17 @@ export function runPhase(cmd: string, cwd: string): Promise<PhaseOutcome> {
       resolve({ code, signal, output: chunks.join("") });
     };
 
-    const child = spawn(cmd, { cwd, shell: true, env: process.env });
+    // stdin is /dev/null, never a pipe: a gate run is not interactive, so a
+    // phase that reads stdin has nobody to wait for. Left as an open pipe it
+    // waits anyway — `node scripts/guard-secrets.mjs` hung ten minutes without
+    // a line of output, and a hang without a timeout is the worst exit there
+    // is: it looks exactly like "still running".
+    const child = spawn(cmd, {
+      cwd,
+      shell: true,
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => chunks.push(chunk));
@@ -59,6 +69,22 @@ export function runPhase(cmd: string, cwd: string): Promise<PhaseOutcome> {
 const FAILURE_HEADER = /^(?:FAIL\b|FAILED\b|[✗×✘]|\d+\)\s)/i;
 
 /**
+ * Lines in which the RUNNER talks about the run instead of about a cause: its
+ * summary counters (`Test Files  1 failed (1)`, `Tests  1 failed (1)`) and the
+ * advice it appends to a timeout (`If this is a long-running test, ...`).
+ *
+ * The same failure as the header, one step worse: vitest prints BOTH on every
+ * red run, so for that runner the content of a failure was never timeout-only
+ * and exit 2 was unreachable — measured per line, not inferred
+ * (`production-cockpit/worklogs/773-exit2-evidence.md`, cases E4/E5). A counter
+ * says how MANY failed and never why; advice is the runner talking about
+ * itself. The reference gate never had to exclude either: it read a failure's
+ * `messages`, where the advice arrives glued to the timeout it belongs to and
+ * the counters do not appear at all.
+ */
+const RUNNER_NOISE = /^(?:(?:Test Files|Tests|Snapshots)\s+\d|If this is a long-running test\b)/i;
+
+/**
  * Lines that state a CAUSE — the analogue of a reported failure's `messages`.
  * Deliberately generous: a line too many costs at most a verdict of "broken"
  * where "unprovable" would also have been defensible, while a line missed could
@@ -75,7 +101,13 @@ export function failureMessages(output: string): string[] {
   return output
     .split("\n")
     .map((line) => line.trim())
-    .filter((line) => line !== "" && !FAILURE_HEADER.test(line) && FAILURE_MESSAGE.test(line));
+    .filter(
+      (line) =>
+        line !== "" &&
+        !FAILURE_HEADER.test(line) &&
+        !RUNNER_NOISE.test(line) &&
+        FAILURE_MESSAGE.test(line),
+    );
 }
 
 /**
