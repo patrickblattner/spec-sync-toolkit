@@ -34,6 +34,16 @@ const MAX_MARKERS = 10;
 /** How many examples a summarised finding names before pointing at the log. */
 const MAX_EXAMPLES = 5;
 
+/**
+ * Branches the coding harness creates for worktree-isolated sub-agents
+ * (spec §7.7, `DECISION (doctor-harness-branches)`). They arise **outside** the
+ * ticket flow — no merge command ever creates or removes them, so no merge
+ * ritual can clean them up and they carry no ticket number to judge them by.
+ * Measured 2026-07-26 in `production-cockpit`: 136 of 265 branches, 97 of them
+ * without a single own commit.
+ */
+const HARNESS_BRANCH = /^(?:worktree-)?agent-/u;
+
 export interface OrphanFinding {
   check: string;
   detail: string;
@@ -44,6 +54,8 @@ export interface OrphanReport {
   notes: string[];
   /** Full lists for the log file — the response only carries the summary. */
   details: string[];
+  /** Branches whose marker miss stayed below the majority threshold — logged, not reported. */
+  partial: number;
 }
 
 export interface OrphanInput {
@@ -55,10 +67,15 @@ export interface OrphanInput {
 }
 
 export function findOrphans(input: OrphanInput): OrphanReport {
-  const report: OrphanReport = { findings: [], notes: [], details: [] };
+  const report: OrphanReport = { findings: [], notes: [], details: [], partial: 0 };
   checkWorktrees(input, report);
   checkBranches(input, report);
   checkIncompleteMerges(input, report);
+  if (report.partial > 0) {
+    report.notes.push(
+      `${report.partial} branch(es) miss a minority of their markers on ${BASE} — logged, not reported`,
+    );
+  }
   return report;
 }
 
@@ -168,12 +185,35 @@ function checkBranches(input: OrphanInput, report: OrphanReport): void {
   if (!listed.ok) return;
 
   const current = input.tools.run("git", ["branch", "--show-current"]).stdout.trim();
+  const worktreeList = input.tools.run("git", ["worktree", "list", "--porcelain"]);
+  const checkedOut = new Set(
+    (worktreeList.ok ? parseWorktrees(worktreeList.stdout) : []).flatMap((worktree) =>
+      worktree.branch === undefined ? [] : [worktree.branch],
+    ),
+  );
   const closed: string[] = [];
   const unnumbered: string[] = [];
+  const harnessResidue: string[] = [];
+  let harnessWithWork = 0;
   let deepChecked = 0;
 
   for (const branch of listed.stdout.split("\n").map((line) => line.trim())) {
     if (branch === "" || branch === BASE || branch === current) continue;
+
+    // The harness class first: these names carry hex that would otherwise be
+    // misread as a ticket number, and they are judged by content only.
+    if (HARNESS_BRANCH.test(branch)) {
+      const ahead = input.tools.run("git", ["rev-list", "--count", `${BASE}..${branch}`]);
+      const commits = ahead.ok ? Number.parseInt(ahead.stdout.trim(), 10) : Number.NaN;
+      if (commits === 0 && !checkedOut.has(branch)) {
+        harnessResidue.push(branch);
+      } else if (commits > 0 && deepChecked < MAX_CONTENT_BRANCHES) {
+        deepChecked += 1;
+        harnessWithWork += 1;
+        checkUnlandedWork(input, report, branch, "harness branch, no ticket");
+      }
+      continue;
+    }
 
     const ticket = ticketOfBranch(branch);
     if (ticket === undefined) {
@@ -188,7 +228,7 @@ function checkBranches(input: OrphanInput, report: OrphanReport): void {
 
     if (deepChecked >= MAX_CONTENT_BRANCHES) continue;
     deepChecked += 1;
-    checkUnlandedWork(input, report, branch, ticket);
+    checkUnlandedWork(input, report, branch, `#${ticket} open`);
   }
 
   if (closed.length > 0) {
@@ -197,6 +237,18 @@ function checkBranches(input: OrphanInput, report: OrphanReport): void {
       detail: `${closed.length} branch(es) whose ticket is closed: ${examples(closed)}`,
     });
     report.details.push(`branches of closed tickets:\n  ${closed.join("\n  ")}`);
+  }
+  if (harnessResidue.length > 0) {
+    report.findings.push({
+      check: "harness-residue",
+      detail: `${harnessResidue.length} harness branch(es) with no own commit and no worktree — safe to delete: ${examples(harnessResidue)}`,
+    });
+    report.details.push(`harness residue (safe to delete):\n  ${harnessResidue.join("\n  ")}`);
+  }
+  if (harnessWithWork > 0) {
+    report.notes.push(
+      `${harnessWithWork} harness branch(es) carry own commits and were checked by content`,
+    );
   }
   if (unnumbered.length > 0) {
     report.notes.push(
@@ -214,7 +266,8 @@ function checkUnlandedWork(
   input: OrphanInput,
   report: OrphanReport,
   branch: string,
-  ticket: number,
+  /** How the branch is identified in the finding — `#751 open`, or the harness note. */
+  label: string,
 ): void {
   const ahead = input.tools.run("git", ["rev-list", "--count", `${BASE}..${branch}`]);
   if (!ahead.ok || Number.parseInt(ahead.stdout.trim(), 10) === 0) return;
@@ -233,11 +286,23 @@ function checkUnlandedWork(
   );
   if (missing.length === 0) return;
 
+  report.details.push(`${branch} (${label}) missing from ${BASE}:\n  ${missing.join("\n  ")}`);
+
+  // A few absent markers are weak evidence: on a branch that is weeks old, `main`
+  // has renamed and refactored things since, so single misses say "the code moved"
+  // rather than "the work never landed". Only a majority is reported as a finding;
+  // the rest stays in the log, where a human can look if a suspicion arises.
+  // (Measured 2026-07-26 against production-cockpit: the one branch that really
+  // carried unlanded work scored 6 of 7, while the noise sat at 1–2 of 10.)
+  if (missing.length * 2 <= markers.length) {
+    report.partial += 1;
+    return;
+  }
+
   report.findings.push({
     check: "unlanded-work",
-    detail: `${branch} (#${ticket} open): ${missing.length} of ${markers.length} introduced markers are absent from ${BASE} — ${examples(missing, 2)}`,
+    detail: `${branch} (${label}): ${missing.length} of ${markers.length} introduced markers are absent from ${BASE} — ${examples(missing, 2)}`,
   });
-  report.details.push(`${branch} (#${ticket}) missing from ${BASE}:\n  ${missing.join("\n  ")}`);
 }
 
 /**

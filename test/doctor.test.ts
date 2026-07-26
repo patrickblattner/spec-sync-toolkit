@@ -437,6 +437,113 @@ describe("doctor — leftovers of aborted runs (spec §7.7)", () => {
     expect(findings).toContain("chore/304-seed (#304)");
   });
 
+  // Spec §7.7, DECISION (doctor-harness-branches). These branches come from the
+  // harness, not from the ticket flow: no merge command ever creates or removes
+  // them, and their names carry hex that must not be read as a ticket number.
+  it("calls a harness branch without commits and without worktree safe to delete", async () => {
+    const result = await runDoctor(
+      context(fakeRepo()),
+      deps(
+        fakeHome(),
+        fakeTools({
+          openIssues: [500],
+          git: {
+            current: "main",
+            branches: ["main", "worktree-agent-a0263e6cd114e71c3", "agent-ff12ab34"],
+          },
+        }),
+      ),
+    );
+    const findings = findingsOf(result.data).join(" ");
+    expect(findings).toContain("harness-residue: 2 harness branch(es)");
+    expect(findings).toContain("safe to delete");
+    // It must not be mistaken for a ticket branch: `…a0263e…` parses as a number.
+    expect(findings).not.toContain("orphan-branch");
+    expect(findings).not.toContain("no ticket number in their name");
+  });
+
+  it("does not call a harness branch residue while its worktree still exists", async () => {
+    const result = await runDoctor(
+      context(fakeRepo()),
+      deps(
+        fakeHome(),
+        fakeTools({
+          openIssues: [500],
+          git: {
+            current: "main",
+            branches: ["main", "worktree-agent-a0263e6cd114e71c3"],
+            worktrees:
+              "worktree /repo\nbranch refs/heads/main\n\n" +
+              "worktree /repo/.claude/worktrees/x\nbranch refs/heads/worktree-agent-a0263e6cd114e71c3\n",
+          },
+        }),
+      ),
+    );
+    expect(findingsOf(result.data).join(" ")).not.toContain("harness-residue");
+  });
+
+  it("checks a harness branch that carries commits by content, not by ancestry", async () => {
+    const branch = "worktree-agent-a751aabbccddeeff0";
+    const result = await runDoctor(
+      context(fakeRepo()),
+      deps(
+        fakeHome(),
+        fakeTools({
+          openIssues: [500],
+          git: {
+            current: "main",
+            branches: ["main", branch],
+            ahead: { [branch]: 1 },
+            diffs: {
+              [branch]:
+                '+export function visualRegressionSurfaces() {\n+  it("covers the calendar", () => {});\n',
+            },
+            onMain: [],
+          },
+        }),
+      ),
+    );
+    const findings = findingsOf(result.data).join(" ");
+    expect(findings).toContain("unlanded-work");
+    expect(findings).toContain(branch);
+    expect(findings).toContain("harness branch, no ticket");
+    expect(findings).not.toContain("harness-residue");
+  });
+
+  // A minority of absent markers is weak evidence: on a branch that is weeks old
+  // `main` has renamed things since, so a single miss means "the code moved", not
+  // "the work never landed". Measured against production-cockpit: the branch that
+  // really carried unlanded work scored 6 of 7, the noise sat at 1–2 of 10.
+  it("keeps a minority of absent markers out of the findings and notes it instead", async () => {
+    const branch = "feat/142-partly-renamed";
+    const result = await runDoctor(
+      context(fakeRepo()),
+      deps(
+        fakeHome(),
+        fakeTools({
+          openIssues: [142],
+          git: {
+            current: "main",
+            branches: ["main", branch],
+            ahead: { [branch]: 3 },
+            diffs: {
+              [branch]:
+                addedLine("export function alphaSurface() {") +
+                addedLine("export function betaSurface() {") +
+                addedLine("export function gammaSurface() {") +
+                addedLine("export function deltaSurface() {"),
+            },
+            // Three of four landed; only `deltaSurface` was renamed on main since.
+            onMain: ["alphaSurface", "betaSurface", "gammaSurface"],
+          },
+        }),
+      ),
+    );
+    const findings = findingsOf(result.data).join(" ");
+    expect(findings).not.toContain("unlanded-work");
+    expect((result.notes ?? []).join(" ")).toContain("miss a minority of their markers");
+  });
+
   it("reports a branch whose introduced work never landed on main", async () => {
     const result = await runDoctor(
       context(fakeRepo()),
