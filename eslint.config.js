@@ -9,7 +9,12 @@ import prettier from "eslint-config-prettier";
  */
 export default tseslint.config(
   {
-    ignores: ["dist/**", "coverage/**", "node_modules/**"],
+    // `.claude/**` for the same reason vitest.config.ts scopes its include:
+    // agent worktrees live under `.claude/worktrees/` and carry their own
+    // `dist/` and work-in-progress sources. Without this the linter in the main
+    // tree reports on code that is not on main — measured: 37 errors, all of
+    // them from another ticket's build output.
+    ignores: ["dist/**", "coverage/**", "node_modules/**", ".claude/**"],
   },
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
