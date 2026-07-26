@@ -369,12 +369,23 @@ export async function runMerge(
     };
   }
 
+  // Written BEFORE the first mutating step (spec §7.4, `DECISION (merge-resumable)`).
+  // A script is not a transaction: if the process dies between the push and the
+  // worktree removal, this entry without its `merge-completed` is the only trace
+  // that says so — and it is what `doctor` looks for (§7.7).
+  appendEvent(deps.repoRoot, {
+    type: "merge-started",
+    issue: options.issue,
+    run: options.run,
+    branch: options.branch,
+  });
+
   await execute(deps, facts, options);
   const after = await postconditions(deps, facts, options);
   const failed = after.filter((check) => !check.ok);
 
   appendEvent(deps.repoRoot, {
-    type: failed.length === 0 ? "merged" : "blocked",
+    type: failed.length === 0 ? "merge-completed" : "blocked",
     issue: options.issue,
     run: options.run,
     ok: failed.length === 0,

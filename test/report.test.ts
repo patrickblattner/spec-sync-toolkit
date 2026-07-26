@@ -57,7 +57,14 @@ function completeRun(root: string): void {
   });
   appendEvent(root, { type: "ticket-created", run: "r1", issue: 7 });
   appendEvent(root, { type: "gate", run: "r1", issue: 7, ok: true, profile: "merge" });
-  appendEvent(root, { type: "merged", run: "r1", issue: 7, ok: true, commit: "abc1234", turns: 9 });
+  appendEvent(root, {
+    type: "merge-completed",
+    run: "r1",
+    issue: 7,
+    ok: true,
+    commit: "abc1234",
+    turns: 9,
+  });
 }
 
 describe("the mandatory closing line is always written (§7.6, DoD)", () => {
@@ -204,7 +211,7 @@ describe("the Zielabgleich content (§7.6)", () => {
   it("drops a ticket from `open` once it merged later in the same run", async () => {
     const root = repo();
     appendEvent(root, { type: "blocked", run: "r1", issue: 5, reason: "gate red" });
-    appendEvent(root, { type: "merged", run: "r1", issue: 5, ok: true, commit: "def" });
+    appendEvent(root, { type: "merge-completed", run: "r1", issue: 5, ok: true, commit: "def" });
     const result = await runReport(deps(root, emptySweep()), {});
     expect(result.data.open).toEqual([]);
     expect(result.data.done).toEqual([{ issue: 5, commit: "def" }]);
@@ -250,8 +257,8 @@ describe("the Zielabgleich content (§7.6)", () => {
 describe("run selection", () => {
   it("defaults to the newest run in the ledger", async () => {
     const root = repo();
-    appendEvent(root, { type: "merged", run: "r1", issue: 1, ok: true, commit: "aaa" });
-    appendEvent(root, { type: "merged", run: "r2", issue: 2, ok: true, commit: "bbb" });
+    appendEvent(root, { type: "merge-completed", run: "r1", issue: 1, ok: true, commit: "aaa" });
+    appendEvent(root, { type: "merge-completed", run: "r2", issue: 2, ok: true, commit: "bbb" });
 
     const result = await runReport(deps(root, emptySweep()), {});
     expect(result.data.done).toEqual([{ issue: 2, commit: "bbb" }]);
@@ -260,8 +267,8 @@ describe("run selection", () => {
 
   it("renders the run that was asked for", async () => {
     const root = repo();
-    appendEvent(root, { type: "merged", run: "r1", issue: 1, ok: true, commit: "aaa" });
-    appendEvent(root, { type: "merged", run: "r2", issue: 2, ok: true, commit: "bbb" });
+    appendEvent(root, { type: "merge-completed", run: "r1", issue: 1, ok: true, commit: "aaa" });
+    appendEvent(root, { type: "merge-completed", run: "r2", issue: 2, ok: true, commit: "bbb" });
 
     const result = await runReport(deps(root, emptySweep()), { run: "r1" });
     expect(result.data.done).toEqual([{ issue: 1, commit: "aaa" }]);
@@ -269,8 +276,8 @@ describe("run selection", () => {
 
   it("reports every event when the ledger carries no run id", async () => {
     const root = repo();
-    appendEvent(root, { type: "merged", issue: 1, ok: true, commit: "aaa" });
-    appendEvent(root, { type: "merged", issue: 2, ok: true, commit: "bbb" });
+    appendEvent(root, { type: "merge-completed", issue: 1, ok: true, commit: "aaa" });
+    appendEvent(root, { type: "merge-completed", issue: 2, ok: true, commit: "bbb" });
 
     const result = await runReport(deps(root, emptySweep()), {});
     expect(result.data.done).toHaveLength(2);

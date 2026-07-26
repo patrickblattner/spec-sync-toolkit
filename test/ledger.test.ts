@@ -31,14 +31,14 @@ describe("ledger storage (spec §8, DECISION ledger-append-only)", () => {
     const root = repo();
     appendEvent(root, { type: "ticket-created", issue: 1 });
     appendEvent(root, { type: "gate", issue: 1, ok: true, profile: "merge" });
-    appendEvent(root, { type: "merged", issue: 1, ok: true });
+    appendEvent(root, { type: "merge-completed", issue: 1, ok: true });
 
     const lines = readFileSync(ledgerPath(root), "utf8").trim().split("\n");
     expect(lines).toHaveLength(3);
     expect(lines.map((line) => (JSON.parse(line) as LedgerEvent).type)).toEqual([
       "ticket-created",
       "gate",
-      "merged",
+      "merge-completed",
     ]);
   });
 
@@ -74,12 +74,38 @@ describe("ledger storage (spec §8, DECISION ledger-append-only)", () => {
     expect(read.malformedLines).toEqual([2]);
   });
 
-  it("rejects a line whose type is not one of the six", () => {
+  // DECISION (ledger-tolerant-reader), spec §8. The reader used to reject an
+  // unknown type as malformed — which turned adding `merge-started` in §7.4 into
+  // a contradiction between two sections of the same spec. Tolerance makes
+  // extending the type list additive.
+  it("keeps a line whose type it does not know instead of calling it malformed", () => {
     const root = repo();
     const path = ledgerPath(root);
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, `{"at":"2026-07-26T10:00:00Z","type":"invented","issue":1}\n`);
+
+    const read = readLedger(root);
+    expect(read.malformedLines).toEqual([]);
+    expect(read.events[0]?.type).toBe("invented");
+  });
+
+  it("still rejects a line that carries no type at all", () => {
+    const root = repo();
+    const path = ledgerPath(root);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, `{"at":"2026-07-26T10:00:00Z","issue":1}\n`);
     expect(readLedger(root).malformedLines).toEqual([1]);
+  });
+
+  it("normalises the retired `merged` type to `merge-completed` on read", () => {
+    const root = repo();
+    const path = ledgerPath(root);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, `{"at":"2026-07-26T10:00:00Z","type":"merged","issue":7,"ok":true}\n`);
+
+    const read = readLedger(root);
+    expect(read.malformedLines).toEqual([]);
+    expect(read.events[0]?.type).toBe("merge-completed");
   });
 });
 
@@ -92,7 +118,7 @@ describe("the four numbers per ticket (spec §8)", () => {
     appendEvent(root, { type: "gate", issue: 11, ok: false, profile: "local", at: at(5) });
     appendEvent(root, { type: "gate", issue: 11, ok: false, profile: "local", at: at(9) });
     appendEvent(root, { type: "gate", issue: 11, ok: true, profile: "merge", at: at(14) });
-    appendEvent(root, { type: "merged", issue: 11, ok: true, turns: 12, at: at(20) });
+    appendEvent(root, { type: "merge-completed", issue: 11, ok: true, turns: 12, at: at(20) });
 
     const [metrics] = ticketMetrics(readLedger(root).events);
     expect(metrics).toMatchObject({
@@ -134,7 +160,7 @@ describe("run selection and gate evidence", () => {
     const events = [
       event({ type: "drift", run: "a" }),
       event({ type: "gate", run: "b" }),
-      event({ type: "merged", run: "a" }),
+      event({ type: "merge-completed", run: "a" }),
     ];
     expect(runIds(events)).toEqual(["a", "b"]);
   });

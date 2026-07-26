@@ -389,13 +389,48 @@ describe("the executed sequence and its postconditions (§7.4)", () => {
     expect(after.every((check) => check.ok)).toBe(true);
   });
 
-  it("writes a merged event once the postconditions hold", async () => {
+  it("writes a merge-completed event once the postconditions hold", async () => {
     const { deps, root } = fakeDeps(world());
     recordGreenGate(root, 42);
     await runMerge(deps, { ...options, run: "run-1" }, NORM_DEFAULTS);
 
-    const merged = readLedger(root).events.filter((event) => event.type === "merged");
+    const merged = readLedger(root).events.filter((event) => event.type === "merge-completed");
     expect(merged[0]).toMatchObject({ issue: 42, ok: true, branch: "feat/csv", run: "run-1" });
+  });
+
+  // DECISION (merge-resumable), spec §7.4: the pair is what lets a later run — and
+  // `doctor` — tell "never merged" from "merge died between two mutating steps".
+  it("writes merge-started before the first mutating step and completes the pair", async () => {
+    const { deps, root } = fakeDeps(world());
+    recordGreenGate(root, 42);
+    await runMerge(deps, { ...options, run: "run-1" }, NORM_DEFAULTS);
+
+    const types = readLedger(root)
+      .events.filter((event) => String(event.type).startsWith("merge-"))
+      .map((event) => event.type);
+    expect(types).toEqual(["merge-started", "merge-completed"]);
+  });
+
+  it("leaves a merge-started without its completion when a postcondition fails", async () => {
+    const { deps, root } = fakeDeps(world());
+    recordGreenGate(root, 42);
+    const brokenDeps: MergeDeps = {
+      ...deps,
+      git: async (args) => (args[0] === "push" ? "" : deps.git(args)),
+    };
+
+    await runMerge(brokenDeps, options, NORM_DEFAULTS);
+
+    const events = readLedger(root).events;
+    expect(events.filter((event) => event.type === "merge-started")).toHaveLength(1);
+    expect(events.filter((event) => event.type === "merge-completed")).toHaveLength(0);
+  });
+
+  it("writes no merge-started at all when a precondition already fails", async () => {
+    const { deps, root } = fakeDeps(world());
+    // No green gate recorded — the merge is not mechanically admissible.
+    await runMerge(deps, options, NORM_DEFAULTS);
+    expect(readLedger(root).events.filter((e) => e.type === "merge-started")).toHaveLength(0);
   });
 
   it("is exit 1, not exit 4, when a postcondition fails after execution", async () => {
@@ -420,7 +455,7 @@ describe("the executed sequence and its postconditions (§7.4)", () => {
     expect(result.notes.join(" ")).toMatch(/needs diagnosis/);
   });
 
-  it("records a failed postcondition as blocked, not as merged", async () => {
+  it("records a failed postcondition as blocked, not as merge-completed", async () => {
     const { deps, root } = fakeDeps(world());
     recordGreenGate(root, 42);
     const brokenDeps: MergeDeps = {
@@ -431,7 +466,7 @@ describe("the executed sequence and its postconditions (§7.4)", () => {
     await runMerge(brokenDeps, options, NORM_DEFAULTS);
 
     const events = readLedger(root).events;
-    expect(events.filter((event) => event.type === "merged")).toHaveLength(0);
+    expect(events.filter((event) => event.type === "merge-completed")).toHaveLength(0);
     expect(events.filter((event) => event.type === "blocked")[0]).toMatchObject({
       issue: 42,
       reason: "pushed",

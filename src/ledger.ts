@@ -19,17 +19,35 @@ import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { STATE_DIR } from "./logs.js";
 
-/** The six event types of spec §8. The list is closed; a seventh needs a spec change. */
+/**
+ * The event types of spec §8 — the ones a **writer** produces.
+ *
+ * `merge-started` is written before the first mutating step of the merge
+ * sequence and `merge-completed` after the last confirmed postcondition
+ * (§7.4, `DECISION (merge-resumable)`): a script is not a transaction, so the
+ * pair is what lets a re-run tell "never merged" from "merge died halfway",
+ * and what `doctor` looks for (§7.7).
+ *
+ * `merge-completed` replaces the former `merged`, which stays readable as an
+ * alias (see `LEDGER_ALIASES`) so ledgers written before this change keep
+ * their meaning.
+ */
 export const LEDGER_EVENT_TYPES = [
   "drift",
   "section-mapped",
   "ticket-created",
   "gate",
-  "merged",
+  "merge-started",
+  "merge-completed",
   "blocked",
 ] as const;
 
 export type LedgerEventType = (typeof LEDGER_EVENT_TYPES)[number];
+
+/** Types no longer written, still understood on read. */
+export const LEDGER_ALIASES: Record<string, LedgerEventType> = {
+  merged: "merge-completed",
+};
 
 /**
  * One ledger line.
@@ -110,6 +128,13 @@ export interface LedgerRead {
  * Reads the whole ledger. A line that does not parse is skipped and its number
  * reported rather than thrown on: a single corrupt line must not make the
  * history unreadable, but it must not vanish silently either.
+ *
+ * `DECISION (ledger-tolerant-reader)` (spec §8): a line is discarded **only for
+ * broken JSON**, never for an unknown type — an unknown type is kept and passed
+ * through. The earlier reader rejected it as malformed, which turned adding one
+ * event type in §7.4 into a contradiction between two sections of the same spec
+ * that a building agent was not allowed to resolve. Tolerance here makes
+ * extending the type list additive instead of breaking.
  */
 export function readLedger(repoRoot: string): LedgerRead {
   let raw: string;
@@ -131,18 +156,26 @@ export function readLedger(repoRoot: string): LedgerRead {
       malformedLines.push(index + 1);
       return;
     }
-    if (isLedgerEvent(parsed)) events.push(parsed);
-    else malformedLines.push(index + 1);
+    const event = asLedgerEvent(parsed);
+    if (event === undefined) malformedLines.push(index + 1);
+    else events.push(event);
   });
 
   return { events, malformedLines };
 }
 
-function isLedgerEvent(value: unknown): value is LedgerEvent {
-  if (value === null || typeof value !== "object") return false;
+/**
+ * A line is an event when it has a timestamp and a type. The type is **not**
+ * checked against the known list — see `DECISION (ledger-tolerant-reader)`.
+ * A known alias is normalised on the way in, so readers only ever see current
+ * type names.
+ */
+function asLedgerEvent(value: unknown): LedgerEvent | undefined {
+  if (value === null || typeof value !== "object") return undefined;
   const candidate = value as Record<string, unknown>;
-  if (typeof candidate.at !== "string") return false;
-  return LEDGER_EVENT_TYPES.includes(candidate.type as LedgerEventType);
+  if (typeof candidate.at !== "string" || typeof candidate.type !== "string") return undefined;
+  const alias = LEDGER_ALIASES[candidate.type];
+  return (alias === undefined ? candidate : { ...candidate, type: alias }) as LedgerEvent;
 }
 
 /** The events of one run, or all events when no run is named. */
