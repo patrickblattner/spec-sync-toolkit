@@ -462,6 +462,33 @@ describe("doctor — leftovers of aborted runs (spec §7.7)", () => {
     expect(findings).not.toContain("no ticket number in their name");
   });
 
+  // The harness class is judged by own commits and a registered worktree — it needs
+  // no ticket data. An early return for "gh could not answer" used to take it down
+  // with the ticket-based checks, so offline `doctor` reported none of the 97 empty
+  // harness branches it had just been taught to find.
+  it("still classifies harness branches when gh cannot say which tickets are open", async () => {
+    const result = await runDoctor(
+      context(fakeRepo()),
+      deps(
+        fakeHome(),
+        fakeTools({
+          labelsFail: true, // no remote — `gh issue list` and `gh label list` both fail
+          git: {
+            current: "main",
+            branches: ["main", "worktree-agent-a0263e6cd114e71c3", "chore/304-seed"],
+          },
+        }),
+      ),
+    );
+    const findings = findingsOf(result.data).join(" ");
+    const notes = (result.notes ?? []).join(" ");
+    expect(findings).toContain("harness-residue: 1 harness branch(es)");
+    // The ticket branch stays unjudged, and that is said out loud.
+    expect(findings).not.toContain("orphan-branch");
+    expect(notes).toContain("open tickets unknown");
+    expect(notes).toContain("the harness class was");
+  });
+
   it("does not call a harness branch residue while its worktree still exists", async () => {
     const result = await runDoctor(
       context(fakeRepo()),

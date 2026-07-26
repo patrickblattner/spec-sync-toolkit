@@ -14,12 +14,10 @@
  * landed, no matter how the history looks.
  */
 
-import { readFileSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { readLedger } from "../ledger.js";
 import type { Tools } from "./exec.js";
-
-/** The ledger, addressed as a file: §8 fixes the path, `src/ledger.ts` owns the writing. */
-const LEDGER_FILE = join(".spec-sync", "ledger.jsonl");
 
 /** A branch or worktree is judged against `main` — the only branch a merge targets (§7.4). */
 const BASE = "main";
@@ -172,11 +170,11 @@ function checkBranches(input: OrphanInput, report: OrphanReport): void {
     report.notes.push(`no ${BASE} branch — leftover branches were not judged`);
     return;
   }
-  if (input.openIssues === undefined) {
-    report.notes.push("open tickets unknown — leftover branches were not judged");
-    return;
-  }
-
+  // NOTE: no early return when `gh` could not answer. The harness class is judged
+  // by own commits and a registered worktree — it needs no ticket data at all, and
+  // returning here took it down with the ticket-based checks: offline, `doctor`
+  // reported none of the 97 empty harness branches it had just been taught to find.
+  // Only the ticket-based classification below depends on `openIssues`.
   const listed = input.tools.run("git", [
     "for-each-ref",
     "--format=%(refname:short)",
@@ -196,6 +194,8 @@ function checkBranches(input: OrphanInput, report: OrphanReport): void {
   const harnessResidue: string[] = [];
   let harnessWithWork = 0;
   let deepChecked = 0;
+  /** Ticket-bearing branches left unjudged because `gh` could not answer. */
+  let unjudged = 0;
 
   for (const branch of listed.stdout.split("\n").map((line) => line.trim())) {
     if (branch === "" || branch === BASE || branch === current) continue;
@@ -212,6 +212,12 @@ function checkBranches(input: OrphanInput, report: OrphanReport): void {
         harnessWithWork += 1;
         checkUnlandedWork(input, report, branch, "harness branch, no ticket");
       }
+      continue;
+    }
+
+    // Everything below needs to know which tickets are open.
+    if (input.openIssues === undefined) {
+      unjudged += 1;
       continue;
     }
 
@@ -255,6 +261,11 @@ function checkBranches(input: OrphanInput, report: OrphanReport): void {
       `${unnumbered.length} branch(es) carry no ticket number in their name and were not judged`,
     );
     report.details.push(`branches without a ticket number:\n  ${unnumbered.join("\n  ")}`);
+  }
+  if (unjudged > 0) {
+    report.notes.push(
+      `open tickets unknown — ${unjudged} ticket branch(es) not judged; the harness class was`,
+    );
   }
 }
 
@@ -341,36 +352,21 @@ export function introducedMarkers(diff: string): string[] {
  * A `merge-started` without its `merge-completed` (spec §7.4/§7.7): the merge
  * sequence died between two mutating steps and left the rest undone.
  *
- * The ledger is read line by line here rather than through `src/ledger.ts`,
- * whose event list spec §8 keeps closed at six types — it drops both of these
- * as malformed. Reading the two field names §8 names (`type`, `issue`) keeps
- * this check working without editing a module that belongs to `merge`.
+ * Reads through `src/ledger.ts`. An earlier version parsed the file a second
+ * time here, because §8 then kept the type list closed at six and the reader
+ * dropped both merge types as malformed. Since `DECISION (ledger-tolerant-reader)`
+ * that detour is not only unnecessary but wrong: the private parser did not know
+ * `LEDGER_ALIASES`, so a ledger written before the rename would have looked like
+ * a merge that never completed.
  */
 function checkIncompleteMerges(input: OrphanInput, report: OrphanReport): void {
   const started = new Map<number, string>();
   const completed = new Set<number>();
 
-  let raw: string;
-  try {
-    raw = readFileSync(join(input.repoRoot, LEDGER_FILE), "utf8");
-  } catch {
-    return; // no ledger yet — nothing to be incomplete
-  }
-
-  for (const line of raw.split("\n")) {
-    if (line.trim() === "") continue;
-    let event: { type?: unknown; issue?: unknown; at?: unknown };
-    try {
-      event = JSON.parse(line) as typeof event;
-    } catch {
-      continue;
-    }
+  for (const event of readLedger(input.repoRoot).events) {
     if (typeof event.issue !== "number") continue;
-    if (event.type === "merge-started") {
-      started.set(event.issue, typeof event.at === "string" ? event.at : "");
-    } else if (event.type === "merge-completed") {
-      completed.add(event.issue);
-    }
+    if (event.type === "merge-started") started.set(event.issue, event.at);
+    else if (event.type === "merge-completed") completed.add(event.issue);
   }
 
   for (const [issue, at] of started) {
