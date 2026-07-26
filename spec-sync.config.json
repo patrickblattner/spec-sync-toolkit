@@ -2,14 +2,14 @@
   "project": "spec-sync-toolkit",
   "gate": {
     "profiles": {
-      "local": ["format", "lint", "typecheck", "unit"],
-      "merge": ["format", "lint", "typecheck", "unit"],
-      "nightly": ["format", "lint", "typecheck", "unit"]
+      "local": ["format", "lint", "build", "unit"],
+      "merge": ["format", "lint", "build", "unit"],
+      "nightly": ["format", "lint", "build", "unit"]
     },
     "phases": [
       { "name": "format", "cmd": "npm run format:check" },
       { "name": "lint", "cmd": "npm run lint" },
-      { "name": "typecheck", "cmd": "npm run typecheck" },
+      { "name": "build", "cmd": "npm run build" },
       { "name": "unit", "cmd": "npm test" }
     ]
   },
