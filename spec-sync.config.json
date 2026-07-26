@@ -1,0 +1,28 @@
+{
+  "project": "spec-sync-toolkit",
+  "gate": {
+    "profiles": {
+      "local": ["format", "lint", "typecheck", "unit"],
+      "merge": ["format", "lint", "typecheck", "unit"],
+      "nightly": ["format", "lint", "typecheck", "unit"]
+    },
+    "phases": [
+      { "name": "format", "cmd": "npm run format:check" },
+      { "name": "lint", "cmd": "npm run lint" },
+      { "name": "typecheck", "cmd": "npm run typecheck" },
+      { "name": "unit", "cmd": "npm test" }
+    ]
+  },
+  "lenses": {
+    "acceptance": ["**"],
+    "tests": ["**"],
+    "security": ["src/norms.ts", "package-lock.json"]
+  },
+  "labels": {
+    "build": "spec-sync",
+    "audit": "auto-audit",
+    "bug": "type: bug",
+    "hold": "owner-hold"
+  },
+  "codegraphProject": "spec-sync-toolkit"
+}

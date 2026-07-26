@@ -1,0 +1,37 @@
+{
+  "project": "community-platform",
+  "gate": {
+    "profiles": {
+      "local": ["format", "lint", "typecheck", "unit"],
+      "merge": ["format", "lint", "typecheck", "unit", "audits", "e2e-touched"],
+      "nightly": ["format", "lint", "typecheck", "unit", "audits", "e2e-full"]
+    },
+    "phases": [
+      { "name": "format", "cmd": "npm run format:check" },
+      { "name": "lint", "cmd": "npm run lint" },
+      { "name": "typecheck", "cmd": "npm run typecheck" },
+      { "name": "unit", "cmd": "npm test" },
+      {
+        "name": "audits",
+        "cmd": "npm run audit:obligations:gate && npm run audit:icon-tooltip:gate"
+      },
+      { "name": "e2e-touched", "cmd": "npm run test:e2e:feature", "when": ["client/**", "e2e/**"] },
+      { "name": "e2e-full", "cmd": "npm run test:e2e" }
+    ]
+  },
+  "lenses": {
+    "acceptance": ["**"],
+    "tests": ["**"],
+    "a11y": ["client/**", "public/**"],
+    "security": ["server/**", "worker/**", "package-lock.json", "**/auth/**"],
+    "migration": ["server/migrations/**"]
+  },
+  "labels": {
+    "build": "spec-sync",
+    "audit": "auto-audit",
+    "bug": "type: bug",
+    "hold": "owner-hold"
+  },
+  "nightlyWorkflow": "nightly.yml",
+  "codegraphProject": "community-platform"
+}
