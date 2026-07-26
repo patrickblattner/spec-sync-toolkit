@@ -85,6 +85,11 @@ registerCommand({
   },
 });
 
+// Wired last, after COMMANDS exists. `commands/index.ts` imports only the
+// `Command` type from here, so this is not a runtime cycle.
+const { ALL_COMMANDS } = await import("./commands/index.js");
+for (const command of ALL_COMMANDS) registerCommand(command);
+
 const FLAGS_WITH_VALUE = new Set(["--config", "--repo"]);
 
 export function parseArgv(argv: string[]): ParsedArgv {
