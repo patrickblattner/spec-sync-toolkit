@@ -1,0 +1,11 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Toolkit runtime state (spec §3): logs, ledger, gate lock. The config itself
+# lives at the repo root and stays versioned — it is not under .spec-sync/.
+.spec-sync/
+.spec-sync-pause
+
+.DS_Store
