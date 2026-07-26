@@ -1,9 +1,10 @@
 {
   "name": "spec-sync-toolkit",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
-  "description": "CLI toolkit that executes the mechanical parts of the worker loop: gate, queue, pack, merge, lenses, report, doctor.",
+  "license": "UNLICENSED",
+  "description": "Unmaintained, no support, no contributions. CLI for one personal spec-driven workflow; published only so npm can install it.",
   "engines": {
     "node": ">=22"
   },
