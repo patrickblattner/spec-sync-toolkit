@@ -44,6 +44,13 @@ export interface MeasurementCondition {
   ownCores: number | undefined;
   foreign: ForeignShare[];
   saturated: boolean;
+  /**
+   * We barely computed, but nothing else was busy — so the low own-CPU is
+   * waiting, not starvation, and it does NOT excuse a red (see
+   * `assessSaturation`). Reported separately so the log can say which of the two
+   * quiet cases it was.
+   */
+  starvedOnly: boolean;
   reasons: string[];
 }
 
@@ -127,7 +134,7 @@ export class MachineProbe {
       ownPids: this.own,
       wallSeconds,
     });
-    const { saturated, reasons } = assessSaturation({
+    const { saturated, reasons, starvedOnly } = assessSaturation({
       baseline: this.baseline,
       ncpu: this.ncpu,
       hogs: foreign,
@@ -144,9 +151,27 @@ export class MachineProbe {
       ownCores,
       foreign,
       saturated,
+      starvedOnly,
       reasons,
     };
   }
+}
+
+/**
+ * Three states, not two. A reader who skims this line has to be able to tell
+ * "the box was full" from "we waited on something while the box was idle" —
+ * the second used to print SATURATED too, which reads like an excuse for a red
+ * that it explicitly is not.
+ */
+function verdictLine(condition: MeasurementCondition): string {
+  if (condition.saturated) return "SATURATED — a timeout-only red is unprovable (exit 2)";
+  if (condition.starvedOnly) {
+    return (
+      "quiet, but we barely computed — waiting, not starvation: " +
+      "a red is a real finding (exit 1)"
+    );
+  }
+  return "quiet — a red is a real finding (exit 1)";
 }
 
 /**
@@ -168,7 +193,7 @@ export function renderMeasurement(condition: MeasurementCondition): string {
     `load before:    ${load(condition.baseline)}`,
     `load after:     ${load(condition.after)}`,
     `own cores:      ${condition.ownCores === undefined ? "not measured" : condition.ownCores.toFixed(2)}`,
-    `verdict:        ${condition.saturated ? "SATURATED — a timeout-only red is unprovable (exit 2)" : "quiet — a red is a real finding (exit 1)"}`,
+    `verdict:        ${verdictLine(condition)}`,
     "",
   ];
 

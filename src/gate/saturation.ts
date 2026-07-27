@@ -110,6 +110,15 @@ export const MIN_HOG_WINDOW_S = 30;
 // too high costs at worst one extra re-run.
 export const STARVED_OWN_CORES = 0.25;
 
+/**
+ * From how many distinct files on a timeout-only red counts as "scattered", i.e.
+ * consistent with a slow box rather than a hang. One file is a hang; two or more
+ * is the box. Deliberately low: the cost of the two mistakes is not symmetric —
+ * a hang wrongly excused is retried forever, a slow box wrongly blamed costs one
+ * fruitless look.
+ */
+export const SCATTERED_MIN_FILES = 2;
+
 /** Below this many cores the reasoning above does not hold (a 2-core CI container legitimately runs under one core of parallelism). */
 export const STARVATION_MIN_NCPU = 4;
 
@@ -315,8 +324,27 @@ export function shortComm(comm: string | null | undefined): string {
  *   • hogs — foreign processes sampled DURING the run. Catches the case that
  *     actually happened: the box was quiet at the start and an installation
  *     began mid-run.
- *   • ownCores — whether WE got to compute at all. Catches a box that suspends
- *     us without anyone eating CPU.
+ *   • ownCores — whether WE got to compute at all.
+ *
+ * The first two are **load-bearing**: each is independent evidence that the box
+ * was busy. `ownCores` is only **supporting**, and that distinction is the whole
+ * point of this function.
+ *
+ * Low own-CPU has two causes that CPU numbers cannot tell apart: we were pushed
+ * aside, or we sat waiting on I/O. A merge profile full of E2E lanes, database
+ * integration tests and browser runs is I/O-bound by nature — there, low
+ * `ownCores` is the normal case, not a symptom. Measured on an idle 16-core box
+ * (~5 % total load): 0.16 own cores, and the old code called that SATURATED.
+ *
+ * Getting this wrong is not symmetric. A machine problem misreported as a defect
+ * costs one fruitless investigation. A defect excused as a machine problem stays
+ * invisible while the loop retries it forever — and a hanging test produces
+ * timeouts AND low own-CPU, so it looks exactly like starvation. That nearly
+ * happened: `production-cockpit#776` hangs 900 s in `db.destroy()` and was only
+ * called a defect because a real assertion failure happened to sit beside it.
+ *
+ * Therefore: starvation alone never turns a red into "unprovable". It can only
+ * corroborate a saturation that another signal already established.
  */
 export function assessSaturation({
   baseline,
@@ -330,8 +358,11 @@ export function assessSaturation({
   hogs?: readonly ForeignShare[];
   ownCores?: number;
   wallSeconds?: number;
-}): { saturated: boolean; reasons: string[] } {
-  const reasons: string[] = [];
+}): { saturated: boolean; reasons: string[]; starvedOnly: boolean } {
+  /** Independent evidence the box was busy. Any one of these carries the verdict. */
+  const bearing: string[] = [];
+  /** Symptoms that prove nothing on their own. */
+  const supporting: string[] = [];
 
   // The starvation signal, checked over the same window as the hog shares:
   // below it our own start-up cost dominates and the ratio says nothing.
@@ -341,10 +372,11 @@ export function assessSaturation({
     wallSeconds >= MIN_HOG_WINDOW_S &&
     ownCores < STARVED_OWN_CORES
   ) {
-    reasons.push(
-      `the run itself never got to compute: ${ownCores.toFixed(2)} cores over ` +
+    supporting.push(
+      `the run itself barely computed: ${ownCores.toFixed(2)} cores over ` +
         `${wallSeconds.toFixed(0)} s (< ${STARVED_OWN_CORES.toFixed(2)}) on ${ncpu} available ` +
-        `cores — it waited rather than ran, and no foreign-CPU threshold can see that`,
+        `cores — it waited rather than ran. On its own this says nothing: waiting on I/O ` +
+        `looks identical to being pushed aside`,
     );
   }
 
@@ -352,7 +384,7 @@ export function assessSaturation({
     const worst = Math.max(baseline.load5, baseline.load15);
     const perCore = worst / ncpu;
     if (perCore >= SATURATED_LOAD_PER_CORE) {
-      reasons.push(
+      bearing.push(
         `baseline load before the run ${worst.toFixed(2)} on ${ncpu} cores = ` +
           `${perCore.toFixed(2)}/core (>= ${SATURATED_LOAD_PER_CORE.toFixed(2)}) — the box was ` +
           `already full before the first phase started`,
@@ -366,14 +398,21 @@ export function assessSaturation({
       .filter((hog) => hog.share >= FOREIGN_REPORT_PCPU)
       .map((hog) => `${shortComm(hog.comm)} (pid ${hog.pid}) ${hog.share.toFixed(0)} %`)
       .join(", ");
-    reasons.push(
+    bearing.push(
       `foreign processes took ${foreignCores.toFixed(1)} of ${ncpu} cores across the run ` +
         `(${((foreignCores / ncpu) * 100).toFixed(0)} % of the box, threshold ` +
         `${(FOREIGN_SATURATION_FRACTION * 100).toFixed(0)} %)${named === "" ? "" : ` — above all ${named}`}`,
     );
   }
 
-  return { saturated: reasons.length > 0, reasons };
+  // `reasons` still carries everything observed — the log must show the
+  // starvation note even when it did not carry the verdict, or a later reader
+  // cannot tell a quiet box from an unexamined one.
+  return {
+    saturated: bearing.length > 0,
+    reasons: [...bearing, ...supporting],
+    starvedOnly: bearing.length === 0 && supporting.length > 0,
+  };
 }
 
 // ---- FAILURE CLASSIFICATION -----------------------------------------------
@@ -437,13 +476,31 @@ export function verdict({
   timeoutFailures = 0,
   saturated = false,
   runnerFailed = false,
+  failingFiles,
 }: {
   contentFailures?: number;
   timeoutFailures?: number;
   saturated?: boolean;
   runnerFailed?: boolean;
+  /**
+   * Distinct files the failures are spread across. Omitted when the runner's
+   * output does not name files — then the distribution says nothing and the
+   * verdict falls back to the saturation signal alone.
+   */
+  failingFiles?: number;
 }): 0 | 1 | 2 {
   if (contentFailures > 0) return 1;
-  if (timeoutFailures > 0 || runnerFailed) return saturated ? 2 : 1;
+  if (timeoutFailures > 0 || runnerFailed) {
+    if (!saturated) return 1;
+    // A busy box slows EVERYTHING; it does not pick one file and hang it. So a
+    // timeout-only red confined to a single file is a hang — a defect — no
+    // matter how loaded the machine was. Both signatures otherwise look the
+    // same, and excusing a hang is the expensive mistake: the loop retries it
+    // forever and nobody ever diagnoses it.
+    if (failingFiles !== undefined && failingFiles > 0 && failingFiles < SCATTERED_MIN_FILES) {
+      return 1;
+    }
+    return 2;
+  }
   return 0;
 }

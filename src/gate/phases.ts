@@ -68,6 +68,29 @@ export function runPhase(cmd: string, cwd: string): Promise<PhaseOutcome> {
  */
 const FAILURE_HEADER = /^(?:FAIL\b|FAILED\b|[✗×✘]|\d+\)\s)/i;
 
+/** The source file a failure header names, e.g. ` FAIL  src/routes/llm.test.ts > …`. */
+const HEADER_FILE = /(\S+\.(?:m|c)?[jt]sx?)\b/;
+
+/**
+ * How many distinct files the failures are spread across.
+ *
+ * This is the signal that tells a HANG from a SLOW BOX, and no CPU number can:
+ * a hanging test times out in **one** file while everything else passes, whereas
+ * a box under load times out **scattered** across many. Both produce timeouts and
+ * near-zero own CPU, so without this they are indistinguishable — which is how a
+ * real hang gets excused as a machine problem.
+ */
+export function failingFiles(output: string): string[] {
+  const files = new Set<string>();
+  for (const raw of output.split("\n")) {
+    const line = raw.trim();
+    if (!FAILURE_HEADER.test(line)) continue;
+    const match = HEADER_FILE.exec(line);
+    if (match?.[1] !== undefined) files.add(match[1]);
+  }
+  return [...files];
+}
+
 /**
  * Lines in which the RUNNER talks about the run instead of about a cause: its
  * summary counters (`Test Files  1 failed (1)`, `Tests  1 failed (1)`) and the
@@ -132,7 +155,7 @@ export function phaseExit({
   const result =
     messages.length === 0
       ? verdict({ contentFailures: runnerFailed ? 0 : 1, runnerFailed, saturated })
-      : verdictOf(messages, runnerFailed, saturated);
+      : verdictOf(messages, runnerFailed, saturated, failingFiles(output).length);
 
   return result === 2 ? EXIT.UNPROVABLE : EXIT.FAILED;
 }
@@ -141,6 +164,7 @@ function verdictOf(
   messages: readonly string[],
   runnerFailed: boolean,
   saturated: boolean,
+  failingFileCount: number,
 ): 0 | 1 | 2 {
   const failures: ReportedFailure[] = messages.map((message) => ({ messages: [message] }));
   const { timeout, content } = classifyFailures(failures);
@@ -149,5 +173,8 @@ function verdictOf(
     timeoutFailures: timeout.length,
     runnerFailed,
     saturated,
+    // Only meaningful once content failures are ruled out — then every failing
+    // file is a timeout file.
+    failingFiles: failingFileCount,
   });
 }

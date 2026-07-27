@@ -280,6 +280,7 @@ describe("assessSaturation", () => {
     expect(assessSaturation({ baseline: null, ncpu, hogs: [] })).toEqual({
       saturated: false,
       reasons: [],
+      starvedOnly: false,
     });
   });
 
@@ -355,6 +356,27 @@ describe("classifyFailures", () => {
 describe("verdict — three classes, deliberately not two", () => {
   it("0: nothing failed", () => {
     expect(verdict({})).toBe(0);
+  });
+
+  // A busy box slows everything; it does not pick one file and hang it. So the
+  // distribution of the timeouts separates the two signatures that CPU numbers
+  // cannot — see `SCATTERED_MIN_FILES`.
+  it("1: timeouts confined to ONE file are a hang, however loaded the box was", () => {
+    expect(verdict({ timeoutFailures: 6, saturated: true, failingFiles: 1 })).toBe(1);
+  });
+
+  it("2: the same timeouts scattered across files are the box", () => {
+    expect(verdict({ timeoutFailures: 6, saturated: true, failingFiles: 3 })).toBe(2);
+  });
+
+  it("2: an unnamed distribution falls back to the saturation signal alone", () => {
+    // Not every runner names files. Absent evidence must not silently flip a
+    // verdict — it leaves the previous behaviour in place.
+    expect(verdict({ timeoutFailures: 6, saturated: true })).toBe(2);
+  });
+
+  it("1: one file and a quiet box stays a defect — both guards agree", () => {
+    expect(verdict({ timeoutFailures: 6, saturated: false, failingFiles: 1 })).toBe(1);
   });
 
   it("1: a content failure is RED even on a saturated box — load never excuses a defect", () => {
@@ -437,19 +459,50 @@ describe("ownCpuCores", () => {
 describe("assessSaturation — starvation", () => {
   const quiet = { load1: 2, load5: 2, load15: 2 };
 
-  it("calls a run unprovable when it barely ran at all", () => {
-    // The measured case, as the gate itself reported it: 0.08 cores over 355 s
-    // on 16 cores, foreign load at 4 % — far under the saturation threshold, so
-    // the old logic called it a code defect.
-    const { saturated, reasons } = assessSaturation({
+  // Owner decision 2026-07-27, replacing the earlier reading of this same case.
+  // The measured run — 0.08 cores over 355 s on 16 cores, foreign load 4 % — used
+  // to be called unprovable on that evidence alone. It no longer is: low own-CPU
+  // has two causes that CPU numbers cannot separate (pushed aside vs. waiting on
+  // I/O), and an I/O-bound merge profile hits the threshold routinely on a
+  // completely idle box. Reported by the owner: 16 cores at ~5 % total load, and
+  // the gate still printed SATURATED.
+  //
+  // The observation is kept — it just no longer carries the verdict on its own.
+  it("reports the starved run but does not call it saturated without corroboration", () => {
+    const { saturated, reasons, starvedOnly } = assessSaturation({
       baseline: quiet,
       ncpu: 16,
       hogs: [],
       ownCores: 0.08,
       wallSeconds: 355,
     });
+    expect(saturated).toBe(false);
+    expect(starvedOnly).toBe(true);
+    // The log must still say what was seen, or a later reader cannot tell a quiet
+    // box from an unexamined one.
+    expect(reasons.join(" ")).toContain("barely computed");
+  });
+
+  it("counts starvation once another signal establishes the box was busy", () => {
+    const busy = { load1: 20, load5: 20, load15: 20 };
+    const { saturated, starvedOnly, reasons } = assessSaturation({
+      baseline: busy,
+      ncpu: 16,
+      hogs: [],
+      ownCores: 0.08,
+      wallSeconds: 355,
+    });
     expect(saturated).toBe(true);
-    expect(reasons.join(" ")).toContain("never got to compute");
+    expect(starvedOnly).toBe(false);
+    expect(reasons.join(" ")).toContain("barely computed");
+  });
+
+  it("counts starvation when foreign processes are the corroboration", () => {
+    const hogs = [{ pid: 1, comm: "vm", share: 500 }];
+    expect(
+      assessSaturation({ baseline: quiet, ncpu: 16, hogs, ownCores: 0.08, wallSeconds: 355 })
+        .saturated,
+    ).toBe(true);
   });
 
   it("leaves a healthy run alone — 8 cores of own work is not starvation", () => {

@@ -11,7 +11,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { failureMessages, phaseExit, runPhase } from "../src/gate/phases.js";
+import { failingFiles, failureMessages, phaseExit, runPhase } from "../src/gate/phases.js";
 import { EXIT } from "../src/output.js";
 
 const cwd = (): string => mkdtempSync(join(tmpdir(), "spec-sync-phase-"));
@@ -89,7 +89,13 @@ describe("failureMessages", () => {
 });
 
 describe("phaseExit — 1 on the merits, 2 unprovable (spec §4, exit-2-inherited)", () => {
-  const timeoutOnly = "FAIL src/slow.test.ts\nTest timed out in 10000ms.\n";
+  // Scattered across files — what a slow box actually looks like. A box under
+  // load delays everything; it does not single out one file. The single-file
+  // shape is the HANG signature and has its own cases below.
+  const timeoutOnly =
+    "FAIL src/slow.test.ts\nTest timed out in 10000ms.\n" +
+    "FAIL src/other.test.ts\nTest timed out in 10000ms.\n";
+  const timeoutOneFile = "FAIL src/slow.test.ts\nTest timed out in 10000ms.\n";
   const contentOut = "FAIL src/a.test.ts\nAssertionError: expected 1 to be 2\n";
 
   it("a content failure is RED even on a saturated box — load never excuses a defect", () => {
@@ -104,6 +110,16 @@ describe("phaseExit — 1 on the merits, 2 unprovable (spec §4, exit-2-inherite
     expect(phaseExit({ output: timeoutOnly, signal: null, saturated: true })).toBe(EXIT.UNPROVABLE);
   });
 
+  // Owner decision 2026-07-27. Same load, same timeouts — but confined to one
+  // file, which a slow box does not produce. `production-cockpit#776` is the
+  // case: `llm.test.ts` hangs 900 s in `db.destroy()` while everything else
+  // passes. It was only called a defect because a real assertion failure
+  // happened to sit beside it; alone it would have been excused and retried
+  // forever.
+  it("the same timeouts confined to ONE file are a hang, not the box", () => {
+    expect(phaseExit({ output: timeoutOneFile, signal: null, saturated: true })).toBe(EXIT.FAILED);
+  });
+
   it("a timeout NEXT TO a content failure stays content — the mixed case", () => {
     expect(phaseExit({ output: timeoutOnly + contentOut, signal: null, saturated: true })).toBe(
       EXIT.FAILED,
@@ -116,9 +132,11 @@ describe("phaseExit — 1 on the merits, 2 unprovable (spec §4, exit-2-inherite
     " FAIL  src/slow.test.ts > waits for the box",
     "Error: Test timed out in 34000ms.",
     'If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".',
+    " FAIL  src/second.test.ts > also waits",
+    "Error: Test timed out in 34000ms.",
     "",
-    " Test Files  1 failed (1)",
-    "      Tests  1 failed (1)",
+    " Test Files  2 failed (2)",
+    "      Tests  2 failed (2)",
     "   Start at  21:05:51",
     "   Duration  35.12s",
   ].join("\n");
@@ -151,5 +169,30 @@ describe("phaseExit — 1 on the merits, 2 unprovable (spec §4, exit-2-inherite
   it("a process killed outright follows the same rule as a dead runner", () => {
     expect(phaseExit({ output: "", signal: "SIGKILL", saturated: false })).toBe(EXIT.FAILED);
     expect(phaseExit({ output: "", signal: "SIGKILL", saturated: true })).toBe(EXIT.UNPROVABLE);
+  });
+});
+
+describe("failingFiles — the distribution that separates a hang from a slow box", () => {
+  it("names each distinct file once, however many tests failed in it", () => {
+    const output = [
+      " FAIL  src/routes/llm.test.ts > provider reachable",
+      "   Error: Hook timed out in 60000ms.",
+      " FAIL  src/routes/llm.test.ts > provider unreachable",
+      "   Error: Test timed out in 10000ms.",
+    ].join("\n");
+    expect(failingFiles(output)).toEqual(["src/routes/llm.test.ts"]);
+  });
+
+  it("sees the spread when the box slowed everything down", () => {
+    const output = [
+      " FAIL  src/a.test.ts > one",
+      " FAIL  src/b.test.ts > two",
+      " FAIL  e2e/c.spec.ts > three",
+    ].join("\n");
+    expect(failingFiles(output)).toHaveLength(3);
+  });
+
+  it("reports nothing when the runner names no files, rather than guessing", () => {
+    expect(failingFiles("Error: Test timed out in 10000ms.")).toEqual([]);
   });
 });
