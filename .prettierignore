@@ -1,5 +1,9 @@
 dist/
 coverage/
 node_modules/
+# Machine-local agent settings. Untracked here only because a GLOBAL git ignore
+# hides it, which prettier does not read — so without this line the local gate
+# goes red on a file the repo does not own and the author cannot commit.
+.claude/
 package-lock.json
 spec.lock.json

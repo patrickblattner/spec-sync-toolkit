@@ -223,9 +223,7 @@ describe("--dry-run changes nothing and reports the full sequence (§12 M3)", ()
   // plan ended in `git worktree remove /repo`. Git refuses that, but the refusal
   // lands AFTER push and issue-close and leaves the merge half-done.
   it("never plans to remove the MAIN working tree, even when the branch sits in it", async () => {
-    const { deps, root } = fakeDeps(
-      world({ worktrees: [{ path: "/repo", branch: "feat/csv" }] }),
-    );
+    const { deps, root } = fakeDeps(world({ worktrees: [{ path: "/repo", branch: "feat/csv" }] }));
     recordGreenGate(root, 42);
     const result = await runMerge(deps, { ...options, dryRun: true }, NORM_DEFAULTS);
     const steps = result.data.steps as { name: string; cmd: string }[];
