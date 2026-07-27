@@ -437,29 +437,75 @@ export function isTimeoutFailure(messages: string | readonly (string | undefined
   return TIMEOUT_PATTERNS.some((pattern) => pattern.test(all));
 }
 
+// A cause that belongs to the network rather than to the code (spec §4,
+// `DECISION (infra-is-not-the-code)`). The list is CLOSED at four entries and
+// takes no configuration: unlike the timeout patterns, this rule turns a
+// REPORTED cause into an excuse, so every widening is a defect waiting to be
+// excused — and it would grow exactly where the pressure to be green is
+// highest. A fifth signature costs a spec bump and a measurement.
+export const TRANSIENT_PATTERNS: readonly RegExp[] = [
+  /\bECONNRESET\b/,
+  /\bEPIPE\b/,
+  /\bETIMEDOUT\b/,
+  /\bsocket hang up\b/i,
+];
+
+// A line carrying the signature inside an ASSERTION is a test about network
+// behaviour — the normal case in the repos this rule serves — and stays a
+// defect. Unlike everywhere else in this file, erring toward "cause" is the
+// safe direction here: it costs a re-run demanded as a diagnosis, while the
+// other direction excuses a real bug.
+const ASSERTION_SHAPE = /\bassert\w*|\bexpected\b/i;
+
+/**
+ * Tested per line, not over the joined blob: the assertion guard only means
+ * anything next to the signature it qualifies. A blob would let an unrelated
+ * `expected` three lines down disarm the guard, or an unrelated `ECONNRESET`
+ * arm it.
+ */
+export function isTransientFailure(messages: string | readonly (string | undefined)[]): boolean {
+  const lines = (Array.isArray(messages) ? messages : [messages]).filter(
+    (line): line is string => typeof line === "string" && line !== "",
+  );
+  return lines.some(
+    (line) =>
+      TRANSIENT_PATTERNS.some((pattern) => pattern.test(line)) && !ASSERTION_SHAPE.test(line),
+  );
+}
+
 /** One reported failure, as the gate reads it out of a phase's output. */
 export interface ReportedFailure {
   messages: string[];
 }
 
 /**
- * Splits the reported failures into the two states. A failure carrying BOTH a
- * timeout and a content error counts as CONTENT: a real defect must never be
- * explainable away by a coincidental timeout next to it. A failure with no
- * message at all is content too — unexplained is not excusable.
+ * Splits the reported failures into the three states. A failure carrying a
+ * content error BESIDE a timeout or a transient signature counts as CONTENT: a
+ * real defect must never be explainable away by something coincidental next to
+ * it. A failure with no message at all is content too — unexplained is not
+ * excusable.
+ *
+ * Transient beats timeout when a failure carries both, because the two reach
+ * exit 2 by different routes: the timeout route asks whether the box was
+ * saturated, the transient one does not. A reset connection that also produced
+ * a timeout is still the network, on a quiet box as much as on a busy one.
  */
 export function classifyFailures<T extends ReportedFailure>(
   failures: readonly T[] = [],
-): { timeout: T[]; content: T[] } {
+): { timeout: T[]; transient: T[]; content: T[] } {
   const timeout: T[] = [];
+  const transient: T[] = [];
   const content: T[] = [];
   for (const failure of failures) {
     const messages = failure.messages ?? [];
-    const contentMessages = messages.filter((message) => !isTimeoutFailure(message));
-    if (messages.length > 0 && contentMessages.length === 0) timeout.push(failure);
-    else content.push(failure);
+    const unexplained = messages.filter(
+      (message) => !isTimeoutFailure(message) && !isTransientFailure(message),
+    );
+    if (messages.length === 0 || unexplained.length > 0) content.push(failure);
+    else if (messages.some((message) => isTransientFailure(message))) transient.push(failure);
+    else timeout.push(failure);
   }
-  return { timeout, content };
+  return { timeout, transient, content };
 }
 
 // ---- THE VERDICT (three classes, deliberately not two) --------------------
@@ -474,12 +520,18 @@ export function classifyFailures<T extends ReportedFailure>(
 export function verdict({
   contentFailures = 0,
   timeoutFailures = 0,
+  transientFailures = 0,
   saturated = false,
   runnerFailed = false,
   failingFiles,
 }: {
   contentFailures?: number;
   timeoutFailures?: number;
+  /**
+   * Failures whose only cause is a transient infrastructure signature. They
+   * reach exit 2 WITHOUT consulting the load — see the branch below.
+   */
+  transientFailures?: number;
   saturated?: boolean;
   runnerFailed?: boolean;
   /**
@@ -490,6 +542,11 @@ export function verdict({
   failingFiles?: number;
 }): 0 | 1 | 2 {
   if (contentFailures > 0) return 1;
+  // Infrastructure named the cause, and it was not the code. The load is not
+  // consulted: a connection the network reset does not become a defect because
+  // the box happened to be quiet (spec §4, `DECISION (infra-is-not-the-code)`).
+  // This is also why exit 2 on a quiet box identifies this route uniquely.
+  if (transientFailures > 0) return 2;
   if (timeoutFailures > 0 || runnerFailed) {
     if (!saturated) return 1;
     // A busy box slows EVERYTHING; it does not pick one file and hang it. So a

@@ -24,6 +24,7 @@ import {
   classifyFailures,
   foreignCpuShares,
   isTimeoutFailure,
+  isTransientFailure,
   ownCpuCores,
   ownProcessIds,
   parseCpuTime,
@@ -328,6 +329,37 @@ describe("isTimeoutFailure", () => {
   });
 });
 
+describe("isTransientFailure", () => {
+  it.each([
+    "Error: read ECONNRESET",
+    "Error: write EPIPE",
+    "Error: connect ETIMEDOUT 10.1.0.4:443",
+    "FetchError: request to http://localhost:4100/api failed, reason: socket hang up",
+  ])("recognises the network naming itself: %s", (message) => {
+    expect(isTransientFailure(message)).toBe(true);
+  });
+
+  // This rule turns a reported cause into an excuse, so its failure direction is
+  // the REVERSE of every other rule here: too wide is what costs a defect. These
+  // are the cases that must stay red.
+  it.each([
+    "AssertionError: expected 'ECONNRESET' to be 'ok'",
+    "expected error.code to be ETIMEDOUT",
+    "assert.strictEqual(err.code, 'EPIPE')",
+    "TypeError: Cannot read properties of null (reading 'id')",
+    "Test timed out in 10000ms.",
+  ])("does not excuse a test that ASSERTS on the signature: %s", (message) => {
+    expect(isTransientFailure(message)).toBe(false);
+  });
+
+  it("judges each line on its own — a distant 'expected' must not disarm the guard", () => {
+    // Joined into one blob, the `expected` below would suppress the signature
+    // above it and turn an infrastructure abort into a defect (and, the other
+    // way round, a stray signature would excuse a real assertion).
+    expect(isTransientFailure(["Error: read ECONNRESET", "expected 1 to be 2"])).toBe(true);
+  });
+});
+
 describe("classifyFailures", () => {
   const timeoutFail = { file: "a.test.ts", messages: ["Test timed out in 10000ms."] };
   const contentFail = { file: "b.test.ts", messages: ["expected 1 to be 2"] };
@@ -350,6 +382,34 @@ describe("classifyFailures", () => {
   it("treats a failure with no message at all as content — unexplained is not excusable", () => {
     const bare = { file: "d.test.ts", messages: [] };
     expect(classifyFailures([bare]).content).toEqual([bare]);
+  });
+
+  it("puts a signature-only failure in its own bucket, not with the timeouts", () => {
+    const infra = { file: "e.test.ts", messages: ["Error: read ECONNRESET"] };
+    const { transient, timeout, content } = classifyFailures([infra]);
+    expect(transient).toEqual([infra]);
+    expect(timeout).toEqual([]);
+    expect(content).toEqual([]);
+  });
+
+  it("counts a signature BESIDE a real cause as content — the expensive direction", () => {
+    const both = {
+      file: "f.test.ts",
+      messages: ["Error: read ECONNRESET", "expected 1 to be 2"],
+    };
+    expect(classifyFailures([both]).content).toEqual([both]);
+    expect(classifyFailures([both]).transient).toEqual([]);
+  });
+
+  it("lets transient win over timeout when a failure carries both", () => {
+    // The two reach exit 2 by different routes and only the timeout route asks
+    // about the load. A reset that also produced a timeout is still the network.
+    const both = {
+      file: "g.test.ts",
+      messages: ["Test timed out in 10000ms.", "Error: read ECONNRESET"],
+    };
+    expect(classifyFailures([both]).transient).toEqual([both]);
+    expect(classifyFailures([both]).timeout).toEqual([]);
   });
 });
 
@@ -385,6 +445,20 @@ describe("verdict — three classes, deliberately not two", () => {
 
   it("1: timeouts on a QUIET box are a real finding (a hang or a flake)", () => {
     expect(verdict({ timeoutFailures: 3, saturated: false })).toBe(1);
+  });
+
+  it("2: a transient signature is unprovable on a QUIET box — load was never the claim", () => {
+    expect(verdict({ transientFailures: 1, saturated: false })).toBe(2);
+  });
+
+  it("2: and it does not need the files to be scattered either", () => {
+    // The scatter guard separates a hang from load. It says nothing about a
+    // network that named itself, and one file may well be the only one doing I/O.
+    expect(verdict({ transientFailures: 4, saturated: false, failingFiles: 1 })).toBe(2);
+  });
+
+  it("1: a content failure outranks a transient signature — a defect is never excused", () => {
+    expect(verdict({ contentFailures: 1, transientFailures: 9, saturated: false })).toBe(1);
   });
 
   it("2: timeouts on a SATURATED box are unprovable — the 2026-07-19 case", () => {

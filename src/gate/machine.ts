@@ -165,13 +165,17 @@ export class MachineProbe {
  */
 function verdictLine(condition: MeasurementCondition): string {
   if (condition.saturated) return "SATURATED — a timeout-only red is unprovable (exit 2)";
+  // The quiet lines say what the LOAD explains, which since
+  // `DECISION (infra-is-not-the-code)` is no longer the whole verdict: a red
+  // whose only cause is a transient infra signature is exit 2 on a quiet box
+  // too. Claiming "exit 1" flatly would make this log contradict the response.
   if (condition.starvedOnly) {
     return (
       "quiet, but we barely computed — waiting, not starvation: " +
-      "a red is a real finding (exit 1)"
+      "load excuses nothing (a red is exit 1 unless its only cause is a transient infra signature)"
     );
   }
-  return "quiet — a red is a real finding (exit 1)";
+  return "quiet — load excuses nothing (a red is exit 1 unless its only cause is a transient infra signature)";
 }
 
 /**

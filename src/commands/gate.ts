@@ -235,9 +235,15 @@ async function runPhases({
   });
   if (exit === EXIT.UNPROVABLE) {
     // The reasons themselves are long and belong in the log — the response says
-    // what to DO about it (spec §4: repeat, do not diagnose).
+    // what to DO about it (spec §4: repeat, do not diagnose). Which of the two
+    // routes got here is read off the load rather than re-derived: the transient
+    // route is the only one that reaches exit 2 without saturation, so a quiet
+    // box identifies it. Naming the wrong one would send the reader to a
+    // measurement log that flatly contradicts the note.
     notes.push(
-      `unprovable: ${failed.name} failed on a saturated box — repeat on a quiet one, do not diagnose (${MEASUREMENT_LOG}.log)`,
+      condition.saturated
+        ? `unprovable: ${failed.name} failed on a saturated box — repeat on a quiet one, do not diagnose (${MEASUREMENT_LOG}.log)`
+        : `unprovable: ${failed.name} failed on a quiet box with only a transient infra signature — repeat, do not diagnose (${MEASUREMENT_LOG}.log)`,
     );
   }
 

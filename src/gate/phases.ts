@@ -162,8 +162,10 @@ export function failureMessages(output: string): string[] {
 }
 
 /**
- * The exit code a failed phase earns: 1 on the merits, or 2 when a timeout-only
- * red met a saturated box (spec §4, `DECISION (exit-2-inherited)`).
+ * The exit code a failed phase earns: 1 on the merits, or 2 by one of the two
+ * routes to "unprovable" (spec §4, `DECISION (exit-2-inherited)`) — a
+ * timeout-only red that met a saturated box, or a red whose only cause is a
+ * transient infrastructure signature, which does not consult the load at all.
  */
 export function phaseExit({
   output,
@@ -195,10 +197,11 @@ function verdictOf(
   failingFileCount: number,
 ): 0 | 1 | 2 {
   const failures: ReportedFailure[] = messages.map((message) => ({ messages: [message] }));
-  const { timeout, content } = classifyFailures(failures);
+  const { timeout, transient, content } = classifyFailures(failures);
   return verdict({
     contentFailures: content.length,
     timeoutFailures: timeout.length,
+    transientFailures: transient.length,
     runnerFailed,
     saturated,
     // Only meaningful once content failures are ruled out — then every failing

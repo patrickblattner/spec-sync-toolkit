@@ -155,6 +155,51 @@ describe("phaseExit — 1 on the merits, 2 unprovable (spec §4, exit-2-inherite
     );
   });
 
+  // `DECISION (infra-is-not-the-code)`: the second route to exit 2, and the one
+  // `production-cockpit/AGENTS.md` has been promising since #775. Unlike the
+  // timeout route it never asks about the load — which is exactly what these
+  // cases pin, since a quiet box was the old guarantee of exit 1.
+  describe("transient infra signatures — exit 2 without consulting the load", () => {
+    const resetOut =
+      "FAIL src/upload.test.ts\nError: read ECONNRESET\n" +
+      "    at TLSWrap.onStreamRead (node:internal/stream_base_commons:218:20)\n";
+
+    it("a reset connection is unprovable on a QUIET box", () => {
+      expect(phaseExit({ output: resetOut, signal: null, saturated: false })).toBe(EXIT.UNPROVABLE);
+    });
+
+    it("and confined to a single file, where the scatter guard does not apply", () => {
+      // One file may simply be the only one doing network I/O — the shape that
+      // identifies a hang says nothing about a network that named itself.
+      expect(phaseExit({ output: resetOut, signal: null, saturated: true })).toBe(EXIT.UNPROVABLE);
+    });
+
+    it("a socket hang up reads the same way", () => {
+      const hangUp =
+        "FAIL src/api.test.ts\n" +
+        "FetchError: request to http://localhost:4100/api failed, reason: socket hang up\n";
+      expect(phaseExit({ output: hangUp, signal: null, saturated: false })).toBe(EXIT.UNPROVABLE);
+    });
+
+    it("a test ASSERTING on the signature stays a defect — the expensive direction", () => {
+      const asserted = "FAIL src/retry.test.ts\nAssertionError: expected 'ECONNRESET' to be 'ok'\n";
+      expect(phaseExit({ output: asserted, signal: null, saturated: false })).toBe(EXIT.FAILED);
+    });
+
+    it("a signature NEXT TO a real failure stays a defect", () => {
+      expect(phaseExit({ output: resetOut + contentOut, signal: null, saturated: false })).toBe(
+        EXIT.FAILED,
+      );
+    });
+
+    it("an unlisted errno is NOT excused — the list is closed on purpose", () => {
+      // ECONNREFUSED means nothing is listening, which is a setup defect and a
+      // finding. Widening the list is a spec change, never a code convenience.
+      const refused = "FAIL src/api.test.ts\nError: connect ECONNREFUSED 127.0.0.1:4100\n";
+      expect(phaseExit({ output: refused, signal: null, saturated: false })).toBe(EXIT.FAILED);
+    });
+  });
+
   // A real vitest timeout run, as measured (evidence #773, E2/E4/E5): the
   // cause arrives wrapped in a header, an advice line and the summary block.
   const vitestTimeout = [
