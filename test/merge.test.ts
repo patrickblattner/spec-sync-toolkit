@@ -218,6 +218,52 @@ describe("--dry-run changes nothing and reports the full sequence (§12 M3)", ()
     expect(steps.map((step) => step.name)).not.toContain("remove-worktree");
   });
 
+  // production-cockpit#775: the agent worked in the main checkout instead of a
+  // worktree, so `git worktree list` named /repo on the ticket branch — and the
+  // plan ended in `git worktree remove /repo`. Git refuses that, but the refusal
+  // lands AFTER push and issue-close and leaves the merge half-done.
+  it("never plans to remove the MAIN working tree, even when the branch sits in it", async () => {
+    const { deps, root } = fakeDeps(
+      world({ worktrees: [{ path: "/repo", branch: "feat/csv" }] }),
+    );
+    recordGreenGate(root, 42);
+    const result = await runMerge(deps, { ...options, dryRun: true }, NORM_DEFAULTS);
+    const steps = result.data.steps as { name: string; cmd: string }[];
+    expect(steps.map((step) => step.name)).not.toContain("remove-worktree");
+    expect(steps.map((step) => step.cmd).join(" ")).not.toContain("worktree remove");
+  });
+
+  it("still removes a real ticket worktree that merely shares the branch name", async () => {
+    const { deps, root } = fakeDeps(
+      world({
+        worktrees: [
+          { path: "/repo", branch: "main" },
+          { path: "/repo/.claude/worktrees/csv", branch: "feat/csv" },
+        ],
+      }),
+    );
+    recordGreenGate(root, 42);
+    const result = await runMerge(deps, { ...options, dryRun: true }, NORM_DEFAULTS);
+    const steps = result.data.steps as { name: string; cmd: string }[];
+    expect(steps.map((step) => step.name)).toContain("remove-worktree");
+  });
+
+  it("moves the ticket to ONE status: done goes on, the old status comes off", async () => {
+    const { deps, root } = fakeDeps(
+      world({ issueLabels: ["spec-sync", "status: in-progress", "type: bug"] }),
+    );
+    recordGreenGate(root, 42);
+    const result = await runMerge(deps, { ...options, dryRun: true }, NORM_DEFAULTS);
+    const label = (result.data.steps as { name: string; cmd: string }[]).find(
+      (step) => step.name === "label-issue",
+    );
+    expect(label?.cmd).toContain('--add-label "status: done"');
+    expect(label?.cmd).toContain('--remove-label "status: in-progress"');
+    // Labels outside the status axis are none of this step's business.
+    expect(label?.cmd).not.toContain("type: bug");
+    expect(label?.cmd).not.toContain("spec-sync");
+  });
+
   it("marks itself as a dry run so a caller cannot mistake it for a merge", async () => {
     const { deps, root } = fakeDeps(world());
     recordGreenGate(root, 42);
@@ -293,6 +339,20 @@ describe("a violated precondition is exit 4 and changes nothing (§12 M3)", () =
     expect(result.exit).toBe(EXIT.PRECONDITION);
   });
 
+  // The ledger is only written when the gate is TOLD its ticket, so a caller who
+  // ran the gate green without `--issue` sees a merge refuse on evidence that
+  // demonstrably exists. Naming the missing flag is what turns a dead end into a
+  // next step — #775 paid a full re-run for it.
+  it("says HOW to produce the missing evidence, not only that it is missing", async () => {
+    const { deps } = fakeDeps(world());
+    const result = await runMerge(deps, options, NORM_DEFAULTS);
+    const detail = (result.data.preconditions as { name: string; detail?: string }[]).find(
+      (check) => check.name === "gate-evidence-green",
+    )?.detail;
+    expect(detail).toContain("--issue 42");
+    expect(detail).toContain("--profile merge");
+  });
+
   it("refuses in --dry-run too — the check is the point of the dry run", async () => {
     const { deps, calls } = fakeDeps(world({ dirty: true }));
     const result = await runMerge(deps, { ...options, dryRun: true }, NORM_DEFAULTS);
@@ -359,6 +419,20 @@ describe("the executed sequence and its postconditions (§7.4)", () => {
       "branch -D",
     ]);
     expect(git.filter((call) => call[0] === "push")).toHaveLength(1);
+  });
+
+  it("actually sends the label removal to gh, not only in the dry-run plan", async () => {
+    const state = world({ issueLabels: ["spec-sync", "status: in-progress"] });
+    const { deps, gh, root } = fakeDeps(state);
+    recordGreenGate(root, 42);
+
+    await runMerge(deps, options, NORM_DEFAULTS);
+
+    const edit = gh.find((call) => call[0] === "issue" && call[1] === "edit");
+    expect(edit).toContain("--add-label");
+    expect(edit).toContain("status: done");
+    expect(edit).toContain("--remove-label");
+    expect(edit).toContain("status: in-progress");
   });
 
   it("commits with the ticket reference and closes the issue with the status label", async () => {

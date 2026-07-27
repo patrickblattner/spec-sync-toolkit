@@ -47,6 +47,23 @@ export const MERGE_GATE_PROFILE = "merge";
 /** Status label set on close. From the label taxonomy of `foundation.dev.process`. */
 export const DONE_LABEL = "status: done";
 
+/** Prefix of the status labels. Exactly one of them may be set at a time. */
+const STATUS_PREFIX = "status: ";
+
+/**
+ * The status labels the issue still carries besides `status: done`.
+ *
+ * Adding `done` without taking the old one off leaves the ticket reading
+ * `status: in-progress, status: done` — two states at once, which every query
+ * over the taxonomy then counts twice (measured on `production-cockpit#775`).
+ * `gh issue edit` takes both flags in one call, so this costs no extra step.
+ */
+export function staleStatusLabels(facts: Facts): string[] {
+  return (facts.issue.labels ?? [])
+    .map((label) => label.name)
+    .filter((name) => name.startsWith(STATUS_PREFIX) && name !== DONE_LABEL);
+}
+
 export interface MergeDeps {
   git: (args: string[]) => Promise<string>;
   gh: GhRunner;
@@ -177,20 +194,40 @@ async function gather(
     worktreePath,
     issue,
     gateOk: gate?.ok === true,
+    // A precondition that does not say how to satisfy it costs the caller a
+    // guess, and here the guess is expensive: the ledger is only written when a
+    // gate run is TOLD its ticket, so a green run without `--issue` leaves no
+    // evidence and the merge blocks on a gate that demonstrably passed
+    // (`production-cockpit#775` paid for one full re-run to find this out).
     gateDetail:
       gate === undefined
-        ? `no green "${MERGE_GATE_PROFILE}" gate recorded for #${options.issue} in the ledger`
+        ? `no green "${MERGE_GATE_PROFILE}" gate recorded for #${options.issue} in the ledger — ` +
+          `run: spec-sync gate --profile ${MERGE_GATE_PROFILE} --issue ${options.issue}`
         : `gate at ${gate.at} was ${gate.ok === true ? "green" : "red"}`,
   };
 }
 
-/** The path of the worktree checked out on `branch`, if one exists. */
+/**
+ * The path of the **disposable** worktree checked out on `branch`, if one exists.
+ *
+ * `git worktree list` always names the MAIN working tree first, and that one is
+ * never a ticket worktree — it is the repository itself. An agent that worked in
+ * the main checkout instead of a worktree would otherwise have `merge` plan
+ * `git worktree remove <repo>` as its last step: git refuses that, so nothing is
+ * destroyed, but the refusal lands AFTER the push and the issue was closed and
+ * leaves the merge half-done. Measured on `production-cockpit#775`.
+ */
 async function findWorktree(deps: MergeDeps, branch: string): Promise<string | undefined> {
   const porcelain = await deps.git(["worktree", "list", "--porcelain"]);
   let path: string | undefined;
+  let seen = 0;
   for (const line of porcelain.split("\n")) {
-    if (line.startsWith("worktree ")) path = line.slice("worktree ".length).trim();
-    else if (line.trim() === `branch refs/heads/${branch}`) return path;
+    if (line.startsWith("worktree ")) {
+      seen += 1;
+      path = line.slice("worktree ".length).trim();
+    } else if (line.trim() === `branch refs/heads/${branch}`) {
+      return seen === 1 ? undefined : path;
+    }
   }
   return undefined;
 }
@@ -253,6 +290,13 @@ export function commitMessage(issue: number, title: string | undefined): string 
   return subject.includes(`#${issue}`) ? subject : `${subject} #${issue}`;
 }
 
+/** The `gh issue edit` arguments that move the ticket to exactly one status. */
+export function labelArgs(facts: Facts, options: MergeOptions): string[] {
+  const args = ["issue", "edit", String(options.issue), "--add-label", DONE_LABEL];
+  for (const stale of staleStatusLabels(facts)) args.push("--remove-label", stale);
+  return args;
+}
+
 /** The sequence of §7.4, as data — dry-run reports it, execution walks it. */
 export function plan(facts: Facts, options: MergeOptions): MergeStep[] {
   const steps: MergeStep[] = [
@@ -264,7 +308,9 @@ export function plan(facts: Facts, options: MergeOptions): MergeStep[] {
     { name: "push", cmd: `git push ${facts.remote ?? "origin"} ${MAIN_BRANCH}` },
     {
       name: "label-issue",
-      cmd: `gh issue edit ${options.issue} --add-label ${JSON.stringify(DONE_LABEL)}`,
+      cmd: `gh ${labelArgs(facts, options)
+        .map((arg) => (arg.includes(" ") ? JSON.stringify(arg) : arg))
+        .join(" ")}`,
     },
     { name: "close-issue", cmd: `gh issue close ${options.issue}` },
   ];
@@ -299,7 +345,7 @@ async function runStep(
       await deps.git(["push", facts.remote ?? "origin", MAIN_BRANCH]);
       return;
     case "label-issue":
-      await deps.gh(["issue", "edit", String(options.issue), "--add-label", DONE_LABEL]);
+      await deps.gh(labelArgs(facts, options));
       return;
     case "close-issue":
       await deps.gh(["issue", "close", String(options.issue)]);
