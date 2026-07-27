@@ -60,13 +60,33 @@ export function runPhase(cmd: string, cwd: string): Promise<PhaseOutcome> {
 
 /**
  * Lines that NAME a failing item without saying why: `FAIL src/a.test.ts`,
- * `× adds up`, `1) [chromium] › login.spec.ts`. The reference gate never saw
- * these — it read structured failures whose `messages` were causes only. Read
- * as a message, a header like `FAIL src/slow.test.ts` counts as content simply
- * because the word "FAIL" is not the word "timeout", and exit 2 becomes
- * unreachable for every runner that prints one.
+ * `× adds up`, `1) [chromium] › login.spec.ts`, `❯ src/slow.test.ts`. The
+ * reference gate never saw these — it read structured failures whose `messages`
+ * were causes only. Read as a message, a header like `FAIL src/slow.test.ts`
+ * counts as content simply because the word "FAIL" is not the word "timeout",
+ * and exit 2 becomes unreachable for every runner that prints one.
+ *
+ * The last arm is the lesson of `production-cockpit#773`: enumerating bullets
+ * (`✗ × ✘`) means every runner that picks a glyph we did not list leaks its
+ * headers back in as causes — vitest's `❯` did exactly that. One decoration
+ * glyph followed by whitespace is the SHAPE of a bullet, whichever glyph the
+ * next release picks.
  */
-const FAILURE_HEADER = /^(?:FAIL\b|FAILED\b|[✗×✘]|\d+\)\s)/i;
+const FAILURE_HEADER = /^(?:FAIL\b|FAILED\b|[✗×✘]|\d+\)\s|[^\w\s]\s)/i;
+
+/**
+ * A run of three or more identical NON-ASCII frame glyphs: `⎯⎯⎯`, `───`, `═══`.
+ *
+ * Runners draw banners around their summary blocks — vitest's
+ * `⎯⎯⎯ Failed Tests 1 ⎯⎯⎯` carries the word "Failed" and so read as a cause on
+ * every red run, which is the second half of why exit 2 was unreachable
+ * (`production-cockpit/worklogs/773-exit2-evidence.md`). A banner is a shape,
+ * not a vocabulary, so this needs no update when a runner changes its glyph.
+ * Restricted to non-ASCII so that `...` in a truncated assertion and `///` in a
+ * file URL stay causes — dropping one of those would be the dangerous
+ * direction, a defect excused as noise.
+ */
+const FRAME_RUN = /([^\w\s\x20-\x7E])\1{2,}/u;
 
 /** The source file a failure header names, e.g. ` FAIL  src/routes/llm.test.ts > …`. */
 const HEADER_FILE = /(\S+\.(?:m|c)?[jt]sx?)\b/;
@@ -104,8 +124,15 @@ export function failingFiles(output: string): string[] {
  * itself. The reference gate never had to exclude either: it read a failure's
  * `messages`, where the advice arrives glued to the timeout it belongs to and
  * the counters do not appear at all.
+ *
+ * The second arm is the PER-FILE counter, `(1 test | 1 failed)`, which vitest
+ * appends to every file it summarises. It is the same species as the totals
+ * above, so it is excluded for the same reason — and matched by its shape, a
+ * parenthesised test count, rather than by the words around it. `(12,3)` in a
+ * tsc diagnostic has no `test` in it and stays a cause.
  */
-const RUNNER_NOISE = /^(?:(?:Test Files|Tests|Snapshots)\s+\d|If this is a long-running test\b)/i;
+const RUNNER_NOISE =
+  /^(?:(?:Test Files|Tests|Snapshots)\s+\d|If this is a long-running test\b)|\(\d+\s+tests?\b[^)]*\)/i;
 
 /**
  * Lines that state a CAUSE — the analogue of a reported failure's `messages`.
@@ -129,6 +156,7 @@ export function failureMessages(output: string): string[] {
         line !== "" &&
         !FAILURE_HEADER.test(line) &&
         !RUNNER_NOISE.test(line) &&
+        !FRAME_RUN.test(line) &&
         FAILURE_MESSAGE.test(line),
     );
 }

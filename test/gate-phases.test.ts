@@ -88,6 +88,35 @@ describe("failureMessages", () => {
   });
 });
 
+describe("failureMessages — vitest's own decoration (production-cockpit#773/#132)", () => {
+  // Measured, not invented: three runs under `8x yes`, own cores 0.07, box
+  // triply corroborated as saturated — and still exit 1, because these two
+  // lines appear on EVERY red vitest run and both carry the word "failed".
+  // v0.1.1 excluded the totals and the advice line but not these, so the
+  // content of a timeout-only failure was never empty and exit 2 stayed
+  // unreachable for the one runner every repo here uses.
+  it("ignores the per-file summary, whatever glyph the runner bullets it with", () => {
+    expect(failureMessages("❯ src/slow.test.ts (1 test | 1 failed) 35005ms")).toEqual([]);
+  });
+
+  it("ignores the banner drawn around the summary block", () => {
+    expect(failureMessages("⎯⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯⎯")).toEqual([]);
+  });
+
+  // The guard rail for the fix itself. Excluding noise is only safe as long as
+  // it cannot reach a cause: a line dropped here turns a defect into an excuse,
+  // which is the one direction this gate must never fail in. Both shapes below
+  // are ASCII runs that look like frames and are not.
+  it("keeps causes that merely LOOK framed — the dangerous direction", () => {
+    expect(failureMessages('AssertionError: expected "aaa..." to be "bbb"')).toHaveLength(1);
+    expect(failureMessages("Error: cannot resolve file:///src/a.ts")).toHaveLength(1);
+  });
+
+  it("keeps a tsc diagnostic — its (12,3) is a position, not a test count", () => {
+    expect(failureMessages("src/a.ts(12,3): error TS2345: Argument of type 'x'")).toHaveLength(1);
+  });
+});
+
 describe("phaseExit — 1 on the merits, 2 unprovable (spec §4, exit-2-inherited)", () => {
   // Scattered across files — what a slow box actually looks like. A box under
   // load delays everything; it does not single out one file. The single-file
@@ -155,6 +184,45 @@ describe("phaseExit — 1 on the merits, 2 unprovable (spec §4, exit-2-inherite
     const withAssertion = vitestTimeout.replace(
       "Error: Test timed out in 34000ms.",
       "Error: Test timed out in 34000ms.\nAssertionError: expected 1 to be 2",
+    );
+    expect(phaseExit({ output: withAssertion, signal: null, saturated: true })).toBe(EXIT.FAILED);
+  });
+
+  // The reported run, reproduced line for line (production-cockpit#132): the
+  // decoration vitest wraps a red run in, not a hand-written excerpt. Two files,
+  // because one file is the HANG signature and has its own rule below — that
+  // distinction is what the reporter's single-file fixture could not separate.
+  const vitestReal = [
+    " ❯ src/slow.test.ts (1 test | 1 failed) 35005ms",
+    "   × waits for the box 35003ms",
+    "     → Test timed out in 34000ms.",
+    " ❯ src/other.test.ts (1 test | 1 failed) 35004ms",
+    "   × also waits 35002ms",
+    "     → Test timed out in 34000ms.",
+    'If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".',
+    "",
+    "⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯",
+    "",
+    " FAIL  src/slow.test.ts > waits for the box",
+    " FAIL  src/other.test.ts > also waits",
+    "Error: Test timed out in 34000ms.",
+    "",
+    " Test Files  2 failed (2)",
+    "      Tests  2 failed (2)",
+  ].join("\n");
+
+  it("a REAL vitest timeout run on a saturated box reaches exit 2 at last", () => {
+    expect(phaseExit({ output: vitestReal, signal: null, saturated: true })).toBe(EXIT.UNPROVABLE);
+  });
+
+  it("the same real run on a quiet box is still a finding", () => {
+    expect(phaseExit({ output: vitestReal, signal: null, saturated: false })).toBe(EXIT.FAILED);
+  });
+
+  it("an assertion inside the real run outweighs all of it", () => {
+    const withAssertion = vitestReal.replace(
+      "Error: Test timed out in 34000ms.",
+      "AssertionError: expected 1 to be 2",
     );
     expect(phaseExit({ output: withAssertion, signal: null, saturated: true })).toBe(EXIT.FAILED);
   });
