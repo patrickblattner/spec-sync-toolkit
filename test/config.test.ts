@@ -47,6 +47,7 @@ describe("loadConfig (spec §5)", () => {
       audit: "auto-audit",
       bug: "type: bug",
       hold: "owner-hold",
+      started: "status: in-progress",
     });
     expect(config.lenses).toEqual({});
   });

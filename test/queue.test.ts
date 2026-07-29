@@ -16,7 +16,13 @@ const config = {
   project: "demo",
   gate: { profiles: { local: ["unit"] }, phases: [{ name: "unit", cmd: "npm test" }] },
   lenses: {},
-  labels: { build: "spec-sync", audit: "auto-audit", bug: "type: bug", hold: "owner-hold" },
+  labels: {
+    build: "spec-sync",
+    audit: "auto-audit",
+    bug: "type: bug",
+    hold: "owner-hold",
+    started: "status: in-progress",
+  },
   nightlyWorkflow: "nightly.yml",
 } as unknown as Config;
 
@@ -60,6 +66,53 @@ function deps(gh: QueueDeps["gh"], over: Partial<Omit<QueueDeps, "gh">> = {}): Q
     ...over,
   };
 }
+
+describe("tier 2 — started before unstarted (foundation.dev.process 2.7.0, Q&A #152)", () => {
+  it("puts a started ticket before an unstarted one, even an older one", () => {
+    const sweep = sweepIssues(
+      [
+        issue(4, ["spec-sync"], "M2"),
+        issue(9, ["spec-sync", "status: in-progress"], "M2"),
+        issue(7, ["spec-sync"], "M2"),
+      ],
+      config,
+      norms,
+    );
+    expect(sweep.queue.map((entry) => entry.issue)).toEqual([9, 4, 7]);
+  });
+
+  it("sorts above the phase — a started M4 ticket beats an unstarted M1 one", () => {
+    const sweep = sweepIssues(
+      [issue(1, ["spec-sync"], "M1"), issue(2, ["spec-sync", "status: in-progress"], "M4")],
+      config,
+      norms,
+    );
+    expect(sweep.queue.map((entry) => entry.issue)).toEqual([2, 1]);
+  });
+
+  it("stays below tier 1 — an unstarted auto-audit still outranks a started build ticket", () => {
+    const sweep = sweepIssues(
+      [issue(1, ["spec-sync", "status: in-progress"], "M1"), issue(2, ["auto-audit"], "M9")],
+      config,
+      norms,
+    );
+    expect(sweep.queue.map((entry) => entry.issue)).toEqual([2, 1]);
+  });
+
+  it("leaves oldest-first untouched inside each of the two groups", () => {
+    const sweep = sweepIssues(
+      [
+        issue(8, ["spec-sync", "status: in-progress"], "M2"),
+        issue(3, ["spec-sync"], "M2"),
+        issue(5, ["spec-sync", "status: in-progress"], "M2"),
+        issue(1, ["spec-sync"], "M2"),
+      ],
+      config,
+      norms,
+    );
+    expect(sweep.queue.map((entry) => entry.issue)).toEqual([5, 8, 1, 3]);
+  });
+});
 
 describe("sorting by the four tiers (§12 M3, foundation §Worker-Loop)", () => {
   it("puts auto-audit first, then type: bug, then ordinary build tickets", () => {

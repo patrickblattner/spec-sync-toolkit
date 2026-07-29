@@ -10,9 +10,10 @@ import {
 describe("norm fallback (spec §6, transitional state)", () => {
   it("serves the defaults transcribed from foundation.dev.process §Worker-Loop", () => {
     expect(NORM_DEFAULTS).toEqual({
-      sortTiers: ["auto-audit", "type: bug", "phase-asc", "issue-number-asc"],
+      sortTiers: ["auto-audit", "type: bug", "started-first", "phase-asc", "issue-number-asc"],
       hold: "owner-hold",
       buildLabel: "spec-sync",
+      startedLabel: "status: in-progress",
       mergeModel: "local-squash-single-push",
     });
   });
@@ -26,7 +27,7 @@ describe("norm fallback (spec §6, transitional state)", () => {
 
   it("hands out a copy, so a caller cannot mutate the defaults", () => {
     loadNorms().norms.sortTiers.push("nonsense");
-    expect(NORM_DEFAULTS.sortTiers).toHaveLength(4);
+    expect(NORM_DEFAULTS.sortTiers).toHaveLength(5);
   });
 
   it("pins the section the defaults were read from", () => {

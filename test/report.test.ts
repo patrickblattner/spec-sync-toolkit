@@ -188,7 +188,9 @@ describe("the Zielabgleich content (§7.6)", () => {
   it("renders drift, mapping, done with commit, and the sorted rest queue", async () => {
     const root = repo();
     completeRun(root);
-    const restQueue = [{ issue: 8, title: "next", rank: 2, phase: 3, pin: "M3", position: 1 }];
+    const restQueue = [
+      { issue: 8, title: "next", rank: 2, started: false, phase: 3, pin: "M3", position: 1 },
+    ];
     const result = await runReport(deps(root, emptySweep({ queue: restQueue })), {});
 
     expect(result.data.drift).toEqual([

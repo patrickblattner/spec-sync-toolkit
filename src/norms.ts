@@ -21,14 +21,21 @@ export interface Norms {
   sortTiers: string[];
   hold: string;
   buildLabel: string;
+  /**
+   * The mechanical marker for "started": a ticket with increments already merged
+   * to `main`. Tier 2 sorts on this label and nothing else — "started" is a
+   * state, not a judgement.
+   */
+  startedLabel: string;
   mergeModel: string;
 }
 
 /** Defaults verbatim from spec §6. */
 export const NORM_DEFAULTS: Norms = {
-  sortTiers: ["auto-audit", "type: bug", "phase-asc", "issue-number-asc"],
+  sortTiers: ["auto-audit", "type: bug", "started-first", "phase-asc", "issue-number-asc"],
   hold: "owner-hold",
   buildLabel: "spec-sync",
+  startedLabel: "status: in-progress",
   mergeModel: "local-squash-single-push",
 };
 
@@ -38,9 +45,9 @@ export const NORM_DEFAULTS: Norms = {
  */
 export const PINNED_NORM_SECTION = {
   unit: "foundation.dev.process",
-  version: "2.0.0",
+  version: "2.7.0",
   section: "entwicklungs-workflow-tickets-backlog-commits-specs/worker-loop-spec-sync",
-  hash: "e0557cc659773c56c571d843cb9a3e67dea2189c8f0d9f01797c6709e668fa6e",
+  hash: "4d45abd6d9f521f1322311c2588397ee63c910937882904c2d61d7efb082f8f9",
 } as const;
 
 /** Default base URL of the spec-mcp server. */

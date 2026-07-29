@@ -81,7 +81,13 @@ interface RepoOptions {
 const config = {
   project: "spec-sync-toolkit",
   gate: { profiles: { local: ["lint"] }, phases: [{ name: "lint", cmd: "npm run lint" }] },
-  labels: { build: "spec-sync", audit: "auto-audit", bug: "type: bug", hold: "owner-hold" },
+  labels: {
+    build: "spec-sync",
+    audit: "auto-audit",
+    bug: "type: bug",
+    hold: "owner-hold",
+    started: "status: in-progress",
+  },
 };
 
 function fakeRepo(options: RepoOptions = {}): string {

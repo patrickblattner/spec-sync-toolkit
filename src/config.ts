@@ -32,6 +32,7 @@ const labelsSchema = z.object({
   audit: z.string().min(1).default("auto-audit"),
   bug: z.string().min(1).default("type: bug"),
   hold: z.string().min(1).default(NORM_DEFAULTS.hold),
+  started: z.string().min(1).default(NORM_DEFAULTS.startedLabel),
 });
 
 const configSchema = z

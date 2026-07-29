@@ -60,8 +60,10 @@ export interface GhIssue {
 export interface QueueEntry {
   issue: number;
   title: string;
-  /** 0 = `auto-audit`, 1 = `type: bug`, 2 = ordinary build ticket. Tiers 1 and 2. */
+  /** 0 = `auto-audit`, 1 = `type: bug`, 2 = ordinary build ticket. Tier 1. */
   rank: number;
+  /** Increments already merged to `main` — tier 2, started before unstarted. */
+  started: boolean;
   /** Resolved build phase — tier 3. */
   phase: number;
   /** The pin verbatim, e.g. `M3` or `aktuell`. */
@@ -169,7 +171,7 @@ function labelNames(issue: GhIssue): string[] {
  * the sorting rules are testable without touching a repo.
  */
 export function sweepIssues(issues: GhIssue[], config: Config, norms: Norms): Sweep {
-  const { audit, bug, build } = config.labels;
+  const { audit, bug, build, started: startedLabel } = config.labels;
   const hold = norms.hold;
 
   const held: TicketRef[] = [];
@@ -179,6 +181,7 @@ export function sweepIssues(issues: GhIssue[], config: Config, norms: Norms): Sw
   const pinned: {
     issue: GhIssue;
     rank: number;
+    started: boolean;
     pin: string;
     phase: number | typeof CURRENT_PHASE;
   }[] = [];
@@ -231,7 +234,13 @@ export function sweepIssues(issues: GhIssue[], config: Config, norms: Norms): Sw
       continue;
     }
 
-    pinned.push({ issue, rank: isAudit ? 0 : isBug ? 1 : 2, pin, phase });
+    pinned.push({
+      issue,
+      rank: isAudit ? 0 : isBug ? 1 : 2,
+      started: labels.includes(startedLabel),
+      pin,
+      phase,
+    });
   }
 
   // `aktuell` means "counts to the current phase" (§Worker-Loop step 1). The
@@ -247,10 +256,21 @@ export function sweepIssues(issues: GhIssue[], config: Config, norms: Norms): Sw
       issue: entry.issue.number,
       title: entry.issue.title,
       rank: entry.rank,
+      started: entry.started,
       phase: typeof entry.phase === "number" ? entry.phase : currentPhase,
       pin: entry.pin,
     }))
-    .sort((a, b) => a.rank - b.rank || a.phase - b.phase || a.issue - b.issue)
+    // Tier 2 sits ABOVE the phase, not below it: a started ticket already passed
+    // the phase gate when it was begun, so finishing it cannot violate the phase
+    // order. Half-integrated increments on `main` are a state, not a backlog.
+    // Tiers 3 and 4 then order within each of the two groups, unchanged.
+    .sort(
+      (a, b) =>
+        a.rank - b.rank ||
+        Number(b.started) - Number(a.started) ||
+        a.phase - b.phase ||
+        a.issue - b.issue,
+    )
     .map((entry, index) => ({ ...entry, position: index + 1 }));
 
   return { queue, needsPin, held, notSwept, labelDrift };
