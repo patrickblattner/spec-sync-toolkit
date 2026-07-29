@@ -1,12 +1,12 @@
 {
   "schema": "spec.lock/v3",
   "project": "spec-sync-toolkit",
-  "generated_at": "2026-07-29T13:00:47.472Z",
+  "generated_at": "2026-07-29T15:06:22.956Z",
   "sources": [
     {
       "name": "foundation",
       "ref": "HEAD",
-      "commit": "f6a62a9"
+      "commit": "cca301a"
     },
     {
       "name": "production-cockpit",
@@ -31,7 +31,7 @@
     {
       "name": "spec-sync-toolkit",
       "ref": "HEAD",
-      "commit": "ac6c7fd"
+      "commit": "c8d674f"
     }
   ],
   "entries": [
@@ -235,14 +235,14 @@
     {
       "id": "foundation.release.process",
       "source": "foundation",
-      "version": "3.16.0",
-      "hash": "efc29d351e9ce5bcf177ccd25287847ce42a6c6b189afea015c6759578a8f173",
-      "commit": "a7b6288",
+      "version": "3.17.0",
+      "hash": "f87bbbe3f2dd2ee94cdcd83973fcc0727e63ef8ceda92bda7ab6146496133905",
+      "commit": "cca301a",
       "sections": {
-        "release---deployment-prozess-global": "b547920a8165dffeda0e0673c882584595d0bac6d3a5573d0f65179acf8da022",
+        "release---deployment-prozess-global": "afff3c34a77d4955d17f12bb17669d90360bab791510e56999bd1cc3761665ac",
         "release---deployment-prozess-global/grundprinzipien": "7ba492a5f3c5a28048123434a0f5024f5ceb000be6cc02a18c8e8c72d62f1cb4",
         "release---deployment-prozess-global/ci-ist-das-gate-pflicht": "ac5b836f4aec364a3ee9145b4402b3bd6f4fae0fe81facebb77dac0dffa76428",
-        "release---deployment-prozess-global/ci-betriebsmodus-team-ci-vs-local-first": "3444a6fba76e82b786090dfd058f8324bd222ff4248f4c81ed02740631bcd09d",
+        "release---deployment-prozess-global/ci-betriebsmodus-team-ci-vs-local-first": "8fa8b70fa5dd07c3c43e465920e17e6d2cf476c42d64ba21d3e9c120985848ae",
         "release---deployment-prozess-global/workflow-hygiene-github-actions": "936af25e0202a44f934ff02a9727fe41df2ccf7d9e8b72c08a23c0b2248cc7cf",
         "release---deployment-prozess-global/container-images": "597307d81381c3b15b01bf7f68d518753e6e6cd968c76ba0b93280cedfdddc63",
         "release---deployment-prozess-global/releases": "24ae0bbd7126fbcc4ef73b439495796e29956b9cae006a97ab1e30ab946b9bef",
@@ -347,19 +347,19 @@
     {
       "id": "spec-sync-toolkit.build-spec",
       "source": "spec-sync-toolkit",
-      "version": "0.10.0",
-      "hash": "bb4661186accb4257371dbe3061aeae3a2e89c4be52132b0e0cc9b7266f24fea",
-      "commit": "ac6c7fd",
+      "version": "0.11.0",
+      "hash": "1724e5bb6e2a5ea961e5623fd7700be6679089a159105678a58d9c559fa65a73",
+      "commit": "577307d",
       "sections": {
-        "build-spec-spec-sync-toolkit": "ba55932a8d0884972e9efc5fed1a527eb8fa2610cb911f61c8c3bbda3dcfddc7",
+        "build-spec-spec-sync-toolkit": "94ab5302314e4eaae868e1cd9c34a1b2254ed830e19089a044a01e69acf9eae4",
         "build-spec-spec-sync-toolkit/1-zweck--kontext": "cd3dc079a98d95184412d867430cbd38825d2023f5c1ff77c22b59d89b2a69f4",
         "build-spec-spec-sync-toolkit/2-grundprinzip": "3ea49c153c035769c841c2cae46cc37518f557e2e6879754658796905ddf94c4",
         "build-spec-spec-sync-toolkit/3-ausgabe-vertrag": "c8b0fceae22179b49c966391a7531a328ae1858912fc9d884bf57db3cb295100",
-        "build-spec-spec-sync-toolkit/4-exit-codes": "7941a38edb455da343d6465632f7e990f291c889e4583bc2f8343d2bb4cf1508",
+        "build-spec-spec-sync-toolkit/4-exit-codes": "a97383417eebbe0b8ceeb9fe6ec24cfd46437477b1c5c89a081d0977ca704246",
         "build-spec-spec-sync-toolkit/5-konfiguration": "a147ddbaef2a73abcb7cfff6b1ab99b8c951cd661adcc831934cd508e2ebb85f",
         "build-spec-spec-sync-toolkit/6-norm-bindung": "962f578a7af84e116bcffe19d76a012e49f43691ead1291a551ce637e0baaf3e",
-        "build-spec-spec-sync-toolkit/7-befehle": "aa339b81ddca72d55186c466d07bb9406d16bb52796b13638325aacdb63e8a3e",
-        "build-spec-spec-sync-toolkit/7-befehle/71-gate": "280a57138b110af288495dc34ad72d7b16e36b65d95d09cdf216337272fceb8f",
+        "build-spec-spec-sync-toolkit/7-befehle": "18f76858697655dbf78a8fd2aa57f43d98d298c82ebfec814b5cd9509153736c",
+        "build-spec-spec-sync-toolkit/7-befehle/71-gate": "3f330bf284ec846096fdff669dfdc47016063b211f99dd3e9eee60d693a1e247",
         "build-spec-spec-sync-toolkit/7-befehle/72-queue": "385a0c43de9f1b1dd90a18fc43c5151f704cf7db7aceb308cdc5fb8f37ac6d4a",
         "build-spec-spec-sync-toolkit/7-befehle/73-pack": "6585ecd916648669452b1af8507749244e9cd28818f89a35363cf2363be80377",
         "build-spec-spec-sync-toolkit/7-befehle/74-merge": "c8a69746c19114b039d1f7a8806cd791d238b939a3a21b9b5bfbfd508647d676",
@@ -370,9 +370,9 @@
         "build-spec-spec-sync-toolkit/9-verteilung--konsum": "1ecb862ea02f651f18a6d07fa6b7f654c85f88fdee638ab850facc6721fc495d",
         "build-spec-spec-sync-toolkit/10-tech-stack": "ece46262f9c7a54d897fa433197feb301600618f6de46da39f6f6e271a89464b",
         "build-spec-spec-sync-toolkit/11-nicht-ziele": "487de22eb1f8bffb0847d00a623fe489f98063ba3ef69081c001ad8f8cbfdc90",
-        "build-spec-spec-sync-toolkit/12-meilensteine--abnahmekriterien": "9d57f11d30d6dea570e4f7774bcc120880fb1fd589a38fb717d1dd19518b85ad",
+        "build-spec-spec-sync-toolkit/12-meilensteine--abnahmekriterien": "a4c8aecbef42834f644e89cf7651d24df502e7e47536528160da2ad142c485fa",
         "build-spec-spec-sync-toolkit/12-meilensteine--abnahmekriterien/m1--fundament-pflicht": "5206184c69c37851cd067e6cd70931faf9f271792517ebb395fe6252a40dbbaf",
-        "build-spec-spec-sync-toolkit/12-meilensteine--abnahmekriterien/m2--gate-pflicht": "d8d25a6ae8ceaf019a9b3c17bf09b907d05c6218b3bf27f542b46083c46b89a5",
+        "build-spec-spec-sync-toolkit/12-meilensteine--abnahmekriterien/m2--gate-pflicht": "8392da6862b3a62d0d992ccc2c1bf20fb99b0b4a8dac7572bafe0ce40742740c",
         "build-spec-spec-sync-toolkit/12-meilensteine--abnahmekriterien/m3--queue--merge--ledger-pflicht": "5ab7b7b61ae2ab410a30cf4102bc0721e138c3be0364decd4d8d8fc94dfc5a51",
         "build-spec-spec-sync-toolkit/12-meilensteine--abnahmekriterien/m4--pack--lenses--doctor-pflicht": "d3534762e48222671693ed589176a1a88118865659ab15a0a20467f00e3ede90",
         "build-spec-spec-sync-toolkit/12-meilensteine--abnahmekriterien/m5--anbindung-eigene-tickets-in-den-impl-repos": "0edf125a4a8c78beabd58626d3003633c8e08e85b57ef00a6a394f2278d648b1"
