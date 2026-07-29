@@ -1,17 +1,17 @@
 {
   "schema": "spec.lock/v3",
   "project": "spec-sync-toolkit",
-  "generated_at": "2026-07-28T22:20:04.605Z",
+  "generated_at": "2026-07-29T13:00:47.472Z",
   "sources": [
     {
       "name": "foundation",
       "ref": "HEAD",
-      "commit": "99c79f4"
+      "commit": "f6a62a9"
     },
     {
       "name": "production-cockpit",
       "ref": "HEAD",
-      "commit": "bdc05a5"
+      "commit": "bafbe22"
     },
     {
       "name": "community-platform",
@@ -140,19 +140,19 @@
     {
       "id": "foundation.design.guideline",
       "source": "foundation",
-      "version": "1.45.0",
-      "hash": "456ca1737868804a475ea95fbead0e28e0ac66ef99353b49a6a3864a5c58246a",
-      "commit": "386170c",
+      "version": "1.46.0",
+      "hash": "e57ae9078e4722debca3c661ed732a703111854f562fbcf8ed167b002a44b782",
+      "commit": "2a4312d",
       "sections": {
-        "design-guideline-ui-sprache": "2e75caf8bba820e4905bd3750574f1a4ca7a81245c63888611cc96e4a3086988",
+        "design-guideline-ui-sprache": "8163c0542a1d2ceb8ec191d6328853af33286b3f20004d67ad3457a5a36605d5",
         "design-guideline-ui-sprache/farb-tokens": "48f0b87854e61a5dee00d093d3bf98024d17e85a7f17e910b30bd12edded81b9",
         "design-guideline-ui-sprache/button-farbsprache": "dd1bf653af51301b3a59cb2b49335171811681d1fbc4277e42bca0ade10ba28e",
         "design-guideline-ui-sprache/interaktivität-hover--focus": "973336fa7d17eee77041e59e8800ca0ce5ecb31207c60f8d830a2ff98d9c2fd8",
         "design-guideline-ui-sprache/tooltip--hinweise": "75163c38b5a3c19367d555debbe7671fdae8882a0f9409b6c06dc921c3894731",
-        "design-guideline-ui-sprache/typografie--radius": "cda0ee0d9f9f7b8e840737b89b8235cd4a7ae1d443399cacccb1467a815a61f7",
+        "design-guideline-ui-sprache/typografie--radius": "6d9f54ab45954d3304169ef53a611dc42757c6f14c46a6ac3f3ea3ae17116b2f",
         "design-guideline-ui-sprache/spacing": "4fa03799e04b5d73165888a1a46674fd4e75d0cd39d11c590522fe5a8f2a2c49",
         "design-guideline-ui-sprache/app-shell": "ef9e363f80d591039947357b3608ec92545cc27035c2b3c6465308ce0131eb1f",
-        "design-guideline-ui-sprache/help-system": "d0f729d06073fa74ac7e52c7615d70a07cf5408c845e089bde221a63c2fd21ef",
+        "design-guideline-ui-sprache/help-system": "7bbfe5286642587948cff1837a7816010b2d18fbb42c4b1f40c46a7af59bfd4e",
         "design-guideline-ui-sprache/tabellen": "5ed6320fba7c51cd6087de423c3b6dcb9142dc9b90dd5fec586b4971a45e0de3",
         "design-guideline-ui-sprache/filter--pagination": "abc8b5ccc5b2917f7f5efda160e8f42a1aada3367a1447ea3c5af4be910637e3",
         "design-guideline-ui-sprache/seiten-templates": "abeb34128d3814308b95b3d869283ad2550f0952f0cf26797dc90cbaae0b56d9",
@@ -303,19 +303,19 @@
     {
       "id": "foundation.testing.guideline",
       "source": "foundation",
-      "version": "2.18.0",
-      "hash": "30c2b6f85958318d831e1f48adad3fa873e5ad8d25fd2c7f8a61240e5fed76b9",
-      "commit": "6ab8106",
+      "version": "2.19.0",
+      "hash": "2a7a7e16d669d08251cdd370abbdbc54f950b8f20abdfcb1ae4c7b215bc50492",
+      "commit": "2a4312d",
       "sections": {
-        "testing-guideline-global": "db6d737948955d2f41c73eb599ccbe025ca70d82b4ccac610aca7fe4d71d9faa",
+        "testing-guideline-global": "eb4323eb708b719e03827361d6fca8f9dec8abe240616790e5e3e7553c832d78",
         "testing-guideline-global/test-stack": "eac593c34a75779a8b35e807d736a9303025f1e65f48a2bc47403c4778b234b3",
-        "testing-guideline-global/grundregeln": "742d28fb0f442a9b1a6317d90bdd4e2cd5e048244cc1d99b44167a8915a0493e",
+        "testing-guideline-global/grundregeln": "a34093bdd71672d8f0f1d6d505cc5d5a67a26a76a129c53ad07d35eb95a3f270",
         "testing-guideline-global/was-getestet-wird": "e9416742e8d6420650c0251ddcb331c0b20dccca3d466e5b008be93f62e81948",
         "testing-guideline-global/teststufen--trigger": "2fd3506b6f9a4c1dd265dbd01dcb51bd2c4f416d3e7aae3a501a786b38155fd8",
         "testing-guideline-global/der-jeder-knopf-standard-e2e-vollständigkeit": "968db1d4fda567a5553cbd4496eaa9d38f71d9e12a3db07f09309f52c2f899e3",
         "testing-guideline-global/vollständigkeits-audit-der-unteren-ebenen-obligation-statt-prozent": "fb240b39aa00c8bb2a6373236c724808d796aab083124ba7557a3502d67e594c",
         "testing-guideline-global/persona-getriebene-e2e": "4ff5965787976d4ec19abd59d44f826815b0375d77e609f2ea0d0d0e2b72d0d5",
-        "testing-guideline-global/globale-qualitäts-wächter-prüf-personas-pflicht": "203b842c23b881af4d2e81af14074b2a53525cba510fead3d0320826658fe887",
+        "testing-guideline-global/globale-qualitäts-wächter-prüf-personas-pflicht": "af9d7f98541614339222229ea97ac47b5289f071e335b9bb0a312bd15ed09e65",
         "testing-guideline-global/was-bewusst-nicht-schwer-getestet-wird": "b1f9913279ac2fa766212815d57ddf54b0f59a11f426f61220c7f33935007bca",
         "testing-guideline-global/e2e-isolation-test-instanz--nie-gegen-die-dev-instanz": "eda035d3903fd956ebfca967cc7b8bf8dbdc6448af67827364ec9118b396b455",
         "testing-guideline-global/dev-seed--relativ--selbst-frisch-2026-07-06": "dc22b0c206f05981ef20d3386db9339206020f2405be071a9029c481c77b65d7",
