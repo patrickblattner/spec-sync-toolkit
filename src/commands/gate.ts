@@ -34,6 +34,7 @@ import { acquireGateLock } from "../gate/lock.js";
 import { changedFiles, phaseRuns, DIFF_BASE } from "../gate/changed.js";
 import { MachineProbe, renderMeasurement } from "../gate/machine.js";
 import { phaseExit, runPhase } from "../gate/phases.js";
+import { DEFAULT_ENVIRONMENT, type Environment, type WakeLockState } from "../gate/environment.js";
 import type { Command, CommandContext, CommandResult } from "../cli.js";
 
 /** Log file carrying the measurement condition; underscored so no phase name collides. */
@@ -122,7 +123,10 @@ interface PhaseReport {
   durationMs?: number;
 }
 
-async function run(ctx: CommandContext): Promise<CommandResult> {
+export async function runGate(
+  ctx: CommandContext,
+  environment: Environment = DEFAULT_ENVIRONMENT,
+): Promise<CommandResult> {
   const { profile, changed, issue, run: runId } = parseGateArgs(ctx.args);
   const config = ctx.config;
   if (config === undefined) {
@@ -130,6 +134,18 @@ async function run(ctx: CommandContext): Promise<CommandResult> {
   }
   const phases = phasesOfProfile(config, profile);
   const notes: string[] = [];
+
+  // Before the lock, before the log directory, before anything is spawned: on
+  // battery the box can sleep with the lid closed mid-suite, and a run that was
+  // asleep says nothing about the code. It is exit 2 rather than exit 4 because
+  // it is the same statement as any other unprovable run — not green, blocks the
+  // merge, and the answer is to repeat it, here after plugging in (register #67).
+  if (environment.readPowerSource() === "battery") {
+    throw new ToolkitError(
+      "gate: not a gate-capable environment — the machine runs on battery, where it can sleep mid-suite; plug in and repeat",
+      EXIT.UNPROVABLE,
+    );
+  }
 
   // Read before queueing: an unusable `--changed` is a precondition the caller
   // must fix, and finding that out after a ten-minute wait helps nobody.
@@ -150,10 +166,14 @@ async function run(ctx: CommandContext): Promise<CommandResult> {
   // gate run is the work, not the queue in front of it — the wait is already in
   // `notes` and belongs to another run's phases.
   const startedAt = Date.now();
+  // Prevention beats detection (§7.1 `DECISION (wake-lock-first)`): the phases
+  // run under the lock from the start, and it lives exactly as long as they do.
+  const wakeLock = environment.holdWakeLock();
   let result: CommandResult;
   try {
-    result = await runPhases({ ctx, phases, diff, notes });
+    result = await runPhases({ ctx, phases, diff, notes, wakeLock: wakeLock.state });
   } finally {
+    wakeLock.release();
     lock.release();
   }
 
@@ -179,11 +199,13 @@ async function runPhases({
   phases,
   diff,
   notes,
+  wakeLock,
 }: {
   ctx: CommandContext;
   phases: readonly GatePhase[];
   diff: string[] | undefined;
   notes: string[];
+  wakeLock: WakeLockState;
 }): Promise<CommandResult> {
   const logDir = createLogDir(ctx.repoRoot, {
     retention: ctx.config?.logRetention,
@@ -222,7 +244,7 @@ async function runPhases({
   }
 
   const condition = probe.end();
-  writePhaseLog(ctx.repoRoot, logDir, MEASUREMENT_LOG, renderMeasurement(condition));
+  writePhaseLog(ctx.repoRoot, logDir, MEASUREMENT_LOG, renderMeasurement(condition, wakeLock));
 
   if (failed === undefined) {
     return { ok: true, exit: EXIT.OK, notes, logDir, data: { phases: reports } };
@@ -260,5 +282,5 @@ export const gateCommand: Command = {
   name: "gate",
   summary: "Run the gate phases of a profile, cheapest first",
   needsConfig: true,
-  run,
+  run: (ctx) => runGate(ctx),
 };

@@ -182,7 +182,10 @@ function verdictLine(condition: MeasurementCondition): string {
  * The measurement condition as a log file — the evidence the norm demands.
  * Never reaches stdout; it lands next to the phase logs (spec §3).
  */
-export function renderMeasurement(condition: MeasurementCondition): string {
+export function renderMeasurement(
+  condition: MeasurementCondition,
+  wakeLock?: "held" | "unavailable",
+): string {
   const load = (value: LoadAverages | null): string =>
     value === null
       ? "not measured"
@@ -198,8 +201,19 @@ export function renderMeasurement(condition: MeasurementCondition): string {
     `load after:     ${load(condition.after)}`,
     `own cores:      ${condition.ownCores === undefined ? "not measured" : condition.ownCores.toFixed(2)}`,
     `verdict:        ${verdictLine(condition)}`,
-    "",
   ];
+
+  // The wake lock belongs to the measured CONDITION of a run, not to the answer:
+  // held is the norm on darwin and unavailable is the norm everywhere else, so
+  // naming it on stdout would spend a line of the §3 budget on a constant. Here
+  // it sits next to the load it explains, and a reader who wonders whether a run
+  // could have been interrupted finds it in the same file (register #67).
+  if (wakeLock !== undefined) {
+    lines.push(
+      `wake lock:      ${wakeLock === "held" ? "held for the whole run" : "not available on this platform"}`,
+    );
+  }
+  lines.push("");
 
   lines.push("foreign processes (share of one core across the whole run):");
   if (condition.foreign.length === 0) {

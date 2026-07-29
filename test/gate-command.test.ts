@@ -11,7 +11,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { gateCommand, parseGateArgs } from "../src/commands/gate.js";
+import { parseGateArgs, runGate as runGateWith } from "../src/commands/gate.js";
+import type { Environment } from "../src/gate/environment.js";
 import { loadConfig, type GatePhase } from "../src/config.js";
 import { latestGate, readLedger, ticketMetrics } from "../src/ledger.js";
 import { EXIT, ToolkitError, formatJson, type Response } from "../src/output.js";
@@ -45,8 +46,19 @@ function context(root: string, args: string[]): CommandContext {
   };
 }
 
+/**
+ * A machine on mains power with no wake lock available — the environment every
+ * test here wants, so that none of them depends on how the box running the
+ * suite happens to be plugged in. The environment itself is tested in
+ * `gate-environment.test.ts`.
+ */
+const onMains: Environment = {
+  readPowerSource: () => "ac",
+  holdWakeLock: () => ({ state: "unavailable", release: () => {} }),
+};
+
 const runGate = (root: string, args: string[] = ["--profile", "local"]): Promise<CommandResult> =>
-  Promise.resolve(gateCommand.run(context(root, args)));
+  Promise.resolve(runGateWith(context(root, args), onMains));
 
 /** The response as the dispatcher assembles it (`src/cli.ts`). */
 function envelope(result: CommandResult): Response {
