@@ -4,13 +4,14 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   NOT_SWEPT_PREFIX,
+  contextLine,
   notSweptLine,
   parseReportOptions,
   runReport,
   type ReportDeps,
   type ReportFinding,
 } from "../src/commands/report.js";
-import { appendEvent } from "../src/ledger.js";
+import { appendEvent, readLedger, type LedgerEvent } from "../src/ledger.js";
 import { EXIT, ToolkitError } from "../src/output.js";
 import type { Sweep } from "../src/commands/queue.js";
 
@@ -33,10 +34,15 @@ function emptySweep(over: Partial<Sweep> = {}): Sweep {
   return { queue: [], needsPin: [], held: [], notSwept: [], labelDrift: [], ...over };
 }
 
-function deps(repoRoot: string, sweep: Sweep | (() => Promise<Sweep>)): ReportDeps {
+function deps(
+  repoRoot: string,
+  sweep: Sweep | (() => Promise<Sweep>),
+  contextBudget = 800_000,
+): ReportDeps {
   return {
     repoRoot,
     sweep: typeof sweep === "function" ? sweep : async () => sweep,
+    contextBudget,
   };
 }
 
@@ -301,5 +307,52 @@ describe("run selection", () => {
     const error = thrown(() => parseReportOptions(["--rnu", "r1"]));
     expect(error.exit).toBe(EXIT.PRECONDITION);
     expect(error.field).toBe("--rnu");
+  });
+});
+
+describe("the context line (spec §7.6, M6)", () => {
+  it("is absent without replacement when the ledger holds no context event", async () => {
+    const root = repo();
+    completeRun(root);
+
+    const result = await runReport(deps(root, emptySweep()), {});
+    // Not a "0", not an estimate — the field simply does not exist.
+    expect(result.data).not.toHaveProperty("context");
+    expect(contextLine(readLedger(root).events, 800_000)).toBeUndefined();
+  });
+
+  it("carries level, budget, growth and reach once measurements exist", async () => {
+    const root = repo();
+    completeRun(root);
+    appendEvent(root, { type: "context", run: "r1", context: 200_000 });
+
+    const result = await runReport(deps(root, emptySweep()), {});
+    expect(result.data.context).toContain("Kontext: 200000 / 800000 Tokens");
+    // Below five increments neither number is guessed.
+    expect(result.data.context).toContain("unter 5 Messpunkten");
+    expect(result.data.context).toContain("Reichweite: nicht berechenbar");
+  });
+
+  it("names the reach once five increments are on record", () => {
+    const events: LedgerEvent[] = [{ at: "t", type: "context", context: 0 }];
+    for (let i = 1; i <= 5; i += 1) {
+      events.push({ at: "t", type: "merge-completed", issue: i, ok: true });
+      events.push({ at: "t", type: "context", context: i * 50_000 });
+    }
+
+    const line = contextLine(events, 800_000);
+    expect(line).toContain("Kontext: 250000 / 800000 Tokens");
+    expect(line).toContain("(p90): 50000");
+    expect(line).toContain("Reichweite: 11 Ticket(s)");
+  });
+
+  it("reads over the whole ledger, not only the selected run", async () => {
+    const root = repo();
+    completeRun(root);
+    // Measured during an earlier run — the p90 window spans more than one run.
+    appendEvent(root, { type: "context", run: "r0", context: 123_000 });
+
+    const result = await runReport(deps(root, emptySweep()), { run: "r1" });
+    expect(result.data.context).toContain("123000");
   });
 });

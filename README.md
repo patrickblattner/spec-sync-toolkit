@@ -30,17 +30,22 @@ spec-sync merge <issue> --branch <name> [--dry-run]
 spec-sync lenses [--base main]
 spec-sync report [--run <id>]
 spec-sync doctor
+spec-sync budget [--session <id|path>] [--label <text>]
+spec-sync handover [--note <text>]
 ```
 
 `stdout` carries exactly one JSON object (`--human` renders text instead). Full command
 output goes to `.spec-sync/logs/<timestamp>/<phase>.log`; the response carries only the exit
 code, the first relevant error and that path.
 
+`.spec-sync/`, `.spec-sync-pause` and the `.spec-sync-handover.md` that `handover` writes
+belong in the consuming repo's `.gitignore`; `spec-sync.config.json` stays versioned.
+
 Exit codes: `0` ok · `1` red · `2` unprovable (aborted under foreign load — **not** green) ·
 `3` ambiguous, the caller decides · `4` precondition violated.
 
 Everything project-specific lives in one file, `spec-sync.config.json`: gate phases and
-profiles, path globs for review lenses, label names, log retention.
+profiles, path globs for review lenses, label names, log retention, context budget.
 
 ## Requirements
 

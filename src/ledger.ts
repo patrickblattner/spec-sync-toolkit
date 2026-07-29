@@ -31,6 +31,11 @@ import { STATE_DIR } from "./logs.js";
  * `merge-completed` replaces the former `merged`, which stays readable as an
  * alias (see `LEDGER_ALIASES`) so ledgers written before this change keep
  * their meaning.
+ *
+ * `context` (spec §7.8) is the newest addition and the case
+ * `DECISION (ledger-tolerant-reader)` was written for: it is not in the table of
+ * §8, and a reader built against that table has to skip it rather than call the
+ * line malformed.
  */
 export const LEDGER_EVENT_TYPES = [
   "drift",
@@ -40,6 +45,7 @@ export const LEDGER_EVENT_TYPES = [
   "merge-started",
   "merge-completed",
   "blocked",
+  "context",
 ] as const;
 
 export type LedgerEventType = (typeof LEDGER_EVENT_TYPES)[number];

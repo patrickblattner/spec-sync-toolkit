@@ -7,5 +7,7 @@ coverage/
 # lives at the repo root and stays versioned — it is not under .spec-sync/.
 .spec-sync/
 .spec-sync-pause
+# Session snapshot written by `handover` (spec §7.9) — a momentary state, not history.
+.spec-sync-handover.md
 
 .DS_Store

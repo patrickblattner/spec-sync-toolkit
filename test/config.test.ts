@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { CONFIG_FILENAME, loadConfig, phasesOfProfile } from "../src/config.js";
 import { DEFAULT_LOG_RETENTION } from "../src/logs.js";
+import { DEFAULT_CONTEXT_BUDGET } from "../src/budget.js";
 import { EXIT, ToolkitError } from "../src/output.js";
 
 const valid = {
@@ -59,6 +60,15 @@ describe("loadConfig (spec §5)", () => {
 
   it("takes a logRetention the config does name", () => {
     expect(loadConfig(repoWith({ ...valid, logRetention: 5 })).logRetention).toBe(5);
+  });
+
+  it("defaults contextBudget to 800000 when the config does not name it", () => {
+    expect(loadConfig(repoWith(valid)).contextBudget).toBe(DEFAULT_CONTEXT_BUDGET);
+    expect(DEFAULT_CONTEXT_BUDGET).toBe(800_000);
+  });
+
+  it("takes a contextBudget the config does name", () => {
+    expect(loadConfig(repoWith({ ...valid, contextBudget: 500_000 })).contextBudget).toBe(500_000);
   });
 
   it("reads a config from an explicit --config path", () => {

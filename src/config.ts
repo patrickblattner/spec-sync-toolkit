@@ -11,6 +11,7 @@ import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { EXIT, ToolkitError } from "./output.js";
 import { DEFAULT_LOG_RETENTION } from "./logs.js";
+import { DEFAULT_CONTEXT_BUDGET } from "./budget.js";
 import { NORM_DEFAULTS } from "./norms.js";
 
 export const CONFIG_FILENAME = "spec-sync.config.json";
@@ -51,6 +52,12 @@ const configSchema = z
      * caller who wrote one of those meant something else.
      */
     logRetention: z.number().int().positive().default(DEFAULT_LOG_RETENTION),
+    /**
+     * Token level `budget` computes remainder and reach against (spec §5/§7.8).
+     * Whole and positive for the same reason as `logRetention`: half a token is
+     * not a thing, and a negative budget has no reach to report.
+     */
+    contextBudget: z.number().int().positive().default(DEFAULT_CONTEXT_BUDGET),
   })
   .superRefine((config, ctx) => {
     // A profile may only name phases that exist — otherwise `gate --profile x`
