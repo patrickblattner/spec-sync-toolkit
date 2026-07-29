@@ -204,10 +204,10 @@ export function renderMeasurement(
   ];
 
   // The wake lock belongs to the measured CONDITION of a run, not to the answer:
-  // held is the norm on darwin and unavailable is the norm everywhere else, so
-  // naming it on stdout would spend a line of the §3 budget on a constant. Here
-  // it sits next to the load it explains, and a reader who wonders whether a run
-  // could have been interrupted finds it in the same file (register #67).
+  // held on darwin, unavailable everywhere else — a constant per platform, and
+  // nothing a caller could act on. Here it sits next to the load it explains,
+  // and a reader who wonders whether a run could have been interrupted finds it
+  // in the same file (spec §7.1, register #67).
   if (wakeLock !== undefined) {
     lines.push(
       `wake lock:      ${wakeLock === "held" ? "held for the whole run" : "not available on this platform"}`,

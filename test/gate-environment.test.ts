@@ -144,9 +144,8 @@ describe("the wake lock over a run (§7.1)", () => {
 
     const result = await runGate(context(root), env);
 
-    // Held on darwin, unavailable everywhere else: a constant per platform. On
-    // stdout it would cost a line of the §3 budget and tell the caller nothing
-    // it could act on.
+    // Held on darwin, unavailable everywhere else: a constant per platform, and
+    // nothing a caller could act on (spec §7.1).
     expect(result.data).not.toHaveProperty("wakeLock");
   });
 
