@@ -323,23 +323,32 @@ describe("gate — logs never reach stdout (spec §3)", () => {
     expect(firstError).not.toContain("noise");
   });
 
-  it("keeps the whole response under 15 formatted lines (spec §3)", async () => {
-    const root = makeRepo([
-      { name: "format", cmd: "true" },
-      { name: "lint", cmd: "true" },
-      { name: "typecheck", cmd: "true" },
-      { name: "unit", cmd: "true" },
-    ]);
-    const green = formatJson(envelope(await runGate(root)));
-    expect(green.split("\n").length).toBeLessThan(15);
+  it("grows with the number of phases, never with the size of their output (spec §3)", async () => {
+    /** Formatted lines of the response for `names`, each phase printing `chatter` lines. */
+    const lines = async (names: string[], chatter: number): Promise<number> => {
+      const root = makeRepo(names.map((name) => ({ name, cmd: `seq ${chatter}` })));
+      return formatJson(envelope(await runGate(root))).split("\n").length;
+    };
+    const four = ["format", "lint", "typecheck", "unit"];
 
-    const redRoot = makeRepo([
-      { name: "format", cmd: "true" },
-      { name: "lint", cmd: "echo 'Error: boom'; exit 1" },
-      { name: "unit", cmd: "true" },
-    ]);
-    const red = formatJson(envelope(await runGate(redRoot)));
-    expect(red.split("\n").length).toBeLessThan(15);
+    // A phase that says three lines and one that says three thousand cost the same.
+    const quiet = await lines(four, 3);
+    expect(await lines(four, 3000)).toBe(quiet);
+
+    // A fifth phase costs exactly one line — the only thing that grows.
+    expect(await lines([...four, "audits"], 3)).toBe(quiet + 1);
+  });
+
+  it("holds that bound when a phase fails, however loud it failed (spec §3)", async () => {
+    const red = async (chatter: number): Promise<number> => {
+      const root = makeRepo([
+        { name: "format", cmd: "true" },
+        { name: "lint", cmd: `echo 'Error: boom'; seq ${chatter}; exit 1` },
+        { name: "unit", cmd: "true" },
+      ]);
+      return formatJson(envelope(await runGate(root))).split("\n").length;
+    };
+    expect(await red(3000)).toBe(await red(3));
   });
 });
 

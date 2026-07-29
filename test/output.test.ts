@@ -3,6 +3,7 @@ import {
   EXIT,
   ToolkitError,
   emit,
+  formatJson,
   hasEmitted,
   progress,
   renderHuman,
@@ -83,16 +84,15 @@ describe("stdout contract (spec §3)", () => {
     }
   });
 
-  it("stays under 15 lines for a gate response of the local profile (spec §3)", () => {
-    const { chunks } = captureStdout();
-    emit({ ...response, phases: gatePhases(["format", "lint", "typecheck", "unit"]) });
-    const text = chunks[0] as string;
-    expect(text.trimEnd().split("\n").length).toBeLessThan(15);
+  it("grows with the number of values, never with their size (spec §3)", () => {
+    const profile = { ...response, phases: gatePhases(["format", "lint", "typecheck", "unit"]) };
+    const lines = (note: string) => formatJson({ ...profile, notes: [note] }).split("\n").length;
+    expect(lines("boom".repeat(3000))).toBe(lines("boom"));
     // Still valid JSON — the compact form is a formatting choice, not a new shape.
-    expect(JSON.parse(text)).toMatchObject({ command: "gate", exit: 0 });
+    expect(JSON.parse(formatJson(profile))).toMatchObject({ command: "gate", exit: 0 });
   });
 
-  it("costs one line per phase, so the largest profile stays close to the budget", () => {
+  it("costs one line per phase over an envelope that does not move", () => {
     const { chunks } = captureStdout();
     const names = ["format", "lint", "typecheck", "unit", "audits", "e2e-touched"];
     emit({ ...response, phases: gatePhases(names) });

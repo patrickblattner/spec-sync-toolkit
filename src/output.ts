@@ -100,11 +100,11 @@ export function emit(response: Response, options: { human?: boolean } = {}): voi
 }
 
 /**
- * Formats the response so the line budget of spec §3 ("the whole JSON response
- * stays under 15 lines formatted") is reachable: one line per top-level field,
- * one line per array element, nested objects compact. Plain
- * `JSON.stringify(…, 2)` would spend six lines on a single gate phase and blow
- * the budget that `gate` and `queue --check` are held to.
+ * Formats the response so its size follows the structural bound of spec §3 (a
+ * response grows with the number of phases, tickets or sections, never with the
+ * size of their output): one line per top-level field, one line per array
+ * element, nested objects compact. Plain `JSON.stringify(…, 2)` would spend six
+ * lines on a single gate phase, so the shape of a value would start to count.
  */
 export function formatJson(response: Response): string {
   const lines: string[] = ["{"];

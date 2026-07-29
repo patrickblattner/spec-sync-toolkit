@@ -304,18 +304,23 @@ describe("--check answers in one line from a single roundtrip (§7.2, §12 M3)",
     expect(result.data).toEqual({ open: 2, next: 2 });
   });
 
-  it("stays far under the 15-line budget of spec §3", async () => {
-    const { gh } = fakeGh({ issues: [issue(1, ["spec-sync"], "M1")] });
-    const result = await runQueue(deps(gh), config, { check: true }, norms);
-    const rendered = formatJson({
-      command: "queue",
-      ok: true,
-      exit: 0,
-      durationMs: 12,
-      notes: result.notes,
-      ...result.data,
-    });
-    expect(rendered.split("\n").length).toBeLessThanOrEqual(15);
+  it("answers at the same size whether one ticket is open or two hundred (spec §3)", async () => {
+    const lines = async (count: number): Promise<number> => {
+      const issues = Array.from({ length: count }, (_, index) =>
+        issue(index + 1, ["spec-sync"], "M1"),
+      );
+      const { gh } = fakeGh({ issues });
+      const result = await runQueue(deps(gh), config, { check: true }, norms);
+      return formatJson({
+        command: "queue",
+        ok: true,
+        exit: 0,
+        durationMs: 12,
+        notes: result.notes,
+        ...result.data,
+      }).split("\n").length;
+    };
+    expect(await lines(200)).toBe(await lines(1));
   });
 
   it("an empty tick is the whole output: nothing open, no next number", async () => {
