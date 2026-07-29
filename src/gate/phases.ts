@@ -112,18 +112,25 @@ export function failingFiles(output: string): string[] {
 }
 
 /**
- * Lines in which the RUNNER talks about the run instead of about a cause: its
- * summary counters (`Test Files  1 failed (1)`, `Tests  1 failed (1)`) and the
- * advice it appends to a timeout (`If this is a long-running test, ...`).
+ * The runner's SUMMARY ROWS — the aligned label/value block it prints under a
+ * finished run: `Test Files  1 failed (1)`, `Tests  1 failed (1)`,
+ * `Snapshots  1 failed`, `Errors  1 error`.
  *
- * The same failure as the header, one step worse: vitest prints BOTH on every
+ * The same failure as the header, one step worse: vitest prints these on EVERY
  * red run, so for that runner the content of a failure was never timeout-only
  * and exit 2 was unreachable — measured per line, not inferred
  * (`production-cockpit/worklogs/773-exit2-evidence.md`, cases E4/E5). A counter
- * says how MANY failed and never why; advice is the runner talking about
- * itself. The reference gate never had to exclude either: it read a failure's
- * `messages`, where the advice arrives glued to the timeout it belongs to and
- * the counters do not appear at all.
+ * says how MANY failed and never why. The reference gate never had to exclude
+ * them: it read a failure's `messages`, where counters do not appear at all.
+ *
+ * Matched by the SHAPE of the block rather than by the labels in it — a short
+ * capitalised label, the column gutter of two or more spaces, then a number.
+ * The three names this used to enumerate were the bug: vitest's unhandled-error
+ * run adds a fourth row, `Errors  1 error`, and a list buys exactly one runner
+ * release of quiet (spec §4, `DECISION (decoration-is-not-a-cause)`). A cause
+ * never has this shape: every diagnostic measured across the five runners of
+ * the phase lists breaks the label at a colon (`AssertionError: …`,
+ * `Serialized Error: { … }`) or opens with a position or a path.
  *
  * The second arm is the PER-FILE counter, `(1 test | 1 failed)`, which vitest
  * appends to every file it summarises. It is the same species as the totals
@@ -131,8 +138,7 @@ export function failingFiles(output: string): string[] {
  * parenthesised test count, rather than by the words around it. `(12,3)` in a
  * tsc diagnostic has no `test` in it and stays a cause.
  */
-const RUNNER_NOISE =
-  /^(?:(?:Test Files|Tests|Snapshots)\s+\d|If this is a long-running test\b)|\(\d+\s+tests?\b[^)]*\)/i;
+const RUNNER_NOISE = /^[A-Z][A-Za-z ]{0,14}\s{2,}\d|\(\d+\s+tests?\b[^)]*\)/i;
 
 /**
  * Lines that state a CAUSE — the analogue of a reported failure's `messages`.
@@ -142,6 +148,85 @@ const RUNNER_NOISE =
  */
 const FAILURE_MESSAGE =
   /\w*(?:error|exception|assertion)\w*|\bfail(?:ed|ing|ure|ures|s)?\b|\btimed out\b|\btimeout\b|\bterminated\b|\bcannot\b|\bnot found\b|\bexpected\b/i;
+
+/**
+ * Spans a line QUOTES instead of naming: `"src/upload.test.ts"`, `` `--flag` ``.
+ *
+ * Only double quotes and backticks, and that is a measurement rather than a
+ * simplification: prose puts the artifact it talks ABOUT in double quotes
+ * (`This error originated in "src/upload.test.ts"`), while tsc and eslint name
+ * the identifier a diagnostic is about in SINGLE quotes (`Type 'string' is not
+ * assignable`, `'unused' is assigned a value but never used`). Removing single
+ * quotes too would strip a diagnostic of the very token that marks it as one.
+ */
+const QUOTED_SPAN = /"[^"]*"|`[^`]*`/g;
+
+/**
+ * An ordinary English word — letters with an internal apostrophe or hyphen
+ * (`doesn't`, `might've`, `long-running`) or a bare number — with sentence
+ * punctuation allowed to hang off the end. Anything else is a symbol token: a
+ * colon head, a path, a position, a bracket, an operator, an identifier glued
+ * to digits.
+ */
+const PROSE_WORD = /^(?:[A-Za-z]+(?:['’-][A-Za-z]+)*|\d+)[.,;:!?]*$/;
+
+/** What a removed quoted span leaves behind, e.g. the lone `.` in `… is  .`. */
+const PUNCTUATION_ONLY = /^[.,;:!?()'"-]+$/;
+
+/**
+ * Shortest sentence measured across the five runners of the phase lists
+ * (vitest, tsc, eslint, prettier, playwright): vitest's
+ * `Vitest caught 1 unhandled error during the test run.`, nine words. Set AT
+ * the measurement rather than below it, because the two errors do not cost the
+ * same: a shorter runner sentence that escapes costs a "broken" where
+ * "unprovable" was also defensible, while a short diagnostic swallowed here
+ * turns a defect into an excuse. `Module not found` must stay a cause.
+ */
+const PROSE_MIN_WORDS = 9;
+
+/**
+ * The RUNNER TALKING ABOUT ITS OWN FAILURE — the third species of decoration
+ * (spec §4, `DECISION (decoration-is-not-a-cause)`), after the header and the
+ * banner. vitest reports an `ECONNRESET` from a socket as an *Unhandled Error*
+ * and prints four sentences around it (`Vitest caught 1 unhandled error during
+ * the test run.` · `This might cause false positive tests. …` · `This error
+ * originated in "…"` · `The latest test that might've caused the error is
+ * "…"`). Read as causes they are four content failures against one transient
+ * signature, and the run lands on exit 1 with nothing broken — measured against
+ * v0.5.0, `community-platform` 2026-07-27, question #150.
+ *
+ * Grouping those lines onto one failure would not help: a failure counts as
+ * content the moment ANY of its messages is unexplained. The prose has to stop
+ * counting as a cause at all.
+ *
+ * The shape, measured against real output from all five runners rather than
+ * derived:
+ *
+ *   • Once its quoted spans are removed, every token is an ordinary English
+ *     word. Diagnostics NAME things, and naming costs a symbol token — a path,
+ *     a position, a colon head, a quoted identifier, `2000ms`, `no-console`.
+ *     Not one of the causes measured across the five runners is free of them.
+ *   • It runs to at least `PROSE_MIN_WORDS` words. Diagnostics are short;
+ *     narration is not.
+ *   • Its cause word is NOT the first token. A diagnostic leads with its cause
+ *     (`Error: read ECONNRESET`, `Cannot find module`, prettier's `Error
+ *     occurred when checking code style …`); prose buries it inside a sentence
+ *     about the run (`caught 1 unhandled error`, `might've caused the error`).
+ *
+ * The deliberate non-rule is the one already measured and rejected: "a cause
+ * carries an error-type head (`Error:`, `AssertionError:`)" throws out eslint's
+ * `12:5  error  Unexpected console statement  no-console` with the prose, and
+ * excusing a real defect is the expensive direction here.
+ */
+export function isRunnerProse(line: string): boolean {
+  const words = line
+    .replace(QUOTED_SPAN, " ")
+    .split(/\s+/)
+    .filter((word) => word !== "" && !PUNCTUATION_ONLY.test(word));
+  if (words.length < PROSE_MIN_WORDS) return false;
+  if (!words.every((word) => PROSE_WORD.test(word))) return false;
+  return !FAILURE_MESSAGE.test(words[0] ?? "");
+}
 
 /**
  * The failing phase's output read as the causes it reported, one per line.
@@ -157,6 +242,7 @@ export function failureMessages(output: string): string[] {
         !FAILURE_HEADER.test(line) &&
         !RUNNER_NOISE.test(line) &&
         !FRAME_RUN.test(line) &&
+        !isRunnerProse(line) &&
         FAILURE_MESSAGE.test(line),
     );
 }

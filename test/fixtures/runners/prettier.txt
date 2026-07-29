@@ -1,0 +1,6 @@
+Checking formatting...
+[warn] src/a.js
+[error] src/broken.js: SyntaxError: Unexpected token (1:12)
+[error] > 1 | const b = {
+[error]     |            ^
+Error occurred when checking code style in the above file.

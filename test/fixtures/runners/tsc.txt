@@ -1,0 +1,2 @@
+src/a.ts(1,14): error TS2322: Type 'string' is not assignable to type 'number'.
+src/a.ts(2,41): error TS2551: Property 'toFixed' does not exist on type 'string'. Did you mean 'fixed'?

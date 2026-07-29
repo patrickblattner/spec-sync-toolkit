@@ -1,0 +1,36 @@
+
+ RUN  v2.1.9 /repo
+
+ ✓ src/upload.test.ts (1 test) 203ms
+
+⎯⎯⎯⎯⎯⎯ Unhandled Errors ⎯⎯⎯⎯⎯⎯
+
+Vitest caught 1 unhandled error during the test run.
+This might cause false positive tests. Resolve unhandled errors to make sure your tests are not affected.
+
+⎯⎯⎯⎯⎯ Uncaught Exception ⎯⎯⎯⎯⎯
+Error: read ECONNRESET
+ ❯ Timeout._onTimeout src/upload.test.ts:5:40
+      3| it("finance: read -> GET 200, aber POST 403", async () => {
+      4|   setTimeout(() => {
+      5|     const err: NodeJS.ErrnoException = new Error("read ECONNRESET");
+       |                                        ^
+      6|     err.code = "ECONNRESET";
+      7|     throw err;
+ ❯ listOnTimeout node:internal/timers:585:17
+ ❯ processTimers node:internal/timers:521:7
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+Serialized Error: { code: 'ECONNRESET' }
+This error originated in "src/upload.test.ts" test file. It doesn't mean the error was thrown inside the file itself, but while it was running.
+The latest test that might've caused the error is "finance: read -> GET 200, aber POST 403". It might mean one of the following:
+- The error was thrown, while Vitest was running this test.
+- If the error occurred after the test had been completed, this was the last documented test before it was thrown.
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+     Errors  1 error
+   Start at  17:50:50
+   Duration  429ms (transform 36ms, setup 0ms, collect 32ms, tests 203ms, environment 0ms, prepare 37ms)
+

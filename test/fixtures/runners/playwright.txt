@@ -1,0 +1,48 @@
+
+Running 3 tests using 1 worker
+
+  ✘  1 e2e/login.spec.js:2:1 › login shows the dashboard (3ms)
+  ✘  2 e2e/login.spec.js:3:1 › slow one (2.0s)
+  ✘  3 e2e/login.spec.js:4:1 › network dies (1ms)
+
+
+  1) e2e/login.spec.js:2:1 › login shows the dashboard ─────────────────────────────────────────────
+
+    Error: expect(received).toBe(expected) // Object.is equality
+
+    Expected: 2
+    Received: 1
+
+      1 | import { test, expect } from "@playwright/test";
+    > 2 | test("login shows the dashboard", async () => { expect(1).toBe(2); });
+        |                                                           ^
+      3 | test("slow one", async () => { await new Promise((r) => setTimeout(r, 9000)); });
+      4 | test("network dies", async () => { const e = new Error("read ECONNRESET"); e.code = "ECONNRESET"; throw e; });
+      5 |
+        at /repo/e2e/login.spec.js:2:59
+
+    Error Context: test-results/login-login-shows-the-dashboard/error-context.md
+
+  2) e2e/login.spec.js:3:1 › slow one ──────────────────────────────────────────────────────────────
+
+    Test timeout of 2000ms exceeded.
+
+    Error Context: test-results/login-slow-one/error-context.md
+
+  3) e2e/login.spec.js:4:1 › network dies ──────────────────────────────────────────────────────────
+
+    Error: read ECONNRESET
+
+      2 | test("login shows the dashboard", async () => { expect(1).toBe(2); });
+      3 | test("slow one", async () => { await new Promise((r) => setTimeout(r, 9000)); });
+    > 4 | test("network dies", async () => { const e = new Error("read ECONNRESET"); e.code = "ECONNRESET"; throw e; });
+        |                                              ^
+      5 |
+        at /repo/e2e/login.spec.js:4:46
+
+    Error Context: test-results/login-network-dies/error-context.md
+
+  3 failed
+    e2e/login.spec.js:2:1 › login shows the dashboard ──────────────────────────────────────────────
+    e2e/login.spec.js:3:1 › slow one ───────────────────────────────────────────────────────────────
+    e2e/login.spec.js:4:1 › network dies ───────────────────────────────────────────────────────────

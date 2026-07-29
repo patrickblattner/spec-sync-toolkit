@@ -7,7 +7,7 @@
  * content failure.
  */
 
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -15,6 +15,10 @@ import { failingFiles, failureMessages, phaseExit, runPhase } from "../src/gate/
 import { EXIT } from "../src/output.js";
 
 const cwd = (): string => mkdtempSync(join(tmpdir(), "spec-sync-phase-"));
+
+/** Real output of a real runner, captured under `test/fixtures/runners/`. */
+const fixture = (name: string): string =>
+  readFileSync(new URL(`./fixtures/runners/${name}.txt`, import.meta.url), "utf8");
 
 describe("runPhase", () => {
   it("reports a green command with its exit code and no signal", async () => {
@@ -282,6 +286,111 @@ describe("phaseExit — 1 on the merits, 2 unprovable (spec §4, exit-2-inherite
   it("a process killed outright follows the same rule as a dead runner", () => {
     expect(phaseExit({ output: "", signal: "SIGKILL", saturated: false })).toBe(EXIT.FAILED);
     expect(phaseExit({ output: "", signal: "SIGKILL", saturated: true })).toBe(EXIT.UNPROVABLE);
+  });
+});
+
+/**
+ * The third species of decoration (spec §4, `DECISION (decoration-is-not-a-cause)`):
+ * the runner narrating its own failure. Every fixture under
+ * `test/fixtures/runners/` is CAPTURED output, not a hand-written excerpt — the
+ * spec requires the shape to be measured against all five runners of the phase
+ * lists before it is pinned, because a rule derived from one runner's sentences
+ * buys exactly one release of quiet.
+ */
+describe("runner prose — measured against the five runners of the phase lists", () => {
+  // The reported case (community-platform 2026-07-27, question #150): vitest
+  // reports an ECONNRESET from a socket as an Unhandled Error and prints four
+  // sentences plus an `Errors  1 error` row around it. Read as causes that is
+  // content against one transient signature, and exit 2 is out of reach for the
+  // one output shape it exists for.
+  const vitestUnhandled = fixture("vitest-unhandled-error");
+
+  it("the reported case reaches exit 2 — the prose no longer counts as a cause", () => {
+    expect(failureMessages(vitestUnhandled).filter((line) => !/ECONNRESET/.test(line))).toEqual([]);
+    expect(phaseExit({ output: vitestUnhandled, signal: null, saturated: false })).toBe(
+      EXIT.UNPROVABLE,
+    );
+  });
+
+  it("a real defect BESIDE the prose is still a defect — the expensive direction", () => {
+    const withDefect = `${vitestUnhandled}\nAssertionError: expected 1 to be 2\n`;
+    expect(phaseExit({ output: withDefect, signal: null, saturated: false })).toBe(EXIT.FAILED);
+  });
+
+  // The trap the spec names because it was already measured: the obvious rule
+  // "a cause carries an error-type head" throws this line out with the prose,
+  // and a defect excused is the direction that costs.
+  it("eslint's no-console finding stays a cause", () => {
+    const eslint = fixture("eslint");
+    expect(failureMessages(eslint)).toContain(
+      "7:11  error  Unexpected console statement                 no-console",
+    );
+    expect(phaseExit({ output: eslint, signal: null, saturated: true })).toBe(EXIT.FAILED);
+  });
+
+  it.each([
+    ["vitest-assertion", EXIT.FAILED],
+    ["vitest-timeout", EXIT.FAILED],
+    ["tsc", EXIT.FAILED],
+    ["eslint", EXIT.FAILED],
+    ["prettier", EXIT.FAILED],
+    ["playwright", EXIT.FAILED],
+  ])("%s keeps its verdict — the rule is not signature-specific", (name, expected) => {
+    const output = fixture(name);
+    expect(phaseExit({ output, signal: null, saturated: false })).toBe(expected);
+    expect(phaseExit({ output, signal: null, saturated: true })).toBe(expected);
+  });
+
+  it("leaves the timeout route open — vitest's timeout is still read as one", () => {
+    // Excluding prose must not sink the OTHER road to exit 2: scattered
+    // timeouts on a saturated box stay unprovable.
+    const scattered =
+      fixture("vitest-timeout") + fixture("vitest-timeout").replace(/slow/g, "other");
+    expect(phaseExit({ output: scattered, signal: null, saturated: true })).toBe(EXIT.UNPROVABLE);
+  });
+
+  it("drops the sentences by their shape, one by one", () => {
+    for (const line of [
+      "Vitest caught 1 unhandled error during the test run.",
+      "This might cause false positive tests. Resolve unhandled errors to make sure your tests are not affected.",
+      'This error originated in "src/upload.test.ts" test file. It doesn\'t mean the error was thrown inside the file itself, but while it was running.',
+      'The latest test that might\'ve caused the error is "finance: read". It might mean one of the following:',
+      'If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".',
+    ]) {
+      expect(failureMessages(line)).toEqual([]);
+    }
+  });
+
+  // The summary block is matched by the shape of an aligned label/value row, so
+  // the row vitest added for unhandled errors needs no entry of its own.
+  it("reads the summary rows as a shape, not as three known labels", () => {
+    expect(failureMessages("     Errors  1 error")).toEqual([]);
+    expect(failureMessages(" Test Files  1 failed (1)")).toEqual([]);
+  });
+
+  // Prose is only safe to drop while it cannot reach a cause. Diagnostics are
+  // short and they NAME things, and naming costs a symbol token — that is the
+  // whole of the distinction, so these are the cases that pin it.
+  it("keeps short symbol-free diagnostics — a sentence is not the same as a message", () => {
+    expect(failureMessages("Module not found")).toHaveLength(1);
+    expect(failureMessages("Cannot find module")).toHaveLength(1);
+    expect(failureMessages("Test timeout of 2000ms exceeded.")).toHaveLength(1);
+  });
+
+  it("keeps a long diagnostic that names its subject in single quotes", () => {
+    // tsc and eslint quote identifiers with SINGLE quotes where the prose above
+    // quotes files and test names with double ones. Strip both and a diagnostic
+    // like this one loses the very token that marks it as one, and reads as a
+    // sentence about the run.
+    expect(
+      failureMessages("Type 'string' is not assignable to the expected type of property 'name'"),
+    ).toHaveLength(1);
+  });
+
+  it("keeps a message that LEADS with its cause, however long the sentence", () => {
+    expect(
+      failureMessages("Error occurred when checking code style in the above file."),
+    ).toHaveLength(1);
   });
 });
 
