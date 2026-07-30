@@ -31,7 +31,7 @@ spec-sync lenses [--base main]
 spec-sync report [--run <id>]
 spec-sync doctor
 spec-sync budget [--session <id|path>] [--label <text>]
-spec-sync handover [--note <text>]
+spec-sync handover [--note <text>] [--reason <budget|done|rot-2x|frage-offen|pause|unerwartet>]
 ```
 
 `stdout` carries exactly one JSON object (`--human` renders text instead). Full command

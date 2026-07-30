@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   HANDOVER_FILE,
+  handoverCommand,
   openMerges,
   parseHandoverOptions,
   renderHandover,
@@ -263,5 +264,37 @@ describe("the handover command end to end", () => {
     const error = thrown(() => parseHandoverOptions(["--notes", "x"]));
     expect(error.exit).toBe(EXIT.PRECONDITION);
     expect(error.field).toBe("--notes");
+  });
+});
+
+describe("the machine-readable stop reason (spec §7.9, M6)", () => {
+  it("writes `reason: budget` as the very first line", async () => {
+    const root = repo();
+    await runHandover(ctx(root), CONFIG, deps(), { reason: "budget" });
+
+    const document = readFileSync(join(root, HANDOVER_FILE), "utf8");
+    expect(document.split("\n")[0]).toBe("reason: budget");
+    expect(document).toContain("# spec-sync handover");
+  });
+
+  it("writes no reason line without the flag", async () => {
+    const root = repo();
+    await runHandover(ctx(root), CONFIG, deps(), {});
+
+    const document = readFileSync(join(root, HANDOVER_FILE), "utf8");
+    expect(document.split("\n")[0]).toBe("# spec-sync handover");
+    expect(document).not.toContain("reason:");
+  });
+
+  it("rejects an unknown value with exit 1 and writes no file", async () => {
+    const error = thrown(() => parseHandoverOptions(["--reason", "quatsch"]));
+    expect(error.exit).toBe(EXIT.FAILED);
+    expect(error.field).toBe("--reason");
+
+    const root = repo();
+    await expect(
+      handoverCommand.run({ ...ctx(root), args: ["--reason", "quatsch"] }),
+    ).rejects.toThrow(ToolkitError);
+    expect(existsSync(join(root, HANDOVER_FILE))).toBe(false);
   });
 });

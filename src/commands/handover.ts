@@ -1,7 +1,7 @@
 /**
  * `handover` — the bridge to the next session (spec §7.9).
  *
- * `spec-sync handover [--note <text>]`
+ * `spec-sync handover [--note <text>] [--reason <wert>]`
  *
  * Writes `.spec-sync-handover.md` into the repo root. Tiny, because the DoD
  * proves that all state lives outside it; the file is a **snapshot** and is
@@ -38,8 +38,24 @@ const QUEUE_HEAD = 3;
 /** Sentences of `--note` that survive — the driver gets three, not an essay. */
 const MAX_NOTE_SENTENCES = 3;
 
+/**
+ * The vocabulary of `--reason` (spec §7.9). The toolkit validates it and nothing
+ * more — which of them a stop *is* stays the driver's judgement (spec §2).
+ */
+export const HANDOVER_REASONS = [
+  "budget",
+  "done",
+  "rot-2x",
+  "frage-offen",
+  "pause",
+  "unerwartet",
+] as const;
+
+export type HandoverReason = (typeof HANDOVER_REASONS)[number];
+
 export interface HandoverOptions {
   note?: string;
+  reason?: HandoverReason;
 }
 
 export interface HandoverDeps {
@@ -50,8 +66,18 @@ export interface HandoverDeps {
 }
 
 export function parseHandoverOptions(args: string[]): HandoverOptions {
-  checkFlags(args, ["--note"]);
-  return { note: valueFlag(args, "--note") };
+  checkFlags(args, ["--note", "--reason"]);
+  const reason = valueFlag(args, "--reason");
+  // Spec §7.9 asks for exit 1 on an unknown *value*, where `checkFlags` answers
+  // an unknown *option* with exit 4. The distinction is the spec's, not ours.
+  if (reason !== undefined && !(HANDOVER_REASONS as readonly string[]).includes(reason)) {
+    throw new ToolkitError(
+      `unknown --reason ${reason} — the vocabulary is ${HANDOVER_REASONS.join(", ")}`,
+      EXIT.FAILED,
+      { field: "--reason" },
+    );
+  }
+  return { note: valueFlag(args, "--note"), reason: reason as HandoverReason | undefined };
 }
 
 /**
@@ -121,8 +147,13 @@ export function renderHandover(input: {
   queueError?: string;
   openMerges: { issue: number; at: string }[];
   note?: string;
+  reason?: HandoverReason;
 }): string {
   const lines: string[] = [
+    // First line on purpose (spec §7.9): the observer harness reads the stop
+    // reason without parsing Markdown. Absent without `--reason` — a handover
+    // without one is no restart boundary for the harness.
+    ...(input.reason === undefined ? [] : [`reason: ${input.reason}`, ""]),
     "# spec-sync handover",
     "",
     `- Repo: ${input.repoRoot}`,
@@ -260,6 +291,7 @@ export async function runHandover(
     queueError,
     openMerges: openMerges(events),
     note: options.note,
+    reason: options.reason,
   });
 
   const path = join(ctx.repoRoot, HANDOVER_FILE);
