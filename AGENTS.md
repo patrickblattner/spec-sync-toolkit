@@ -30,7 +30,9 @@ this machine. There is no CI to fall back on; this repo has no remote.
 
 ## Boundaries
 
-- No remote, no push, no `gh repo create` — that is the owner's call.
+- Remote exists (GitHub = mirror/backup/ticket store). Push `main` immediately after every
+  squash-merge, push tags with releases — never let merges pile up unpushed. No
+  `gh repo create` and no other remote changes — that is the owner's call.
 - Stage named files (`git add src/gate.ts`), never `git add .`; parallel agents share this
   tree.
 - No new dependency without a reason in the report. The narrow dependency set is a decision
