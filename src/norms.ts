@@ -45,9 +45,9 @@ export const NORM_DEFAULTS: Norms = {
  */
 export const PINNED_NORM_SECTION = {
   unit: "foundation.dev.process",
-  version: "2.7.0",
+  version: "2.8.1",
   section: "entwicklungs-workflow-tickets-backlog-commits-specs/worker-loop-spec-sync",
-  hash: "4d45abd6d9f521f1322311c2588397ee63c910937882904c2d61d7efb082f8f9",
+  hash: "50effe347ad5b1509bc2e29b693704e3082cdcefd606ab935c64697e52605ae5",
 } as const;
 
 /** Default base URL of the spec-mcp server. */
