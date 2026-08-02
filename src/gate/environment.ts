@@ -74,13 +74,14 @@ export function readPowerSource(): PowerSource {
  * took it.
  *
  * Note what it does NOT cover: closing the lid still sleeps the machine, on any
- * setting. That gap is what the AC precondition rules out.
+ * setting. That gap is what the AC precondition rules out. `-d` is deliberately
+ * absent: only the system must stay awake, the display may sleep.
  */
 export function holdWakeLock(): WakeLock {
   if (process.platform !== "darwin" || !existsSync(CAFFEINATE)) {
     return { state: "unavailable", release: () => {} };
   }
-  const child = spawn(CAFFEINATE, ["-dimsu", "-w", String(process.pid)], { stdio: "ignore" });
+  const child = spawn(CAFFEINATE, ["-ims", "-w", String(process.pid)], { stdio: "ignore" });
   // The lock must not keep the process alive on its own — it follows the run,
   // never the other way round.
   child.unref();
