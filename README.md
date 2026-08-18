@@ -47,6 +47,27 @@ Exit codes: `0` ok · `1` red · `2` unprovable (aborted under foreign load — 
 Everything project-specific lives in one file, `spec-sync.config.json`: gate phases and
 profiles, path globs for review lenses, label names, log retention, context budget.
 
+## Turn-Ende-Hooks (`dist/hooks/`)
+
+Neben der CLI baut das Paket zwei eigenständige Hook-Binaries für Claude Code
+(Heimat-Umzug aus den Worker-Repos, Entscheid #193, 2026-08-18):
+
+```bash
+node <toolkit>/dist/hooks/stop-check.js           # Stop-Hook: Ventilkette der Worker-Session
+node <toolkit>/dist/hooks/subagent-stop-check.js  # SubagentStop-Hook: Abschluss-Abnahme der Build-Agenten
+```
+
+Die Worker-Repos registrieren die Hooks per **absolutem Pfad** in ihrer getrackten
+`.claude/settings.json` (dasselbe Muster wie `role-guard.sh`): eine Quelle, ein
+`npm run build`, und jedes Repo verhält sich sofort identisch — keine Script-Kopien,
+keine Versions-Bumps für die Hooks. Sie sprechen das Hook-stdout-Protokoll von Claude
+Code, NICHT den JSON-Envelope der CLI; ihr Verhalten (Ventilketten, Budget-Stufe,
+fail-open) ist in `src/hooks/` dokumentiert und in `test/hooks.test.ts` festgenagelt.
+Konfiguriert werden sie über die Dateien des konsumierenden Repos
+(`spec-sync.config.json` → `contextBudget`, `.spec-sync-pause`, `.spec-sync-handover.md`).
+
+**Nach jeder Änderung an `src/hooks/` gilt: `npm run build` — die Repos rufen `dist/` auf.**
+
 ## Requirements
 
 Node ≥ 22, `git`, and `gh` on the `PATH`. Some commands read a spec server over HTTP.

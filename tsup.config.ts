@@ -1,12 +1,18 @@
 import { defineConfig } from "tsup";
 
 /**
- * Single ESM bundle. The CLI is the only entry point — the toolkit is consumed
- * as a pinned devDependency and invoked as `spec-sync <command>` (spec §9), not
- * imported as a library.
+ * ESM bundles. The CLI stays the one `spec-sync <command>` entry (spec §9);
+ * the two hook entries under `dist/hooks/` are separate binaries speaking the
+ * Claude-Code hook protocol on stdout (Turn-Ende-Abnahme, Entscheid #193) —
+ * the worker repos register them by absolute path in their tracked
+ * `.claude/settings.json`, so one rebuilt dist changes every repo at once.
  */
 export default defineConfig({
-  entry: ["src/cli.ts"],
+  entry: {
+    cli: "src/cli.ts",
+    "hooks/stop-check": "src/hooks/stop-check.ts",
+    "hooks/subagent-stop-check": "src/hooks/subagent-stop-check.ts",
+  },
   format: ["esm"],
   target: "node22",
   clean: true,
