@@ -19,8 +19,9 @@ import {
 } from "../src/hooks/lib.js";
 import { askAcceptance, classify, parseVerdict } from "../src/hooks/acceptance.js";
 import type { LogEntry } from "../src/hooks/acceptance.js";
-import { measureContextPercent } from "../src/hooks/io.js";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { measureContextPercent, workbenchFindings } from "../src/hooks/io.js";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -481,5 +482,41 @@ describe("measureContextPercent — fail-open der Messung", () => {
       `${JSON.stringify({ type: "assistant", message: { id: "a", usage: { input_tokens: 125000 } } })}\n`,
     );
     expect(measureContextPercent(file, 250000)).toBe(50);
+  });
+});
+
+// Die Werkbank-Prüfung an der einen Ausnahme festgenagelt, die sie nie melden darf:
+// `.claude/**` ist Owner-/Overmind-Domäne (Entscheid #192) — der Worker könnte den Befund
+// nie beräumen, die Chore-Regel lässt die Änderung bewusst liegen.
+describe("workbenchFindings — .claude/** ist nie ein Befund", () => {
+  function scratchRepoWithClaude(): string {
+    const dir = mkdtempSync(join(tmpdir(), "workbench-"));
+    const git = (...args: string[]) =>
+      execFileSync("git", args, { cwd: dir, encoding: "utf8" }).trim();
+    git("init", "-q", "-b", "main");
+    git("config", "user.email", "t@t");
+    git("config", "user.name", "t");
+    mkdirSync(join(dir, ".claude"), { recursive: true });
+    writeFileSync(join(dir, ".claude", "settings.json"), "{}\n");
+    writeFileSync(join(dir, "code.txt"), "a\n");
+    git("add", "-A");
+    git("commit", "-q", "-m", "init");
+    // origin/main auf denselben Stand zeigen lassen, damit nur die dirty-Prüfung spricht.
+    git("update-ref", "refs/remotes/origin/main", "HEAD");
+    return dir;
+  }
+
+  it("eine geänderte .claude/settings.json (Overmind-Chore) blockt nicht", () => {
+    const dir = scratchRepoWithClaude();
+    writeFileSync(join(dir, ".claude", "settings.json"), '{"changed":true}\n');
+    expect(workbenchFindings(dir)).toEqual([]);
+  });
+
+  it("eine geänderte getrackte Code-Datei bleibt ein Befund", () => {
+    const dir = scratchRepoWithClaude();
+    writeFileSync(join(dir, "code.txt"), "b\n");
+    const findings = workbenchFindings(dir);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toContain("code.txt");
   });
 });

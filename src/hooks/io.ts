@@ -180,7 +180,15 @@ export function workbenchFindings(cwd: string): string[] {
       findings.push(`${ahead} ungepushte(r) Commit(s) auf main — git push origin main`);
     const dirty = git("status", "--porcelain")
       .split("\n")
-      .filter((l) => l && !l.startsWith("??"));
+      .filter((l) => l && !l.startsWith("??"))
+      // `.claude/**` ist Owner-/Overmind-Domäne (Entscheid #192): der Worker darf die Datei
+      // nicht anfassen und könnte diesen Befund deshalb NIE beräumen — die Chore-Regel lässt
+      // die Änderung absichtlich liegen (fährt mit dem nächsten Push mit). Als Werkbank-Befund
+      // gewertet blockte sie jedes Turn-Ende bis zur Obergrenze (gemessen 18.08.,
+      // Cockpit-/unpause: Block auf `M .claude/settings.json` direkt nach dem Settings-Chore).
+      // Regex statt Spalten-Slice: das `trim()` der git-Hilfe kappt die führende
+      // Statusspalte der ersten Zeile, feste Offsets lügen dann.
+      .filter((l) => !/(^|\s)\.claude\//.test(l));
     if (dirty.length)
       findings.push(`Änderungen an getrackten Dateien: ${dirty.slice(0, 5).join(" | ")}`);
   } catch {
