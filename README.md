@@ -32,6 +32,7 @@ spec-sync report [--run <id>]
 spec-sync doctor
 spec-sync budget [--session <id|path>] [--label <text>]
 spec-sync handover [--note <text>] [--reason <budget|done|rot-2x|frage-offen|pause|unerwartet>]
+spec-sync repin [--ids <a,b>] [--server <url>]
 ```
 
 `stdout` carries exactly one JSON object (`--human` renders text instead). Full command
@@ -70,7 +71,15 @@ Konfiguriert werden sie über die Dateien des konsumierenden Repos
 
 ## Requirements
 
-Node ≥ 22, `git`, and `gh` on the `PATH`. Some commands read a spec server over HTTP.
+Node ≥ 22, `git`, and `gh` on the `PATH`. Some commands read a spec server over HTTP; its
+endpoint comes from the `spec` entry in `.mcp.json` (`--server` overrides, both accept the
+full endpoint or the base URL).
+
+**Spec-Server-Port während der v2-Umstellung:** `.mcp.json` zeigt auf
+`http://localhost:8788/mcp`. **Finale-Flip → 8787**: sobald v2 den Regelport übernimmt,
+wird dieser Eintrag zurückgestellt. Der Wert steht nur an dieser einen Stelle — die Datei
+ist striktes JSON (`JSON.parse` in `src/commands/repin.ts`), verträgt also keinen Kommentar,
+deshalb steht der Hinweis hier.
 
 ## Licence
 
