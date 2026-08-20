@@ -5,7 +5,9 @@
  * `spec-sync repin [--ids <a,b>] [--server <url>]`
  *
  * The server endpoint comes from the repo's `.mcp.json` (`spec` entry);
- * `--server` overrides. Neither present ⇒ exit 4. The default is a full fetch
+ * `--server` overrides. Neither present ⇒ exit 4. Both are accepted in full
+ * (`http://host:8787/mcp`) or base form — `toBaseUrl` normalizes, because
+ * `callSpecTool` appends `/mcp` itself. The default is a full fetch
  * (`spec_pins` with the config's `project`) and an atomic replace of
  * `spec-pins.json` — only that way do deleted specs disappear from the pin.
  * `--ids` updates only the named entries of an *existing* pin file (the rest
@@ -38,14 +40,15 @@ export async function runRepin(ctx: CommandContext): Promise<CommandResult> {
   const config = ctx.config as Config;
 
   const idsFlag = valueFlag(ctx.args, "--ids");
-  const server = valueFlag(ctx.args, "--server") ?? readMcpServerUrl(ctx.repoRoot);
-  if (server === undefined) {
+  const endpoint = valueFlag(ctx.args, "--server") ?? readMcpServerUrl(ctx.repoRoot);
+  if (endpoint === undefined) {
     throw new ToolkitError(
       "no spec server endpoint — set the `spec` entry in .mcp.json or pass --server",
       EXIT.PRECONDITION,
       { field: "server" },
     );
   }
+  const server = toBaseUrl(endpoint);
 
   const existing = idsFlag === undefined ? undefined : readPinsFile(ctx.repoRoot);
   if (idsFlag !== undefined && existing === undefined) {
@@ -113,6 +116,24 @@ async function fetchPins(project: string, server: string): Promise<Map<string, n
     }
     throw error;
   }
+}
+
+/**
+ * Normalizes a spec-server URL to the **base** form `callSpecTool` expects — it
+ * appends `/mcp` itself.
+ *
+ * Both sources carry the *full* endpoint: `.mcp.json` does by MCP convention
+ * (`"url": "http://localhost:8787/mcp"`), and `--server` does whenever someone
+ * copies that value out of the file. Without this, the request went to
+ * `…/mcp/mcp` — 404, reported as exit 2 "unreachable", which made the
+ * auto-detection useless in every repo (Befund Cockpit-Migration 2026-08-21;
+ * the workaround was passing `--server` in base form by hand).
+ */
+export function toBaseUrl(url: string): string {
+  return url
+    .replace(/\/+$/, "")
+    .replace(/\/mcp$/, "")
+    .replace(/\/+$/, "");
 }
 
 /** The `spec` server entry of `.mcp.json`, or `undefined` when absent/unreadable. */
