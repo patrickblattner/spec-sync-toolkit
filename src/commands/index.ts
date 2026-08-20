@@ -20,6 +20,7 @@ import { reportCommand } from "./report.js";
 import { doctorCommand } from "./doctor.js";
 import { budgetCommand } from "./budget.js";
 import { handoverCommand } from "./handover.js";
+import { repinCommand } from "./repin.js";
 
 export const ALL_COMMANDS: readonly Command[] = [
   gateCommand,
@@ -31,4 +32,5 @@ export const ALL_COMMANDS: readonly Command[] = [
   doctorCommand,
   budgetCommand,
   handoverCommand,
+  repinCommand,
 ];
