@@ -1,16 +1,18 @@
 /**
- * `pack` — the knowledge package a sub-agent starts from (spec §7.3).
+ * `pack` — the knowledge package a sub-agent starts from (spec §7.3,
+ * SST-DESIGN-018).
  *
  * `spec-sync pack <issue> [--profile <gate profile>]`
  *
  * Writes `.spec-sync/ticket-<nr>.md` with the issue, its acceptance criteria,
- * the referenced spec sections **resolved** (each with `unit@version` and its
- * section hash), CodeGraph candidate files, the exact gate command for this
- * ticket, and a warning about file sets shared with other open tickets.
+ * the referenced specs **resolved** (each with `key@rev`), CodeGraph candidate
+ * files, the exact gate command for this ticket, and a warning about file sets
+ * shared with other open tickets.
  *
- * The command resolves; it does not decide. A ticket that names no spec section
- * ends as exit 3 with a machine-readable reason and goes back to the driver —
- * inventing the missing reference is precisely the guess spec §2 forbids.
+ * The command resolves; it does not decide. A ticket that names no spec
+ * reference ends as exit 3 with a machine-readable reason and goes back to the
+ * driver — inventing the missing reference is precisely the guess spec §2
+ * forbids.
  */
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -22,7 +24,7 @@ import { EXIT, ToolkitError } from "../output.js";
 import { checkFlags, positionals, valueFlag } from "../pack/args.js";
 import { defaultTools, failureLine, type Tools } from "../pack/exec.js";
 import { parseSpecReferences } from "../pack/refs.js";
-import { SpecGateway, resolveReferences } from "../pack/spec.js";
+import { resolveKeys } from "../pack/spec.js";
 import {
   extractAcceptance,
   packFileName,
@@ -56,18 +58,24 @@ export async function runPack(ctx: CommandContext, tools: Tools): Promise<Comman
   const issue = fetchIssue(tools, issueNumber);
   const text = [issue.title, issue.body, ...issue.comments].join("\n\n");
 
-  const parsed = parseSpecReferences(text);
-  const gateway = new SpecGateway(tools);
-  const { sections, unresolved } = await resolveReferences(parsed.references, gateway);
-
-  if (sections.length === 0) {
-    throw await noSectionError(issueNumber, parsed.bareUnits, gateway, unresolved.length);
+  const keys = parseSpecReferences(text);
+  if (keys.length === 0) {
+    throw new ToolkitError(
+      `ticket #${issueNumber}: it carries no \`KEY\` spec reference`,
+      EXIT.AMBIGUOUS,
+      { reason: "no-spec-reference" },
+    );
   }
-  for (const reference of unresolved) {
-    notes.push(`unresolved: ${reference.unit} §${reference.section} (${reference.reason})`);
+  const { specs, unknown } = await resolveKeys(keys, tools);
+  if (specs.length === 0) {
+    throw new ToolkitError(
+      `ticket #${issueNumber}: none of its referenced specs (${unknown.join(", ")}) are known to the server`,
+      EXIT.AMBIGUOUS,
+      { reason: "no-spec-reference" },
+    );
   }
-  for (const unit of parsed.bareUnits) {
-    notes.push(`${unit} is mentioned without a section — not packed`);
+  for (const key of unknown) {
+    notes.push(`unresolved: ${key} — not known to the server, not packed`);
   }
 
   const gate = selectGate(config, valueFlag(ctx.args, "--profile"), issueNumber);
@@ -84,7 +92,7 @@ export async function runPack(ctx: CommandContext, tools: Tools): Promise<Comman
       labels: issue.labels,
     },
     acceptance: extractAcceptance(issue.body),
-    sections,
+    specs,
     candidates,
     gate,
     overlaps,
@@ -105,7 +113,7 @@ export async function runPack(ctx: CommandContext, tools: Tools): Promise<Comman
     data: {
       issue: issueNumber,
       pack: relativePath,
-      sections: sections.map((section) => `${section.unit}@${section.version} §${section.slug}`),
+      specs: specs.map((spec) => `${spec.key}@${spec.rev}`),
       candidateFiles: candidates.length,
       overlaps: overlaps.map((overlap) => `#${overlap.issue}: ${overlap.files.length} file(s)`),
       gate: gate.command,
@@ -175,39 +183,6 @@ function fetchIssue(tools: Tools, issue: number): FetchedIssue {
       comment.body === undefined ? [] : [comment.body],
     ),
   };
-}
-
-/**
- * No section resolved. Which of the two exit-3 reasons applies depends on what
- * the ticket does carry: a unit without a section is a different job for the
- * driver (name the section) than a ticket without any spec reference at all
- * (find out what this ticket implements).
- */
-async function noSectionError(
-  issue: number,
-  bareUnits: string[],
-  gateway: SpecGateway,
-  unresolvedCount: number,
-): Promise<ToolkitError> {
-  const known: string[] = [];
-  for (const unit of bareUnits) {
-    if (await gateway.knows(unit)) known.push(unit);
-  }
-
-  if (known.length > 0) {
-    return new ToolkitError(
-      `ticket #${issue} names ${known.join(", ")} without a section — decide which section applies and re-run`,
-      EXIT.AMBIGUOUS,
-      { reason: "unit-without-section" },
-    );
-  }
-  const detail =
-    unresolvedCount > 0
-      ? "its spec references resolve to no section"
-      : "it carries no `unit §section` reference";
-  return new ToolkitError(`ticket #${issue}: ${detail}`, EXIT.AMBIGUOUS, {
-    reason: "no-spec-reference",
-  });
 }
 
 interface GateCommand {

@@ -3,13 +3,13 @@
  *
  * The pack is written for a sub-agent that starts cold. It therefore leads with
  * what it must do (acceptance criteria, gate command), carries the resolved
- * spec sections in full — that is the whole point: no searching — and ends with
- * a machine block. The machine block is what a later `pack` run reads to name
+ * specs in full — that is the whole point: no searching — and ends with a
+ * machine block. The machine block is what a later `pack` run reads to name
  * file-set overlaps with other open tickets, and what any consumer can use to
- * re-check the section hashes.
+ * re-check whether a spec moved (`key@rev`).
  */
 
-import type { PackedSection } from "./spec.js";
+import type { ResolvedSpec } from "./spec.js";
 
 export interface PackIssue {
   number: number;
@@ -35,7 +35,7 @@ export interface PackInput {
   issue: PackIssue;
   /** The acceptance-criteria block of the issue body, when it has one. */
   acceptance?: string;
-  sections: PackedSection[];
+  specs: ResolvedSpec[];
   candidates: CandidateFile[];
   gate: { command: string; profile: string; phases: { name: string; cmd: string }[] };
   overlaps: Overlap[];
@@ -75,28 +75,15 @@ export function renderPack(input: PackInput): string {
     "",
     issue.body.trim() === "" ? "_empty_" : issue.body.trim(),
     "",
-    "## Spec sections (resolved)",
+    "## Referenced specs (resolved)",
     "",
-    "Each section is the effective view, composed from its overlays. `unit@version` and the",
-    "section hash are the validity check: re-read the section from the spec-mcp server and",
-    "compare the hash before relying on a pack you did not just generate.",
+    "`key@rev` is the validity check: re-read the spec from the spec server and compare its",
+    "revision before relying on a pack you did not just generate.",
     "",
   );
 
-  for (const section of input.sections) {
-    lines.push(
-      `### ${section.unit}@${section.version} §${section.heading}`,
-      "",
-      `- path: \`${section.path}\``,
-      `- hash: \`${section.hash}\``,
-      `- referenced in the ticket as: §${section.requestedAs}`,
-      ...(section.composedFrom === undefined
-        ? []
-        : [`- composed from: ${section.composedFrom.join(" -> ")}`]),
-      "",
-      section.content.trim(),
-      "",
-    );
+  for (const spec of input.specs) {
+    lines.push(`### ${spec.key}@${spec.rev}`, "", spec.content.trim(), "");
   }
 
   lines.push("## Candidate files (CodeGraph impact)", "");
@@ -151,7 +138,7 @@ interface MachineBlock {
   issue: number;
   generatedAt: string;
   gate: string;
-  sections: { unit: string; version: string; path: string; hash: string }[];
+  specs: { key: string; rev: number }[];
   files: string[];
 }
 
@@ -160,12 +147,7 @@ function machineBlock(input: PackInput): MachineBlock {
     issue: input.issue.number,
     generatedAt: input.generatedAt,
     gate: input.gate.command,
-    sections: input.sections.map((section) => ({
-      unit: section.unit,
-      version: section.version,
-      path: section.path,
-      hash: section.hash,
-    })),
+    specs: input.specs.map((spec) => ({ key: spec.key, rev: spec.rev })),
     files: input.candidates.map((candidate) => candidate.path),
   };
 }
@@ -188,7 +170,7 @@ export function readMachineBlock(markdown: string): MachineBlock | undefined {
       issue: parsed.issue,
       generatedAt: typeof parsed.generatedAt === "string" ? parsed.generatedAt : "",
       gate: typeof parsed.gate === "string" ? parsed.gate : "",
-      sections: Array.isArray(parsed.sections) ? parsed.sections : [],
+      specs: Array.isArray(parsed.specs) ? parsed.specs : [],
       files: parsed.files.filter((file): file is string => typeof file === "string"),
     };
   } catch {

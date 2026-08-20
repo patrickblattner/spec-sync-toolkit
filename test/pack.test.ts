@@ -13,9 +13,29 @@ import { runPack } from "../src/commands/pack.js";
  * `codegraph` and the spec-mcp calls all arrive through the `Tools` seam.
  */
 
-const UNIT = "spec-sync-toolkit.build-spec";
-const PACK_HASH = "1".repeat(64);
-const LENSES_HASH = "2".repeat(64);
+const PACK_KEY = "SST-DESIGN-018";
+const LENSES_KEY = "SST-DESIGN-020";
+
+const SPECS: Record<string, { title: string; status: string; rev: number; body: string }> = {
+  [PACK_KEY]: {
+    title: "Befehl: pack",
+    status: "approved",
+    rev: 2,
+    body: "`pack` erzeugt `.spec-sync/ticket-<nr>.md`, das Wissenspaket.",
+  },
+  [LENSES_KEY]: {
+    title: "Befehl: lenses",
+    status: "approved",
+    rev: 2,
+    body: "Leitet das Lens-Set aus dem Diff ab.",
+  },
+};
+
+function blockFor(key: string): string {
+  const spec = SPECS[key];
+  if (spec === undefined) return `Spec "${key}" nicht gefunden.`;
+  return `# ${key} — ${spec.title}\n\nStatus: ${spec.status} · Art: design · rev ${spec.rev} · Projekt: spec-sync-toolkit\n\n${spec.body}`;
+}
 
 const config = {
   project: "spec-sync-toolkit",
@@ -29,25 +49,6 @@ const config = {
   lenses: { acceptance: ["**"] },
 };
 
-const specSections = [
-  {
-    slug: "73-pack",
-    path: "build-spec/7-befehle/73-pack",
-    heading: "7.3 `pack`",
-    level: 3,
-    hash: PACK_HASH,
-    content: "### 7.3 `pack`\n\nErzeugt `.spec-sync/ticket-<nr>.md`, das Wissenspaket.",
-  },
-  {
-    slug: "75-lenses",
-    path: "build-spec/7-befehle/75-lenses",
-    heading: "7.5 `lenses`",
-    level: 3,
-    hash: LENSES_HASH,
-    content: "### 7.5 `lenses`\n\nLeitet das Lens-Set aus dem Diff ab.",
-  },
-];
-
 const issueBody = [
   "## Befund",
   "",
@@ -56,11 +57,11 @@ const issueBody = [
   "## Abnahmekriterien",
   "",
   "1. `spec-sync pack 142` schreibt das Wissenspaket.",
-  "2. Jede Section trägt `unit@version` und den Section-Hash.",
+  "2. Jeder referenzierte Spec trägt `key@rev`.",
   "",
   "## Spec-Bezug",
   "",
-  "`spec-sync-toolkit.build-spec` §7.3 und §7.5.",
+  `\`${PACK_KEY}\` und \`${LENSES_KEY}\`.`,
 ].join("\n");
 
 interface Fakes {
@@ -112,75 +113,12 @@ function fakeTools(fakes: Fakes = {}): Tools {
       throw new Error(`unexpected process: ${file} ${args.join(" ")}`);
     },
 
-    async spec<T>(tool: string, args: Record<string, unknown>): Promise<T> {
-      return specTool(tool, args) as T;
+    async spec(tool: string, args: Record<string, unknown>): Promise<string> {
+      expect(tool).toBe("spec_get_many");
+      const keys = args.keys as string[];
+      return keys.map(blockFor).join("\n\n---\n\n");
     },
   };
-}
-
-/**
- * The spec server as `pack` sees it since `ticket_context` (spec-mcp §21.2):
- * `get_spec` without a body for the outline, then one call for the content.
- * Errors arrive as payloads, not as throws — that is how the MCP client
- * surfaces `isError` responses.
- */
-function specTool(tool: string, args: Record<string, unknown>): unknown {
-  if (tool === "get_spec") {
-    expect(args.body).toBe(false);
-    if (args.id !== UNIT) {
-      return { code: "NOT_FOUND", message: `spec unit "${String(args.id)}" not found` };
-    }
-    return {
-      id: UNIT,
-      version: "0.1.1",
-      frontmatter: { id: UNIT },
-      sections: specSections.map(({ slug, path, heading, level }) => ({
-        slug,
-        path,
-        heading,
-        level,
-      })),
-    };
-  }
-
-  if (tool === "ticket_context") {
-    const requested = args.units as { id: string; sections?: string[] }[];
-    const units = requested.map((entry) => {
-      if (entry.id !== UNIT) {
-        return { code: "NOT_FOUND", message: `spec unit "${entry.id}" not found` };
-      }
-      const wanted = entry.sections;
-      const unknown = (wanted ?? []).find(
-        (slug) => !specSections.some((section) => section.path === slug),
-      );
-      if (unknown !== undefined) {
-        return {
-          code: "SECTION_NOT_FOUND",
-          message: `section "${unknown}" not found in unit "${entry.id}"`,
-        };
-      }
-      return {
-        id: UNIT,
-        version: "0.1.1",
-        hash: "0".repeat(64),
-        effective: false,
-        composed_from: [{ source: "spec-sync-toolkit", id: UNIT, version: "0.1.1" }],
-        sections: specSections
-          .filter((section) => wanted === undefined || wanted.includes(section.path))
-          .map(({ slug, path, heading, hash, content }) => ({
-            slug,
-            path,
-            heading,
-            hash,
-            content,
-          })),
-      };
-    });
-    const failed = units.find((unit) => "code" in unit);
-    return failed ?? { units };
-  }
-
-  throw new Error(`unexpected spec tool: ${tool}`);
 }
 
 function scratchRepo(): string {
@@ -209,8 +147,8 @@ async function expectExit(promise: Promise<unknown>, exit: number): Promise<Tool
   throw new Error("expected the call to throw");
 }
 
-describe("pack (spec §7.3)", () => {
-  it("packs every referenced section resolved, with unit@version and hash", async () => {
+describe("pack (spec §7.3, SST-DESIGN-018)", () => {
+  it("packs every referenced spec resolved, with key@rev", async () => {
     const root = scratchRepo();
     const result = await runPack(
       context(root),
@@ -221,10 +159,8 @@ describe("pack (spec §7.3)", () => {
     expect(result.data?.pack).toBe(".spec-sync/ticket-142.md");
 
     const pack = readFileSync(join(root, ".spec-sync", "ticket-142.md"), "utf8");
-    expect(pack).toContain(`${UNIT}@0.1.1 §7.3 \`pack\``);
-    expect(pack).toContain(`${UNIT}@0.1.1 §7.5 \`lenses\``);
-    expect(pack).toContain(PACK_HASH);
-    expect(pack).toContain(LENSES_HASH);
+    expect(pack).toContain(`### ${PACK_KEY}@2`);
+    expect(pack).toContain(`### ${LENSES_KEY}@2`);
   });
 
   it("carries what a sub-agent would otherwise have to search for", async () => {
@@ -234,13 +170,13 @@ describe("pack (spec §7.3)", () => {
 
     // acceptance criteria, spec content, candidate files, gate command
     expect(pack).toContain("1. `spec-sync pack 142` schreibt das Wissenspaket.");
-    expect(pack).toContain("Erzeugt `.spec-sync/ticket-<nr>.md`, das Wissenspaket.");
+    expect(pack).toContain("`pack` erzeugt `.spec-sync/ticket-<nr>.md`, das Wissenspaket.");
     expect(pack).toContain("`src/commands/pack.ts` — impact: pack");
     expect(pack).toContain("spec-sync gate --profile local");
     expect(pack).toContain("1. lint — `npm run lint`");
   });
 
-  it("exits 3 with reason no-spec-reference when the ticket names no section", async () => {
+  it("exits 3 with reason no-spec-reference when the ticket names no key", async () => {
     const root = scratchRepo();
     const error = await expectExit(
       runPack(
@@ -260,7 +196,7 @@ describe("pack (spec §7.3)", () => {
     expect(existsSync(join(root, ".spec-sync", "ticket-142.md"))).toBe(false);
   });
 
-  it("exits 3 with its own reason when a unit is named without a section", async () => {
+  it("exits 3 with reason no-spec-reference when the referenced key is unknown to the server", async () => {
     const root = scratchRepo();
     const error = await expectExit(
       runPack(
@@ -269,15 +205,15 @@ describe("pack (spec §7.3)", () => {
           issue: {
             number: 142,
             title: "Angleichung",
-            body: "Reine Doku-Angleichung an `spec-sync-toolkit.build-spec`.",
+            body: "Reine Doku-Angleichung an `SST-DESIGN-999`.",
             labels: [],
           },
         }),
       ),
       EXIT.AMBIGUOUS,
     );
-    expect(error.reason).toBe("unit-without-section");
-    expect(error.message).toContain(UNIT);
+    expect(error.reason).toBe("no-spec-reference");
+    expect(error.message).toContain("SST-DESIGN-999");
   });
 
   it("names the overlap with another open ticket's file set", async () => {
@@ -285,14 +221,14 @@ describe("pack (spec §7.3)", () => {
     const tools = fakeTools({
       impact: {
         pack: ["src/commands/pack.ts", "src/cli.ts"],
-        queue: ["src/commands/queue.ts", "src/cli.ts"],
+        lenses: ["src/commands/lenses.ts", "src/cli.ts"],
       },
     });
 
     await runPack(
       {
         ...context(root, ["141"]),
-        // #141 is the queue ticket: same unit, different section, shares src/cli.ts
+        // #141 is the lenses ticket: different key, shares src/cli.ts
       },
       {
         ...tools,
@@ -304,8 +240,8 @@ describe("pack (spec §7.3)", () => {
                 stderr: "",
                 stdout: JSON.stringify({
                   number: 141,
-                  title: "`queue` bauen",
-                  body: "`spec-sync-toolkit.build-spec` §7.5.",
+                  title: "`lenses` bauen",
+                  body: `\`${LENSES_KEY}\`.`,
                   labels: [],
                 }),
               }
