@@ -7,4 +7,4 @@ node_modules/
 .claude/
 .serena/
 package-lock.json
-spec.lock.json
+spec-pins.json

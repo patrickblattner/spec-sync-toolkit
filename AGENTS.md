@@ -5,17 +5,19 @@ easy to break. This file adds only what is specific to working here as an agent.
 
 ## Source of truth
 
-The spec-mcp server at `http://localhost:8787`, project `spec-sync-toolkit`
-(`build-spec`, `cli-not-mcp.adr`). No unit uses `extends`, so `get_spec` / `get_section` are
-enough — read the sections you need, not whole units. The foundation norms come from
-`foundation.dev.process` §Worker-Loop.
+The spec server at the URL in `.mcp.json` (`http://localhost:8788/mcp` during the v2
+transition, back to `8787` after the final flip), project `spec-sync-toolkit`:
+`SST-VISION-001` with its `SST-DESIGN-0xx` leaves and the `SST-ADR-0xx` subtree. Enter
+through `spec_usage`, then `spec_tree`/`spec_search`, then `spec_get`/`spec_get_many` — a
+leaf is small and self-contained, so read the ones you need, never a whole level. The
+foundation norms come from the `PROC-DEV-015` subtree (Worker-Loop).
 
 If the spec does not answer a question: `ask_question` to the architect, note it in the
 ticket, keep working. Do not guess and do not invent a default.
 
 ## Before you touch a command
 
-The output contract (spec §3) is the toolkit's central promise to every caller. A command
+The output contract (`SST-DESIGN-011`) is the toolkit's central promise to every caller. A command
 returns a `CommandResult`; the dispatcher in `src/cli.ts` owns timing, exit code and the
 single `emit()`. If you find yourself wanting to print something, you want `progress()` —
 stderr — or a log file.
@@ -36,6 +38,6 @@ this machine. There is no CI to fall back on; this repo has no remote.
 - Stage named files (`git add src/gate.ts`), never `git add .`; parallel agents share this
   tree.
 - No new dependency without a reason in the report. The narrow dependency set is a decision
-  (spec §10), not an oversight.
+  (`SST-DESIGN-027`), not an oversight.
 - The toolkit never decides on the merits: ticket cut, bug-vs-feature, merge approval and
   review verdicts stay with the model or the owner (ADR, Entscheidung 4).

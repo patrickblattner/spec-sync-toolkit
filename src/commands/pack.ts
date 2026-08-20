@@ -269,7 +269,7 @@ function collectCandidates(
   return [...found.values()];
 }
 
-/** Backticked tokens, in issue order: `src/x.ts`, `loadConfig`, `spec.lock.json`. */
+/** Backticked tokens, in issue order: `src/x.ts`, `loadConfig`, `spec-pins.json`. */
 function backtickedTerms(text: string): string[] {
   const terms: string[] = [];
   for (const match of text.matchAll(/`([^`\n]{2,80})`/gu)) {
