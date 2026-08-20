@@ -37,7 +37,7 @@ function render(over: Partial<Parameters<typeof renderHandover>[0]> = {}): strin
     repoRoot: "/repo",
     now: new Date("2026-07-29T12:00:00Z"),
     mainHead: "abc1234 chore: v0.6.0",
-    lock: { generatedAt: "2026-07-29T10:00:00Z", sources: ["foundation@cca301a"] },
+    pins: { pinnedAt: "2026-07-29T10:00:00.000Z", units: 42 },
     queueHead: [],
     needsPin: 0,
     findings: 0,
@@ -74,12 +74,12 @@ describe("the mandatory fields of §7.9", () => {
     expect(document).toContain("- `main`-HEAD: abc1234 chore: v0.6.0");
   });
 
-  it("names the lock state with generated_at and the source commits", () => {
+  it("names the pins state with the pin time and the entry count", () => {
     const document = render({
-      lock: { generatedAt: "2026-07-29T10:00:00Z", sources: ["foundation@cca301a", "cp@fe7d601"] },
+      pins: { pinnedAt: "2026-07-29T10:00:00.000Z", units: 137 },
     });
-    expect(document).toContain("generated_at: 2026-07-29T10:00:00Z");
-    expect(document).toContain("foundation@cca301a, cp@fe7d601");
+    expect(document).toContain("zuletzt gepinnt: 2026-07-29T10:00:00.000Z");
+    expect(document).toContain("Einträge: 137");
   });
 
   it("renders the queue head, the needsPin count and the findings count", () => {
@@ -128,8 +128,8 @@ describe("empty sets are named, never left out (spec §7.9, M6)", () => {
     expect(lines[index + 2]).toBe("keine");
   });
 
-  it("says so when there is no readable lock", () => {
-    expect(render({ lock: undefined })).toContain("Kein lesbares spec.lock.json");
+  it("says so when there are no readable pins", () => {
+    expect(render({ pins: undefined })).toContain("Kein lesbares spec-pins.json");
   });
 
   it("names an unreadable main HEAD instead of dropping the field", () => {

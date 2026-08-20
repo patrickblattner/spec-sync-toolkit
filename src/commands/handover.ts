@@ -16,7 +16,7 @@
  * rather than as "nothing here".
  */
 
-import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { simpleGit } from "simple-git";
 import type { Command, CommandContext, CommandResult } from "../cli.js";
@@ -30,7 +30,7 @@ import { queueDeps, runQueue, type QueueDeps } from "./queue.js";
 
 export const HANDOVER_FILE = ".spec-sync-handover.md";
 
-const LOCK_FILE = "spec.lock.json";
+const PINS_FILE = "spec-pins.json";
 
 /** Tickets of the queue head the file carries (spec §7.9). */
 const QUEUE_HEAD = 3;
@@ -104,23 +104,18 @@ export function openMerges(events: LedgerEvent[]): { issue: number; at: string }
     .sort((a, b) => a.issue - b.issue);
 }
 
-interface LockState {
-  generatedAt: string;
-  sources: string[];
+interface PinsState {
+  /** `spec-pins.json` carries no timestamp of its own (SST-DESIGN-025) — the file's mtime stands in. */
+  pinnedAt: string;
+  units: number;
 }
 
-function readLock(repoRoot: string): LockState | undefined {
+function readPins(repoRoot: string): PinsState | undefined {
   try {
-    const lock = JSON.parse(readFileSync(join(repoRoot, LOCK_FILE), "utf8")) as {
-      generated_at?: string;
-      sources?: { name?: string; commit?: string }[];
-    };
-    return {
-      generatedAt: lock.generated_at ?? "ohne Zeitstempel",
-      sources: (lock.sources ?? []).map(
-        (source) => `${source.name ?? "?"}@${source.commit ?? "?"}`,
-      ),
-    };
+    const path = join(repoRoot, PINS_FILE);
+    const pins = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    if (typeof pins !== "object" || pins === null || Array.isArray(pins)) return undefined;
+    return { pinnedAt: statSync(path).mtime.toISOString(), units: Object.keys(pins).length };
   } catch {
     return undefined;
   }
@@ -134,7 +129,7 @@ export function renderHandover(input: {
   repoRoot: string;
   now: Date;
   mainHead?: string;
-  lock?: LockState;
+  pins?: PinsState;
   context?: {
     value: number;
     at: string;
@@ -160,19 +155,15 @@ export function renderHandover(input: {
     `- Zeit: ${input.now.toISOString()}`,
     `- \`main\`-HEAD: ${input.mainHead ?? "nicht lesbar"}`,
     "",
-    "## spec.lock.json",
+    "## spec-pins.json",
     "",
   ];
 
-  if (input.lock === undefined) {
-    lines.push(`Kein lesbares ${LOCK_FILE} — Drift ist gegen nichts prüfbar.`);
+  if (input.pins === undefined) {
+    lines.push(`Kein lesbares ${PINS_FILE} — Drift ist gegen nichts prüfbar.`);
   } else {
-    lines.push(`- generated_at: ${input.lock.generatedAt}`);
-    lines.push(
-      input.lock.sources.length === 0
-        ? "- Quellen: keine eingetragen"
-        : `- Quellen: ${input.lock.sources.join(", ")}`,
-    );
+    lines.push(`- zuletzt gepinnt: ${input.pins.pinnedAt}`);
+    lines.push(`- Einträge: ${input.pins.units}`);
   }
 
   lines.push("", "## Kontext", "");
@@ -283,7 +274,7 @@ export async function runHandover(
     repoRoot: ctx.repoRoot,
     now: deps.now(),
     mainHead: await deps.mainHead(),
-    lock: readLock(ctx.repoRoot),
+    pins: readPins(ctx.repoRoot),
     context,
     queueHead,
     needsPin,

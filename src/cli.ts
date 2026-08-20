@@ -73,7 +73,7 @@ registerCommand({
   summary: "Verify config, runtime and output contract without touching the repo",
   needsConfig: true,
   run(ctx) {
-    const { norms, source, pinnedHash } = loadNorms();
+    const { norms, source, pinnedSpecs } = loadNorms();
     return {
       ok: true,
       notes: source === "defaults" ? ["norms come from the built-in defaults (spec §6)"] : [],
@@ -81,7 +81,12 @@ registerCommand({
         project: ctx.config?.project,
         node: process.version,
         repoRoot: ctx.repoRoot,
-        norms: { source, hold: norms.hold, buildLabel: norms.buildLabel, pinnedHash },
+        norms: {
+          source,
+          hold: norms.hold,
+          buildLabel: norms.buildLabel,
+          pinnedSpecs: pinnedSpecs.map((spec) => `${spec.key}@${spec.rev}`),
+        },
       },
     };
   },

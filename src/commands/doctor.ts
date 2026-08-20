@@ -1,14 +1,14 @@
 /**
- * `doctor` — the environment against the norm (spec §7.7).
+ * `doctor` — the environment against the norm (spec §7.7, SST-DESIGN-022).
  *
  * `spec-sync doctor`
  *
  * Six checks, no repairs: the agent types of the effort table exist with a
- * valid `effort:` frontmatter, the skill tables match the spec's, the repo
- * knows the configured labels, `spec.lock.json` is present and schema v3, the
- * pinned norm section still hashes to its pinned value (spec §6), and the pause
- * flag is absent. Findings are reported, never fixed — repairing a drifted norm
- * would decide something the owner has not decided (spec §2).
+ * valid `effort:` frontmatter, the skill table is internally sound, the repo
+ * knows the configured labels, `spec-pins.json` is present, the pinned
+ * `PROC-DEV-015` subtree specs still carry their pinned revision (spec §6),
+ * and the pause flag is absent. Findings are reported, never fixed — repairing
+ * a drifted norm would decide something the owner has not decided (spec §2).
  *
  * Exit 1 on at least one finding.
  */
@@ -20,18 +20,21 @@ import type { Command, CommandContext, CommandResult } from "../cli.js";
 import { loadConfig, type Config } from "../config.js";
 import { readLedger } from "../ledger.js";
 import { createLogDir, protectedLogDirs, writePhaseLog } from "../logs.js";
-import { PINNED_NORM_SECTION, checkNormDrift } from "../norms.js";
+import { checkNormDrift, parsePins } from "../norms.js";
 import { EXIT } from "../output.js";
 import { checkFlags } from "../pack/args.js";
 import { defaultTools, failureLine, type Tools } from "../pack/exec.js";
 import { findOrphans } from "../pack/orphans.js";
+import { readPinsFile } from "../pins.js";
 
 /** Where the norm expects the agent definitions and the skill, below `$HOME`. */
 const AGENTS_DIR = join(".claude", "agents");
 const SKILL_FILE = join(".claude", "skills", "spec-sync", "SKILL.md");
 
-const LOCK_FILE = "spec.lock.json";
-const LOCK_SCHEMA = "spec.lock/v3";
+/** The foundation spec that (used to) carry the effort table (PROC-DEV-042). */
+export const EFFORT_TABLE_KEY = "PROC-DEV-042";
+
+const PINS_FILE = "spec-pins.json";
 const PAUSE_FILE = ".spec-sync-pause";
 
 /** `effort:` values the agent loader accepts (foundation.dev.process §Worker-Loop). */
@@ -72,7 +75,15 @@ export async function runDoctor(ctx: CommandContext, deps: DoctorDeps): Promise<
   } else {
     const specTable = parseEffortTable(specSection);
     if (specTable.length === 0) {
-      add("effort-table", `no effort table in ${PINNED_NORM_SECTION.unit} §Worker-Loop`);
+      // PROC-DEV-042 (the v2 successor of §Worker-Loop's effort table) is
+      // prose, not a table — the cross-check against the foundation source is
+      // not possible in this shape. Fall back to checking the skill's own
+      // table for internal soundness against the installed agent definitions.
+      notes.push(
+        `${EFFORT_TABLE_KEY} carries no parseable effort table — checking the skill against installed agent definitions only`,
+      );
+      const skillTable = readSkillTable(deps.home, add);
+      if (skillTable !== undefined) checkAgentDefinitions(skillTable, deps.home, add);
     } else {
       checkAgentDefinitions(specTable, deps.home, add);
       checkSkillTable(specTable, deps.home, add);
@@ -80,7 +91,7 @@ export async function runDoctor(ctx: CommandContext, deps: DoctorDeps): Promise<
   }
 
   checkLabels(ctx, deps.tools, add, notes);
-  checkLock(ctx.repoRoot, add);
+  checkPins(ctx.repoRoot, add);
   await checkNormHash(deps.tools, add);
   checkPause(ctx.repoRoot, add);
 
@@ -117,18 +128,10 @@ export async function runDoctor(ctx: CommandContext, deps: DoctorDeps): Promise<
 
 type Add = (check: string, detail: string) => void;
 
-/** The pinned norm section — source of the effort table the other checks compare against. */
+/** The spec that (used to) carry the effort table — source the other checks compare against. */
 async function readNormSection(tools: Tools, add: Add): Promise<string | undefined> {
   try {
-    const payload = await tools.spec<{ content?: string }>("get_section", {
-      id: PINNED_NORM_SECTION.unit,
-      heading: PINNED_NORM_SECTION.section,
-    });
-    if (payload.content === undefined) {
-      add("spec-mcp", `${PINNED_NORM_SECTION.unit} §Worker-Loop returned no content`);
-      return undefined;
-    }
-    return payload.content;
+    return await tools.spec("spec_get", { key: EFFORT_TABLE_KEY });
   } catch (error) {
     add("spec-mcp", error instanceof Error ? error.message : String(error));
     return undefined;
@@ -204,19 +207,26 @@ function checkAgentDefinitions(table: EffortRow[], home: string, add: Add): void
   }
 }
 
-/** The skill's table against the spec's — the drift the ADR names by example. */
-function checkSkillTable(specTable: EffortRow[], home: string, add: Add): void {
+/** Reads the skill's own effort table. `undefined` (with a finding) when it has none. */
+function readSkillTable(home: string, add: Add): EffortRow[] | undefined {
   const path = join(home, SKILL_FILE);
   if (!existsSync(path)) {
     add("skill-table", `no ~/${SKILL_FILE}`);
-    return;
+    return undefined;
   }
 
   const skillTable = parseEffortTable(readFileSync(path, "utf8"));
   if (skillTable.length === 0) {
     add("skill-table", `~/${SKILL_FILE} carries no effort table`);
-    return;
+    return undefined;
   }
+  return skillTable;
+}
+
+/** The skill's table against the spec's — the drift the ADR names by example. */
+function checkSkillTable(specTable: EffortRow[], home: string, add: Add): void {
+  const skillTable = readSkillTable(home, add);
+  if (skillTable === undefined) return;
 
   const inSkill = new Map(skillTable.map((row) => [row.agent, row.effort]));
   const inSpec = new Map(specTable.map((row) => [row.agent, row.effort]));
@@ -269,40 +279,31 @@ function checkLabels(ctx: CommandContext, tools: Tools, add: Add, notes: string[
     notes.push(`${Object.keys(config.labels).length} configured labels exist`);
 }
 
-function checkLock(repoRoot: string, add: Add): void {
-  const path = join(repoRoot, LOCK_FILE);
-  if (!existsSync(path)) {
-    add("lock", `no ${LOCK_FILE} — pin it with get_manifest before deriving tickets`);
+function checkPins(repoRoot: string, add: Add): void {
+  if (!existsSync(join(repoRoot, PINS_FILE))) {
+    add("pins", `no ${PINS_FILE} — pin it with \`spec-sync repin\` before deriving tickets`);
     return;
   }
-  try {
-    const schema = (JSON.parse(readFileSync(path, "utf8")) as { schema?: string }).schema;
-    if (schema !== LOCK_SCHEMA) {
-      add("lock", `${LOCK_FILE} is ${schema ?? "unversioned"}, not ${LOCK_SCHEMA}`);
-    }
-  } catch (error) {
-    add("lock", `${LOCK_FILE} is not valid JSON: ${error instanceof Error ? error.message : ""}`);
+  if (readPinsFile(repoRoot) === undefined) {
+    add("pins", `${PINS_FILE} is not a valid {key: rev} map`);
   }
 }
 
-/** Has the pinned norm section moved? Transitional state, spec §6. */
+/** Has any pinned `PROC-DEV-015` subtree spec moved? Transitional state, spec §6. */
 async function checkNormHash(tools: Tools, add: Add): Promise<void> {
-  const drift = await checkNormDrift(async (unit, section) => {
-    // The lock manifest, not `ticket_context`: the pinned hash is a lock hash.
-    const payload = await tools.spec<{
-      snapshot?: { entries?: { id: string; sections?: Record<string, string> }[] };
-    }>("get_manifest", { project: unit.split(".")[0] ?? unit });
-    return payload.snapshot?.entries?.find((entry) => entry.id === unit)?.sections?.[section];
+  const drift = await checkNormDrift(async (project) => {
+    const text = await tools.spec("spec_pins", { project });
+    return parsePins(text);
   });
 
   if (drift.unreachable !== undefined) {
     add("norm-hash", `not verifiable: ${drift.unreachable}`);
     return;
   }
-  if (drift.drifted) {
+  for (const moved of drift.moved) {
     add(
       "norm-hash",
-      `${drift.unit} §Worker-Loop moved to ${drift.currentHash?.slice(0, 12)}… — the defaults in src/norms.ts may be stale`,
+      `${moved.key} moved to rev ${moved.currentRev} (pinned rev ${moved.pinnedRev}) — the defaults in src/norms.ts may be stale`,
     );
   }
 }

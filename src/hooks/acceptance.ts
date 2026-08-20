@@ -38,8 +38,8 @@ const STOP_PROMPT =
   "Schlussnachricht. ERLAUBE, wenn die Nachricht kein Durchlauf-Ende behauptet (Zwischenstand, " +
   "Rückfrage, Owner-Dialog) — normale Turns nie blocken. ERLAUBE ein behauptetes Durchlauf-Ende bei " +
   "einem der drei belegten Ausgänge: (1) Handover geschrieben (npx spec-sync handover, beliebiger " +
-  "--reason) — immer erlauben, nie nach einem Handover blocken. (2) In-sync-Ende: check_drift ohne " +
-  "Änderungen UND leerer Ticket-Sweep (auto-audit, type: bug, spec-sync) sind konkret genannt. " +
+  "--reason) — immer erlauben, nie nach einem Handover blocken. (2) In-sync-Ende: nachgewiesener Pin-Drift " +
+  "ohne Änderungen UND leerer Ticket-Sweep (auto-audit, type: bug, spec-sync) sind konkret genannt. " +
   "(3) Durchlauf-DoD: Zielabgleich nennt Drift→Tickets→Merges, die Zuordnung der offenen Issues, die " +
   "Section-Zuordnung und die leere Werkbank (keine Worktrees/Ticket-Branches, Agents gestoppt, Merges " +
   "gepusht). BLOCKE nur, wenn ein Durchlauf-Ende oder Zielabgleich behauptet wird und ein Beleg fehlt " +

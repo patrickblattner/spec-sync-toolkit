@@ -3,8 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { CommandContext } from "../src/cli.js";
-import { parseEffortTable, runDoctor, type DoctorDeps } from "../src/commands/doctor.js";
-import { PINNED_NORM_SECTION } from "../src/norms.js";
+import {
+  EFFORT_TABLE_KEY,
+  parseEffortTable,
+  runDoctor,
+  type DoctorDeps,
+} from "../src/commands/doctor.js";
+import { PINNED_NORM_SPECS } from "../src/norms.js";
 import { EXIT, ToolkitError } from "../src/output.js";
 import type { RunResult, Tools } from "../src/pack/exec.js";
 import { introducedMarkers, ticketOfBranch } from "../src/pack/orphans.js";
@@ -71,7 +76,8 @@ function fakeHome(env: Env = {}): string {
 }
 
 interface RepoOptions {
-  lockSchema?: string | null;
+  /** `null` omits the file; a string writes it verbatim (to simulate invalid JSON). */
+  pins?: Record<string, number> | string | null;
   paused?: boolean;
   omitConfig?: boolean;
   /** Ledger lines, written verbatim to `.spec-sync/ledger.jsonl`. */
@@ -95,11 +101,12 @@ function fakeRepo(options: RepoOptions = {}): string {
   if (options.omitConfig !== true) {
     writeFileSync(join(root, "spec-sync.config.json"), JSON.stringify(config));
   }
-  if (options.lockSchema !== null) {
-    writeFileSync(
-      join(root, "spec.lock.json"),
-      JSON.stringify({ schema: options.lockSchema ?? "spec.lock/v3", entries: [] }),
-    );
+  if (options.pins !== null) {
+    const content =
+      typeof options.pins === "string"
+        ? options.pins
+        : JSON.stringify(options.pins ?? { "GL-SEC-001": 3 });
+    writeFileSync(join(root, "spec-pins.json"), content);
   }
   if (options.paused === true) writeFileSync(join(root, ".spec-sync-pause"), "");
   if (options.ledger !== undefined) {
@@ -115,7 +122,8 @@ function fakeRepo(options: RepoOptions = {}): string {
 interface SpecFakes {
   section?: string;
   sectionFails?: boolean;
-  currentHash?: string;
+  /** Overrides of `PINNED_NORM_SPECS`' revisions in the fake `spec_pins` response. */
+  currentRevs?: Record<string, number>;
   labels?: string[];
   labelsFail?: boolean;
   /** Leftover checks (§7.7). Absent means: no worktrees, no branches, nothing to find. */
@@ -182,27 +190,18 @@ function fakeTools(fakes: SpecFakes = {}): Tools {
       const labels = fakes.labels ?? Object.values(config.labels);
       return ok(JSON.stringify(labels.map((name) => ({ name }))));
     },
-    async spec<T>(tool: string, args: Record<string, unknown>): Promise<T> {
-      if (tool === "get_section") {
+    async spec(tool: string, args: Record<string, unknown>): Promise<string> {
+      if (tool === "spec_get") {
         if (fakes.sectionFails === true)
           throw new Error("spec-mcp unreachable at http://localhost:8787");
-        expect(args.id).toBe(PINNED_NORM_SECTION.unit);
-        return { content: fakes.section ?? normSection() } as T;
+        expect(args.key).toBe(EFFORT_TABLE_KEY);
+        return fakes.section ?? normSection();
       }
-      if (tool === "get_manifest") {
-        return {
-          snapshot: {
-            entries: [
-              {
-                id: PINNED_NORM_SECTION.unit,
-                version: PINNED_NORM_SECTION.version,
-                sections: {
-                  [PINNED_NORM_SECTION.section]: fakes.currentHash ?? PINNED_NORM_SECTION.hash,
-                },
-              },
-            ],
-          },
-        } as T;
+      if (tool === "spec_pins") {
+        expect(args.project).toBe("foundation");
+        return PINNED_NORM_SPECS.map(
+          (spec) => `${spec.key}=${fakes.currentRevs?.[spec.key] ?? spec.rev}`,
+        ).join("\n");
       }
       throw new Error(`unexpected spec tool: ${tool}`);
     },
@@ -297,28 +296,39 @@ describe("doctor (spec §7.7)", () => {
     expect(findings).toContain('hold label "owner-hold" does not exist here');
   });
 
-  it("reports a missing lock, an old schema and the pause flag", async () => {
+  it("reports missing or invalid pins, and the pause flag", async () => {
     const missing = await runDoctor(
-      context(fakeRepo({ lockSchema: null })),
+      context(fakeRepo({ pins: null })),
       deps(fakeHome(), fakeTools()),
     );
-    expect(findingsOf(missing.data).join(" ")).toContain("lock: no spec.lock.json");
+    expect(findingsOf(missing.data).join(" ")).toContain("pins: no spec-pins.json");
 
-    const old = await runDoctor(
-      context(fakeRepo({ lockSchema: "spec.lock/v2", paused: true })),
+    const invalid = await runDoctor(
+      context(fakeRepo({ pins: "not json", paused: true })),
       deps(fakeHome(), fakeTools()),
     );
-    const findings = findingsOf(old.data).join(" ");
-    expect(findings).toContain("spec.lock.json is spec.lock/v2, not spec.lock/v3");
+    const findings = findingsOf(invalid.data).join(" ");
+    expect(findings).toContain("spec-pins.json is not a valid {key: rev} map");
     expect(findings).toContain(".spec-sync-pause exists");
   });
 
-  it("reports a moved norm hash instead of adjusting the defaults", async () => {
+  it("reports a moved pinned spec instead of adjusting the defaults", async () => {
     const result = await runDoctor(
       context(fakeRepo()),
-      deps(fakeHome(), fakeTools({ currentHash: "a".repeat(64) })),
+      deps(fakeHome(), fakeTools({ currentRevs: { "PROC-DEV-039": 9 } })),
     );
-    expect(findingsOf(result.data).join(" ")).toContain("§Worker-Loop moved to aaaaaaaaaaaa…");
+    expect(findingsOf(result.data).join(" ")).toContain(
+      "PROC-DEV-039 moved to rev 9 (pinned rev 2)",
+    );
+  });
+
+  it("falls back to a skill-only check when PROC-DEV-042 carries no table (prose, not a table)", async () => {
+    const result = await runDoctor(
+      context(fakeRepo()),
+      deps(fakeHome(), fakeTools({ section: "Nur Prosa, keine Tabelle mehr." })),
+    );
+    expect(findingsOf(result.data)).toEqual([]);
+    expect(result.notes?.join(" ")).toContain("carries no parseable effort table");
   });
 
   it("reports an unreachable spec server and skips what depends on it", async () => {

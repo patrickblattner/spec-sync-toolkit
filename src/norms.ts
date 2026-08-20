@@ -2,21 +2,21 @@
  * Norm binding (spec §6, ADR "Entscheidung 3").
  *
  * Sort tiers, label taxonomy, `owner-hold` precedence and the merge model are
- * *not* the toolkit's to define — they come from `foundation.dev.process`
- * §Worker-Loop.
+ * *not* the toolkit's to define — they come from the foundation's
+ * `PROC-DEV-015` subtree (Worker-Loop): `PROC-DEV-039` (sort tiers),
+ * `PROC-DEV-010` (label taxonomy), `PROC-DEV-047` (`owner-hold` precedence),
+ * `PROC-DEV-044` (merge model) — SST-DESIGN-015.
  *
- * Target state: a fenced JSON block inside that section, read over the spec-mcp
- * HTTP API.
- *
- * Transitional state (what this module implements): the defaults live here in
- * code **plus** a pinned section hash. `doctor` reports a moved hash as a
- * finding, which makes the transitional state visible instead of silent. The
- * read path is HTTP — never the local spec files (spec §10).
+ * Target state: the toolkit reads them live over `spec_get`. Transitional
+ * state (what this module implements): the defaults live here in code
+ * **plus** the revision each was transcribed from. `doctor` reports a moved
+ * revision as a finding, which makes the transitional state visible instead
+ * of silent. The read path is HTTP — never local spec files (spec §10).
  */
 
 import { ToolkitError, EXIT } from "./output.js";
 
-/** The norms as of the pinned section. Kept in sync by `doctor`, not by hand. */
+/** The norms as of the pinned revisions. Kept in sync by `doctor`, not by hand. */
 export interface Norms {
   sortTiers: string[];
   hold: string;
@@ -30,7 +30,7 @@ export interface Norms {
   mergeModel: string;
 }
 
-/** Defaults verbatim from spec §6. */
+/** Defaults verbatim from the specs listed in `PINNED_NORM_SPECS`. */
 export const NORM_DEFAULTS: Norms = {
   sortTiers: ["auto-audit", "type: bug", "started-first", "phase-asc", "issue-number-asc"],
   hold: "owner-hold",
@@ -39,18 +39,27 @@ export const NORM_DEFAULTS: Norms = {
   mergeModel: "local-squash-single-push",
 };
 
-/**
- * The section the defaults were transcribed from, pinned by hash. A moved hash
- * means the norm changed and the defaults above may be stale.
- */
-export const PINNED_NORM_SECTION = {
-  unit: "foundation.dev.process",
-  version: "2.15.0",
-  section: "entwicklungs-workflow-tickets-backlog-commits-specs/worker-loop-spec-sync",
-  hash: "98aa5cdffce93ddd535eefc7a9a2d6165d0aab7d5947e5818ab9a05e2cc29bbe",
-} as const;
+export interface PinnedNormSpec {
+  key: string;
+  rev: number;
+}
 
-/** Default base URL of the spec-mcp server. */
+/**
+ * The foundation specs `NORM_DEFAULTS` was transcribed from, pinned by
+ * revision (SST-DESIGN-015). A moved revision means the norm changed and the
+ * defaults above may be stale.
+ */
+export const PINNED_NORM_SPECS: readonly PinnedNormSpec[] = [
+  { key: "PROC-DEV-039", rev: 2 }, // Sortierstufen (1)-(4) & Wegbereiter-Erbung
+  { key: "PROC-DEV-010", rev: 3 }, // Ticket-Tracking & Label-Taxonomie
+  { key: "PROC-DEV-047", rev: 2 }, // Betriebsprofil: Autonomie, Label-Semantik, owner-hold
+  { key: "PROC-DEV-044", rev: 3 }, // Ticket-Abschluss: Merge-Modell & Aufräumen
+];
+
+/** The project the pinned norm specs live in — always `foundation` (SST-DESIGN-015). */
+export const PINNED_NORM_PROJECT = "foundation";
+
+/** Default base URL of the spec server. */
 export const SPEC_MCP_URL = "http://localhost:8787";
 
 /** Where the effective norms came from. Only "defaults" exists today (§6). */
@@ -59,7 +68,7 @@ export type NormSource = "defaults" | "spec";
 export interface LoadedNorms {
   norms: Norms;
   source: NormSource;
-  pinnedHash: string;
+  pinnedSpecs: readonly PinnedNormSpec[];
 }
 
 /** The effective norms for this run. Transitional: always the code defaults. */
@@ -67,75 +76,90 @@ export function loadNorms(): LoadedNorms {
   return {
     norms: { ...NORM_DEFAULTS, sortTiers: [...NORM_DEFAULTS.sortTiers] },
     source: "defaults",
-    pinnedHash: PINNED_NORM_SECTION.hash,
+    pinnedSpecs: PINNED_NORM_SPECS,
   };
 }
 
 export interface NormDrift {
-  unit: string;
-  section: string;
-  pinnedHash: string;
-  currentHash?: string;
-  /** true when the current hash is known and differs from the pinned one. */
+  /** Pinned specs whose current revision no longer matches the pinned one. */
+  moved: { key: string; pinnedRev: number; currentRev: number }[];
+  /** true once at least one pinned spec moved. */
   drifted: boolean;
-  /** Set when the current hash could not be determined (server down, unknown id). */
+  /** Set when the current revisions could not be determined (server down). */
   unreachable?: string;
 }
 
-/** Reads the current section hash of the pinned norm section. */
-export type SectionHashReader = (unit: string, section: string) => Promise<string | undefined>;
+/** Reads `{key: rev}` for every spec of one project. `undefined` when unreadable. */
+export type PinsReader = (project: string) => Promise<Map<string, number> | undefined>;
 
 /**
- * Compares the pinned section hash against the server's current one — the
- * finding `doctor` reports (spec §7.7). An unreachable server is reported as
- * `unreachable`, not as drift: absence of an answer is not a changed norm.
+ * Compares the pinned revisions against the server's current ones — the
+ * finding `doctor` reports (spec §6, SST-DESIGN-022). An unreachable server is
+ * reported as `unreachable`, not as drift: absence of an answer is not a
+ * changed norm.
  */
-export async function checkNormDrift(
-  read: SectionHashReader = readSectionHashOverHttp,
-): Promise<NormDrift> {
-  const base: NormDrift = {
-    unit: PINNED_NORM_SECTION.unit,
-    section: PINNED_NORM_SECTION.section,
-    pinnedHash: PINNED_NORM_SECTION.hash,
-    drifted: false,
-  };
-
-  let currentHash: string | undefined;
+export async function checkNormDrift(read: PinsReader = readPinsOverHttp): Promise<NormDrift> {
+  let pins: Map<string, number> | undefined;
   try {
-    currentHash = await read(PINNED_NORM_SECTION.unit, PINNED_NORM_SECTION.section);
+    pins = await read(PINNED_NORM_PROJECT);
   } catch (error) {
-    return { ...base, unreachable: error instanceof Error ? error.message : String(error) };
+    return {
+      moved: [],
+      drifted: false,
+      unreachable: error instanceof Error ? error.message : String(error),
+    };
   }
 
-  if (currentHash === undefined) {
-    return { ...base, unreachable: `section not found: ${PINNED_NORM_SECTION.section}` };
+  if (pins === undefined) {
+    return {
+      moved: [],
+      drifted: false,
+      unreachable: `spec_pins returned nothing for ${PINNED_NORM_PROJECT}`,
+    };
   }
-  return { ...base, currentHash, drifted: currentHash !== PINNED_NORM_SECTION.hash };
+
+  const moved = PINNED_NORM_SPECS.flatMap(({ key, rev }) => {
+    const current = pins.get(key);
+    if (current === undefined || current === rev) return [];
+    return [{ key, pinnedRev: rev, currentRev: current }];
+  });
+  return { moved, drifted: moved.length > 0 };
 }
 
-/**
- * The HTTP read path (spec §10). `get_manifest` returns a spec.lock/v3 snapshot
- * whose entries carry per-section subtree hashes — the one value we need.
- */
-async function readSectionHashOverHttp(unit: string, section: string): Promise<string | undefined> {
-  const project = unit.split(".")[0] ?? unit;
-  const snapshot = await callSpecTool<{
-    snapshot?: { entries?: { id: string; sections?: Record<string, string> }[] };
-  }>("get_manifest", { project });
-  const entry = snapshot.snapshot?.entries?.find((e) => e.id === unit);
-  return entry?.sections?.[section];
+async function readPinsOverHttp(project: string): Promise<Map<string, number> | undefined> {
+  const text = await callSpecTool("spec_pins", { project });
+  return parsePins(text);
+}
+
+/** Parses a `spec_pins` response: one `KEY=rev` pair per line (SMCP-DESIGN-012). */
+export function parsePins(text: string): Map<string, number> {
+  const pins = new Map<string, number>();
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed === "") continue;
+    const eq = trimmed.indexOf("=");
+    if (eq === -1) continue;
+    const key = trimmed.slice(0, eq).trim();
+    const rev = Number.parseInt(trimmed.slice(eq + 1).trim(), 10);
+    if (key !== "" && Number.isFinite(rev)) pins.set(key, rev);
+  }
+  return pins;
 }
 
 /**
  * Minimal MCP client over streamable HTTP: initialize, then one `tools/call`.
  * Deliberately hand-rolled — the toolkit stays free of an SDK dependency
  * (spec §10, dependencies kept narrow).
+ *
+ * The spec server answers every tool in Markdown text, never nested JSON
+ * (spec-server-v2 Bauplan §3) — this returns that text verbatim; callers parse
+ * what they need (a `KEY=rev` map, a spec block, …).
  */
-export async function callSpecTool<T>(
+export async function callSpecTool(
   name: string,
   args: Record<string, unknown>,
   baseUrl: string = SPEC_MCP_URL,
-): Promise<T> {
+): Promise<string> {
   const endpoint = `${baseUrl.replace(/\/$/, "")}/mcp`;
   const headers: Record<string, string> = {
     "content-type": "application/json",
@@ -167,9 +191,15 @@ export async function callSpecTool<T>(
   if (typeof text !== "string") {
     throw new ToolkitError(`spec-mcp returned no content for ${name}`, EXIT.PRECONDITION);
   }
-  return JSON.parse(text) as T;
+  return text;
 }
 
+/**
+ * `reason: "unreachable"` marks the network layer specifically (connection
+ * refused, non-2xx handshake) — the class `repin` maps to exit 2
+ * (SST-DESIGN-025), as opposed to a well-formed JSON-RPC error, which stays
+ * exit 4 like any other violated precondition.
+ */
 async function post(
   endpoint: string,
   headers: Record<string, string>,
@@ -181,12 +211,14 @@ async function post(
   } catch (error) {
     throw new ToolkitError(`spec-mcp unreachable at ${endpoint}`, EXIT.PRECONDITION, {
       cause: error,
+      reason: "unreachable",
     });
   }
   if (!response.ok) {
     throw new ToolkitError(
       `spec-mcp answered ${response.status} at ${endpoint}`,
       EXIT.PRECONDITION,
+      { reason: "unreachable" },
     );
   }
   return response;

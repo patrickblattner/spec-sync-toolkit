@@ -22,8 +22,12 @@ export interface RunResult {
 export interface Tools {
   /** Runs a binary in the repo root and captures its output. Never throws. */
   run(file: string, args: string[]): RunResult;
-  /** One spec-mcp tool call over HTTP. Throws `ToolkitError` (exit 4) if unreachable. */
-  spec<T>(tool: string, args: Record<string, unknown>): Promise<T>;
+  /**
+   * One spec-mcp tool call over HTTP, answered as Markdown text (spec-server-v2
+   * Bauplan §3 — never nested JSON). Throws `ToolkitError` (exit 4) if
+   * unreachable.
+   */
+  spec(tool: string, args: Record<string, unknown>): Promise<string>;
 }
 
 export function defaultTools(repoRoot: string): Tools {
