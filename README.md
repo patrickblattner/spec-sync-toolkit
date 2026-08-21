@@ -35,6 +35,10 @@ spec-sync handover [--note <text>] [--reason <budget|done|rot-2x|frage-offen|pau
 spec-sync repin [--ids <a,b>] [--server <url>]
 ```
 
+`--reason budget` ist an die Messung gebunden: es wird nur geschrieben, wenn der jüngste
+`context`-Stand des Ledgers mindestens 75 % des konfigurierten Kontextbudgets erreicht —
+sonst schreibt `handover` nichts und endet mit Exit 1 (SST-DESIGN-024 rev 3, PROC-DEV-037).
+
 `stdout` carries exactly one JSON object (`--human` renders text instead). Full command
 output goes to `.spec-sync/logs/<timestamp>/<phase>.log`; the response carries only the exit
 code, the first relevant error and that path.

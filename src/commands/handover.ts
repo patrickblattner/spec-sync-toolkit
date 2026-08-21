@@ -53,6 +53,13 @@ export const HANDOVER_REASONS = [
 
 export type HandoverReason = (typeof HANDOVER_REASONS)[number];
 
+/**
+ * `--reason budget` is bound to the measurement (SST-DESIGN-024 rev 3): the
+ * same threshold at which the observer harness attests the handover
+ * (PROC-DEV-037). Below it, the reason is refused rather than trusted.
+ */
+export const BUDGET_REASON_MIN_PERCENT = 75;
+
 export interface HandoverOptions {
   note?: string;
   reason?: HandoverReason;
@@ -269,6 +276,17 @@ export async function runHandover(
             contextIncrements(events),
           ),
         };
+
+  if (options.reason === "budget") {
+    const min = Math.round((config.contextBudget * BUDGET_REASON_MIN_PERCENT) / 100);
+    if (context === undefined || context.value < min) {
+      throw new ToolkitError(
+        `--reason budget verweigert — Kontextmessung ${context?.value ?? "fehlt"} Tokens < ${min} (${BUDGET_REASON_MIN_PERCENT} % von ${config.contextBudget}); Alternativen: --reason frage-offen (mit Frage-ID in --note) oder Handover ohne --reason (nicht baubare Queue ist keine Grenze, PROC-DEV-035).`,
+        EXIT.FAILED,
+        { field: "--reason" },
+      );
+    }
+  }
 
   const document = renderHandover({
     repoRoot: ctx.repoRoot,

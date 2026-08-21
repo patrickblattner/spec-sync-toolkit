@@ -270,6 +270,7 @@ describe("the handover command end to end", () => {
 describe("the machine-readable stop reason (spec §7.9, M6)", () => {
   it("writes `reason: budget` as the very first line", async () => {
     const root = repo();
+    appendEvent(root, { type: "context", context: 700_000 });
     await runHandover(ctx(root), CONFIG, deps(), { reason: "budget" });
 
     const document = readFileSync(join(root, HANDOVER_FILE), "utf8");
@@ -296,5 +297,64 @@ describe("the machine-readable stop reason (spec §7.9, M6)", () => {
       handoverCommand.run({ ...ctx(root), args: ["--reason", "quatsch"] }),
     ).rejects.toThrow(ToolkitError);
     expect(existsSync(join(root, HANDOVER_FILE))).toBe(false);
+  });
+});
+
+describe("`--reason budget` bound to the measurement (SST-DESIGN-024 rev 3)", () => {
+  async function caught(root: string, options: Parameters<typeof runHandover>[3]): Promise<ToolkitError> {
+    try {
+      await runHandover(ctx(root), CONFIG, deps(), options);
+    } catch (error) {
+      if (error instanceof ToolkitError) return error;
+      throw error;
+    }
+    throw new Error("expected a ToolkitError, none was thrown");
+  }
+
+  it("refuses below 75 % of the context budget with exit 1 and writes no file", async () => {
+    const root = repo();
+    appendEvent(root, { type: "context", context: 599_999 }); // one under 75 % of 800_000
+
+    const error = await caught(root, { reason: "budget" });
+    expect(error.exit).toBe(EXIT.FAILED);
+    expect(error.field).toBe("--reason");
+    expect(error.message).toContain("599999");
+    expect(error.message).toContain("600000");
+    expect(error.message).toContain("frage-offen");
+    expect(error.message).toContain("Handover ohne --reason");
+    expect(existsSync(join(root, HANDOVER_FILE))).toBe(false);
+  });
+
+  it("refuses with no context measurement at all", async () => {
+    const root = repo();
+
+    const error = await caught(root, { reason: "budget" });
+    expect(error.exit).toBe(EXIT.FAILED);
+    expect(error.message).toContain("fehlt");
+    expect(existsSync(join(root, HANDOVER_FILE))).toBe(false);
+  });
+
+  it("writes the file when the measurement reaches exactly 75 %", async () => {
+    const root = repo();
+    appendEvent(root, { type: "context", context: 600_000 }); // exactly 75 % of 800_000
+
+    await runHandover(ctx(root), CONFIG, deps(), { reason: "budget" });
+    expect(readFileSync(join(root, HANDOVER_FILE), "utf8").split("\n")[0]).toBe("reason: budget");
+  });
+
+  it("leaves `--reason done` unaffected below the threshold", async () => {
+    const root = repo();
+    appendEvent(root, { type: "context", context: 100_000 });
+
+    await runHandover(ctx(root), CONFIG, deps(), { reason: "done" });
+    expect(readFileSync(join(root, HANDOVER_FILE), "utf8").split("\n")[0]).toBe("reason: done");
+  });
+
+  it("leaves a call without `--reason` unaffected", async () => {
+    const root = repo();
+
+    const result = await runHandover(ctx(root), CONFIG, deps(), {});
+    expect(result.ok).toBe(true);
+    expect(existsSync(join(root, HANDOVER_FILE))).toBe(true);
   });
 });
