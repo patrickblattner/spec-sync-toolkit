@@ -9,9 +9,11 @@ import { describe, expect, it } from "vitest";
 
 import type { AcceptanceVerdict } from "../src/hooks/lib.js";
 import {
+  ARCHITECT_BUDGET_PERCENT,
   CHECKED_AGENT_TYPES,
   MAX_BLOCKS,
   contextFromTranscript,
+  decideArchitectStop,
   decideStop,
   decideSubagentStop,
   handoverAgeMinutes,
@@ -19,7 +21,7 @@ import {
 } from "../src/hooks/lib.js";
 import { askAcceptance, classify, parseVerdict } from "../src/hooks/acceptance.js";
 import type { LogEntry } from "../src/hooks/acceptance.js";
-import { measureContextPercent, workbenchFindings } from "../src/hooks/io.js";
+import { measureContextPercent, ownerEngaged, workbenchFindings } from "../src/hooks/io.js";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -88,7 +90,8 @@ describe("handoverAgeMinutes", () => {
 // Genau diese vier Fälle stehen unten.
 
 describe("contextFromTranscript", () => {
-  const line = (id: string, usage: Record<string, unknown>) => JSON.stringify({ type: "assistant", message: { id, usage } });
+  const line = (id: string, usage: Record<string, unknown>) =>
+    JSON.stringify({ type: "assistant", message: { id, usage } });
 
   it("nimmt den JÜNGSTEN Eintrag, nicht die Summe", () => {
     const raw = [
@@ -266,7 +269,10 @@ describe("decideStop — hook-weiter Zähler und Budget-Marke", () => {
 });
 
 describe("decideSubagentStop", () => {
-  const blocking = (): AcceptanceVerdict => ({ decision: "block", reason: "Fertig ohne Gate-Beleg" });
+  const blocking = (): AcceptanceVerdict => ({
+    decision: "block",
+    reason: "Fertig ohne Gate-Beleg",
+  });
 
   it("prüft nur bauende und abnehmende Agenten", () => {
     expect(decideSubagentStop({ agentType: "investigate", acceptance: blocking }).stage).toBe(
@@ -351,9 +357,12 @@ describe("classify — Timeout vom Laufzeitfehler getrennt", () => {
 describe("askAcceptance — Verdikt und Protokoll", () => {
   const collect = () => {
     const lines: LogEntry[] = [];
-    return { lines, log: (_cwd: string, entry: LogEntry) => {
-      lines.push(entry);
-    } };
+    return {
+      lines,
+      log: (_cwd: string, entry: LogEntry) => {
+        lines.push(entry);
+      },
+    };
   };
 
   it("fragt gar nicht erst bei leerer Nachricht", () => {
@@ -518,5 +527,88 @@ describe("workbenchFindings — .claude/** ist nie ein Befund", () => {
     const findings = workbenchFindings(dir);
     expect(findings).toHaveLength(1);
     expect(findings[0]).toContain("code.txt");
+  });
+});
+
+// Architekten-Kette (PROC-DEV-020 rev 4 / PROC-DEV-036 rev 5, Owner-Wort 22.08.): eine Stufe bei
+// 75 %, genau einmal, Handover diktiert mit der Messung; Owner-Gespräch erzwingt die Ansage.
+describe("decideArchitectStop", () => {
+  const AT = "2026-08-22T14:00:00.000Z";
+  const base = { budgetTokens: 250_000, measuredAt: AT };
+
+  it("Schwelle ist 75 % — darunter erlaubt, ohne Block", () => {
+    expect(ARCHITECT_BUDGET_PERCENT).toBe(75);
+    expect(decideArchitectStop({ ...base, contextTokens: 187_499 })).toMatchObject({
+      action: "allow",
+      stage: "clean",
+    });
+  });
+
+  it("ab 75 % blockt sie einmal und diktiert das Handover mit der gemessenen Zahl", () => {
+    const d = decideArchitectStop({ ...base, contextTokens: 187_500 });
+    expect(d).toMatchObject({ action: "block", stage: "budget" });
+    expect(d.reason).toContain("reason: budget");
+    expect(d.reason).toContain(`- Stand: 187500 Tokens (gemessen ${AT})`);
+    expect(d.reason).toContain("75 % des Budgets 250000");
+    expect(
+      decideArchitectStop({ ...base, contextTokens: 300_000, budgetAlreadyBlocked: true }),
+    ).toMatchObject({ action: "allow", stage: "clean" });
+  });
+
+  it("Owner-Gespräch erzwingt die Ansage statt des Handovers", () => {
+    const d = decideArchitectStop({ ...base, contextTokens: 200_000, ownerEngaged: true });
+    expect(d).toMatchObject({ action: "block", stage: "budget-owner" });
+    expect(d.reason).toContain("KEIN Handover");
+    expect(d.reason).toContain("/handover");
+    expect(d.reason).not.toContain("- Stand:");
+  });
+
+  it("Pause-Flag und frisches Handover schlagen die Budget-Stufe; ohne Messung kein Block", () => {
+    expect(decideArchitectStop({ ...base, contextTokens: 300_000, paused: true })).toMatchObject({
+      action: "allow",
+      stage: "pause",
+    });
+    expect(
+      decideArchitectStop({ ...base, contextTokens: 300_000, handoverAgeMin: 5 }),
+    ).toMatchObject({ action: "allow", stage: "handover" });
+    expect(decideArchitectStop({ ...base, contextTokens: null })).toMatchObject({
+      action: "allow",
+      stage: "clean",
+    });
+    expect(decideArchitectStop({ contextTokens: 300_000, budgetTokens: null })).toMatchObject({
+      action: "allow",
+      stage: "clean",
+    });
+  });
+});
+
+describe("ownerEngaged", () => {
+  it("liest last_owner_prompt_at aus der Zustandsdatei des worker-harness-Hooks; fehlt sie, false", () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "wh-state-"));
+    const cwd = "/Users/pbl/projects/specs-meta/projects/community-platform";
+    const slug = cwd.replace(/[^A-Za-z0-9]/g, "-");
+    const dir = join(stateDir, "sessions", slug);
+    mkdirSync(dir, { recursive: true });
+    const prev = process.env.WORKER_HARNESS_STATE_DIR;
+    process.env.WORKER_HARNESS_STATE_DIR = stateDir;
+    try {
+      expect(ownerEngaged(cwd, "s1")).toBe(false);
+      writeFileSync(
+        join(dir, "s1.json"),
+        JSON.stringify({ last_prompt_at: "2026-08-22T13:00:00Z" }),
+      );
+      expect(ownerEngaged(cwd, "s1")).toBe(false);
+      writeFileSync(
+        join(dir, "s1.json"),
+        JSON.stringify({
+          last_prompt_at: "2026-08-22T13:00:00Z",
+          last_owner_prompt_at: "2026-08-22T13:00:00Z",
+        }),
+      );
+      expect(ownerEngaged(cwd, "s1")).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.WORKER_HARNESS_STATE_DIR;
+      else process.env.WORKER_HARNESS_STATE_DIR = prev;
+    }
   });
 });

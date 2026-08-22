@@ -41,7 +41,8 @@ export function handoverAgeMinutes({
   mtimeMs?: number;
   now?: number;
 }): number | null {
-  const written = parseHandoverTime(content) ?? (Number.isFinite(mtimeMs) ? (mtimeMs as number) : null);
+  const written =
+    parseHandoverTime(content) ?? (Number.isFinite(mtimeMs) ? (mtimeMs as number) : null);
   return written === null ? null : (now - written) / 60000;
 }
 
@@ -75,7 +76,8 @@ export function contextFromTranscript(raw: unknown): number | null {
     if (seen.has(id)) continue;
     seen.add(id);
     const u = usage as Record<string, unknown>;
-    latest = num(u.input_tokens) + num(u.cache_read_input_tokens) + num(u.cache_creation_input_tokens);
+    latest =
+      num(u.input_tokens) + num(u.cache_read_input_tokens) + num(u.cache_creation_input_tokens);
   }
   return latest;
 }
@@ -86,7 +88,11 @@ function num(value: unknown): number {
 
 /** Kontextstand in Prozent des Budgets; null, wenn eine der beiden Größen fehlt. */
 export function contextPercent(context: number | null, budget: number | null): number | null {
-  if (!Number.isFinite(context as number) || !Number.isFinite(budget as number) || (budget as number) <= 0)
+  if (
+    !Number.isFinite(context as number) ||
+    !Number.isFinite(budget as number) ||
+    (budget as number) <= 0
+  )
     return null;
   return ((context as number) / (budget as number)) * 100;
 }
@@ -277,4 +283,65 @@ export function decideSubagentStop({
     };
 
   return { action: "allow", stage: "clean" };
+}
+
+/**
+ * Die Ventilkette des Architekten-Stop-Hooks (PROC-DEV-020 / PROC-DEV-036, Owner-Wort 22.08.).
+ *
+ * Der Architekt hat keine Werkbank und keinen Abnahme-Prüfer — seine natürliche Grenze ist eine
+ * beantwortete Frage, also das Turn-Ende. Deshalb EINE Stufe bei 75 % (der Schwelle, ab der der
+ * Harness `budget` attestiert), genau einmal je Session. Die Block-Meldung diktiert das Handover
+ * mit der gemessenen Zahl — die Session kennt ihr Fenster nicht, der Hook schon. Läuft ein
+ * Owner-Gespräch (Owner-Eingabe in dieser Session), wird nicht das Handover, sondern die Ansage
+ * erzwungen: der Owner beendet das Gespräch mit `/handover` (PROC-DEV-020 (4), Register #204).
+ */
+export const ARCHITECT_BUDGET_PERCENT = 75;
+
+export function decideArchitectStop({
+  paused = false,
+  handoverAgeMin = null,
+  contextTokens = null,
+  budgetTokens = null,
+  budgetAlreadyBlocked = false,
+  ownerEngaged = false,
+  measuredAt = new Date().toISOString(),
+}: {
+  paused?: boolean;
+  handoverAgeMin?: number | null;
+  contextTokens?: number | null;
+  budgetTokens?: number | null;
+  budgetAlreadyBlocked?: boolean;
+  ownerEngaged?: boolean;
+  measuredAt?: string;
+}): HookDecision {
+  if (paused) return { action: "allow", stage: "pause" };
+
+  if (handoverAgeMin !== null && handoverAgeMin < HANDOVER_FRESH_MIN)
+    return { action: "allow", stage: "handover" };
+
+  const percent = contextPercent(contextTokens, budgetTokens);
+  if (percent === null || percent < ARCHITECT_BUDGET_PERCENT || budgetAlreadyBlocked)
+    return { action: "allow", stage: "clean" };
+
+  const stand = `Kontext bei ${contextTokens} Tokens (${Math.round(percent)} % des Budgets ${budgetTokens}).`;
+  if (ownerEngaged)
+    return {
+      action: "block",
+      stage: "budget-owner",
+      reason:
+        `architect-stop-check: ${stand} Owner-Gespräch läuft (Owner-Eingabe in dieser Session): ` +
+        "KEIN Handover schreiben. Sag dem Owner in einer Zeile „Kontext bei " +
+        `${Math.round(percent)} % — bitte /handover, sobald wir fertig sind“ und beende den Turn.`,
+    };
+  return {
+    action: "block",
+    stage: "budget",
+    reason:
+      `architect-stop-check: ${stand} Schreibe JETZT per Write-Tool \`.spec-sync-handover.md\` ins ` +
+      "Arbeitsverzeichnis: Zeile 1 exakt `reason: budget`, dann 3–5 Zeilen Übergabe (behandelte " +
+      "Fragen-IDs, gesetzte spec_refs, Offenes), dann genau dieser Block:\n" +
+      `## Kontext\n- Stand: ${contextTokens} Tokens (gemessen ${measuredAt})\n` +
+      "Danach den Turn beenden — kein weiterer Werkzeugaufruf. Läuft doch ein Owner-Gespräch: " +
+      "nicht schreiben, sondern ansagen („Kontext bei X % — bitte /handover“).",
+  };
 }

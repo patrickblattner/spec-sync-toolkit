@@ -301,7 +301,10 @@ describe("the machine-readable stop reason (spec §7.9, M6)", () => {
 });
 
 describe("`--reason budget` bound to the measurement (SST-DESIGN-024 rev 3)", () => {
-  async function caught(root: string, options: Parameters<typeof runHandover>[3]): Promise<ToolkitError> {
+  async function caught(
+    root: string,
+    options: Parameters<typeof runHandover>[3],
+  ): Promise<ToolkitError> {
     try {
       await runHandover(ctx(root), CONFIG, deps(), options);
     } catch (error) {

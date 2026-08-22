@@ -11,7 +11,7 @@
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
 import { contextFromTranscript, contextPercent, handoverAgeMinutes } from "./lib.js";
@@ -55,6 +55,36 @@ export function readContextBudget(cwd: string): number | null {
     return typeof budget === "number" && Number.isFinite(budget) && budget > 0 ? budget : null;
   } catch {
     return null;
+  }
+}
+
+/** Kontextstand des Transcripts in Tokens; null, wenn nichts Messbares drinsteht. */
+export function measureContextTokens(transcriptPath: unknown): number | null {
+  if (!transcriptPath) return null;
+  try {
+    return contextFromTranscript(readFileSync(String(transcriptPath), "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Owner-Gespräch in dieser Session? Gelesen aus der Zustandsdatei des worker-harness-Hooks
+ * (bin/session-state.js: `<stateDir>/sessions/<slug(cwd)>/<session_id>.json`, Feld
+ * `last_owner_prompt_at` — nur echte Owner-Eingaben, keine Wrapper). Fehlt die Datei oder das
+ * Feld: kein Gespräch bekannt (false) — die Block-Meldung trägt die Ansage-Regel dann als Hinweis.
+ */
+export function ownerEngaged(cwd: string, sessionId: string): boolean {
+  try {
+    const stateDir =
+      process.env.WORKER_HARNESS_STATE_DIR ?? join(homedir(), ".local", "state", "worker-harness");
+    const slug = cwd.replace(/[^A-Za-z0-9]/g, "-");
+    const raw = readFileSync(join(stateDir, "sessions", slug, `${sessionId}.json`), "utf8");
+    const parsed: unknown = JSON.parse(raw);
+    const at = (parsed as { last_owner_prompt_at?: unknown })?.last_owner_prompt_at;
+    return typeof at === "string" && at !== "";
+  } catch {
+    return false;
   }
 }
 

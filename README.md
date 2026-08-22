@@ -54,13 +54,22 @@ profiles, path globs for review lenses, label names, log retention, context budg
 
 ## Turn-Ende-Hooks (`dist/hooks/`)
 
-Neben der CLI baut das Paket zwei eigenständige Hook-Binaries für Claude Code
+Neben der CLI baut das Paket eigenständige Hook-Binaries für Claude Code
 (Heimat-Umzug aus den Worker-Repos, Entscheid #193, 2026-08-18):
 
 ```bash
-node <toolkit>/dist/hooks/stop-check.js           # Stop-Hook: Ventilkette der Worker-Session
-node <toolkit>/dist/hooks/subagent-stop-check.js  # SubagentStop-Hook: Abschluss-Abnahme der Build-Agenten
+node <toolkit>/dist/hooks/stop-check.js            # Stop-Hook: Ventilkette der Worker-Session
+node <toolkit>/dist/hooks/subagent-stop-check.js   # SubagentStop-Hook: Abschluss-Abnahme der Build-Agenten
+node <toolkit>/dist/hooks/architect-stop-check.js  # Stop-Hook: Budgetgrenze der Architekten-Inbox (75 %, einmal)
 ```
+
+`architect-stop-check` (Owner-Wort 22.08., PROC-DEV-020 rev 4 / PROC-DEV-036 rev 5) ist die
+Architekten-Variante: Pause-Flag → frisches Handover → Budget-Stufe bei **75 %** des
+`contextBudget` aus der `spec-sync.config.json` des Spec-Repos, genau einmal je Session. Keine
+Werkbank, kein Prüfer. Der Block diktiert das Handover mit der gemessenen Zahl (die Session
+kennt ihr Fenster nicht, der Hook schon); läuft ein Owner-Gespräch (Zustandsdatei des
+worker-harness-Hooks `session-state.js`, Feld `last_owner_prompt_at`), erzwingt er die Ansage
+„bitte /handover" statt des Handovers.
 
 Die Worker-Repos registrieren die Hooks per **absolutem Pfad** in ihrer getrackten
 `.claude/settings.json` (dasselbe Muster wie `role-guard.sh`): eine Quelle, ein
