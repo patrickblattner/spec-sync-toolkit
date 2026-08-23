@@ -41,6 +41,33 @@ import type { Command, CommandContext, CommandResult } from "../cli.js";
 /** Log file carrying the measurement condition; underscored so no phase name collides. */
 const MEASUREMENT_LOG = "_measurement";
 
+/**
+ * `reason` of an abort BEFORE the first phase — the machine-readable half of
+ * "this was not an attempt" (PROC-REL-015 rev 4, #11).
+ *
+ * Counting rule, and the loop's stop rule stands on it:
+ *
+ * - A run that never started is **no run**: no classification, no ledger entry,
+ *   no consumed repetition. It is repeated once the precondition holds, and the
+ *   repetition limit binds only runs that HAPPENED.
+ * - A saturated box is the other direction: that run **took place** and counts,
+ *   because saturation is a verdict about the run, not a precondition of it.
+ *   The limit binds per INCIDENT — once the cause of the load is found, fixed
+ *   and recorded in the ticket, the next run is a first run of that ticket.
+ *
+ * Both end in exit 2 and both say "repeat", so the exit code alone cannot tell
+ * them apart. `reason: "no-run"` is what a counting reader goes by.
+ */
+const NO_RUN = "no-run";
+
+/**
+ * An abort before the first phase. Exit 2 like every other unprovable outcome —
+ * not green, blocks the merge — but marked as the non-run it is.
+ */
+function notGateCapable(message: string): ToolkitError {
+  return new ToolkitError(message, EXIT.UNPROVABLE, { reason: NO_RUN });
+}
+
 export interface GateArgs {
   profile: string;
   changed: boolean;
@@ -142,9 +169,8 @@ export async function runGate(
   // it is the same statement as any other unprovable run — not green, blocks the
   // merge, and the answer is to repeat it, here after plugging in (register #67).
   if (environment.readPowerSource() === "battery") {
-    throw new ToolkitError(
+    throw notGateCapable(
       "gate: not a gate-capable environment — the machine runs on battery, where it can sleep mid-suite; plug in and repeat",
-      EXIT.UNPROVABLE,
     );
   }
 

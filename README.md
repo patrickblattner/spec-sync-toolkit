@@ -49,6 +49,14 @@ belong in the consuming repo's `.gitignore`; `spec-sync.config.json` stays versi
 Exit codes: `0` ok · `1` red · `2` unprovable (aborted under foreign load — **not** green) ·
 `3` ambiguous, the caller decides · `4` precondition violated.
 
+Counting gate repetitions (`PROC-REL-015` rev 4): a `gate` that aborts **before its first
+phase** — battery, a working tree without its own install — answers exit 2 with
+`reason: "no-run"` and writes **no ledger event**. It is not a run: no classification, no
+consumed repetition; repeat it once the precondition holds. A run on a **saturated** box is
+the other case — it took place, it is recorded, and it counts. That limit binds **per
+incident, not per ticket**: once the cause of the load is found, fixed and recorded in the
+ticket, the next run is a _first_ run of that ticket.
+
 Everything project-specific lives in one file, `spec-sync.config.json`: gate phases and
 profiles, path globs for review lenses, label names, log retention, context budget.
 

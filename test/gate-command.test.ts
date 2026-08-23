@@ -237,6 +237,40 @@ describe("gate records its run in the ledger (spec §8)", () => {
     expect(ticketMetrics(readLedger(root).events)[0]).toMatchObject({ gateRuns: 1, retries: 1 });
   });
 
+  /**
+   * PROC-REL-015 rev 4 (#11): the two exit-2 cases are counted differently, and
+   * the exit code alone cannot tell them apart.
+   */
+  it("does not count an abort before the first phase — no event, no retry", async () => {
+    const root = makeRepo([{ name: "unit", cmd: "true" }], "merge");
+    const onBattery: Environment = {
+      readPowerSource: () => "battery",
+      holdWakeLock: () => ({ state: "unavailable", release: () => {} }),
+    };
+
+    const error = await runGateWith(
+      context(root, ["--profile", "merge", "--issue", "42"]),
+      onBattery,
+    ).catch((e: unknown) => e);
+
+    expect((error as ToolkitError).exit).toBe(EXIT.UNPROVABLE);
+    expect((error as ToolkitError).reason).toBe("no-run");
+    expect(readLedger(root).events).toEqual([]);
+    expect(ticketMetrics(readLedger(root).events)).toEqual([]);
+  });
+
+  it("counts an unprovable run that took place — it is a run, not a non-run", async () => {
+    const root = makeRepo(
+      [{ name: "unit", cmd: "echo 'Error: read ECONNRESET'; exit 1" }],
+      "merge",
+    );
+    await runGate(root, ["--profile", "merge", "--issue", "42"]);
+
+    const event = latestGate(readLedger(root).events, 42, "merge");
+    expect(event?.exit).toBe(EXIT.UNPROVABLE);
+    expect(ticketMetrics(readLedger(root).events)[0]).toMatchObject({ gateRuns: 1, retries: 1 });
+  });
+
   it("writes nothing without --issue — a run without a ticket belongs to none", async () => {
     const root = makeRepo([{ name: "unit", cmd: "true" }]);
     await runGate(root, ["--profile", "local"]);

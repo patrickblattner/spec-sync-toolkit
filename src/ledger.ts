@@ -88,7 +88,7 @@ export interface TicketMetrics {
   turns: number;
   /** Wall-clock span from the ticket's first to its last event. */
   wallClockMs: number;
-  /** Number of `gate` events recorded for the ticket. */
+  /** Number of `gate` events recorded for the ticket — runs that took place. */
   gateRuns: number;
   /** Number of *red* gate runs — every one of them forced a retry. */
   retries: number;
@@ -236,6 +236,16 @@ export function runIds(events: LedgerEvent[]): string[] {
  * - **gateRuns** — count of `gate` events.
  * - **retries** — count of `gate` events that were not green; each red gate is
  *   one forced repetition.
+ *
+ * Only runs that TOOK PLACE are in here, and that is the counting rule the
+ * loop's stop rule ("twice red on the same ticket") stands on
+ * (PROC-REL-015 rev 4, #11): a gate that aborted before its first phase writes
+ * no event at all — no classification, no consumed repetition — while a run on
+ * a saturated box happened and counts. The repetition limit binds per INCIDENT,
+ * not per ticket: once the cause of the load is found, fixed and recorded in the
+ * ticket, the next run is a FIRST run of that ticket, not a third attempt.
+ * `ticketMetrics` cannot see that boundary; whoever counts against the limit has
+ * to draw it.
  */
 export function ticketMetrics(events: LedgerEvent[]): TicketMetrics[] {
   const byIssue = new Map<number, LedgerEvent[]>();
