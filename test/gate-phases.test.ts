@@ -11,7 +11,14 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { failingFiles, failureMessages, phaseExit, runPhase } from "../src/gate/phases.js";
+import {
+  failingFiles,
+  failureMessages,
+  phaseExit,
+  reportedFailure,
+  runPhase,
+} from "../src/gate/phases.js";
+import { firstError } from "../src/logs.js";
 import { EXIT } from "../src/output.js";
 
 const cwd = (): string => mkdtempSync(join(tmpdir(), "spec-sync-phase-"));
@@ -416,5 +423,70 @@ describe("failingFiles — the distribution that separates a hang from a slow bo
 
   it("reports nothing when the runner names no files, rather than guessing", () => {
     expect(failingFiles("Error: Test timed out in 10000ms.")).toEqual([]);
+  });
+});
+
+/**
+ * `reportedFailure` — the runner's verdict list as the source of `firstError`
+ * (#10). The log scan it replaces believes the first error-shaped line, which in
+ * a suite whose negative-path tests assert on error MESSAGES belongs to a test
+ * that passed.
+ */
+describe("the failing test as the runner reported it (#10)", () => {
+  it("names file, test and assertion from the Failed Tests block", () => {
+    expect(reportedFailure(fixture("vitest-assertion"))).toBe(
+      "FAIL  src/assert.test.ts > adds up\nAssertionError: expected 1 to be 2 // Object.is equality",
+    );
+  });
+
+  it("names the timed-out test, not the runner's advice below it", () => {
+    expect(reportedFailure(fixture("vitest-timeout"))).toBe(
+      "FAIL  src/slow.test.ts > waits for the box\nError: Test timed out in 300ms.",
+    );
+  });
+
+  it("reads playwright's numbered list and drops the frame it draws", () => {
+    expect(reportedFailure(fixture("playwright"))).toBe(
+      "1) e2e/login.spec.js:2:1 › login shows the dashboard\n" +
+        "Error: expect(received).toBe(expected) // Object.is equality",
+    );
+  });
+
+  // The incident (community-platform #497): a PASSING negative-path test writes
+  // an error line early, the real failure sits tens of thousands of lines later.
+  // `firstError` pointed the triage at the passing test — a wrong pointer is
+  // worse than none, because it is trusted.
+  it("skips an error line written by a test that passed", () => {
+    const output = [
+      "[error] general.public_base_url ist nicht gesetzt — die kanonische Basis-URL fehlt",
+      " ✓ server/src/routes/bookingWebhook.test.ts (7 tests) 412ms",
+      ...Array.from({ length: 200 }, (_, i) => ` ✓ server/src/routes/other${i}.test.ts (1 test)`),
+      "⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯",
+      " FAIL  server/src/realtime/webinarSync.test.ts > syncs the roster",
+      "AssertionError: expected 0 to be 3 // Object.is equality",
+    ].join("\n");
+
+    const named = reportedFailure(output);
+    expect(named).toContain("webinarSync.test.ts > syncs the roster");
+    expect(named).toContain("expected 0 to be 3");
+    expect(named).not.toContain("public_base_url");
+    // What the log scan answers on the same output — the reason for the ticket.
+    expect(firstError(output)).toContain("public_base_url");
+  });
+
+  // Phases that report diagnostics and no tests at all, plus the run that died
+  // without a failing test: no verdict list, so the caller is told that the
+  // answer is a log line and not a runner verdict.
+  it.each(["tsc", "eslint", "prettier", "vitest-unhandled-error"])(
+    "reports no failing test for %s",
+    (name) => {
+      expect(reportedFailure(fixture(name))).toBeUndefined();
+    },
+  );
+
+  it("still names the failing test when the runner gives no cause under it", () => {
+    expect(reportedFailure("FAIL  src/a.test.ts > adds up\n")).toBe(
+      "FAIL  src/a.test.ts > adds up",
+    );
   });
 });

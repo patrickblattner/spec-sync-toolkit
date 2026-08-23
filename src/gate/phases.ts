@@ -12,6 +12,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { truncateLine } from "../logs.js";
 import { EXIT, type ExitCode } from "../output.js";
 import { classifyFailures, verdict, type ReportedFailure } from "./saturation.js";
 
@@ -228,6 +229,18 @@ export function isRunnerProse(line: string): boolean {
   return !FAILURE_MESSAGE.test(words[0] ?? "");
 }
 
+/** One line of the output read as a CAUSE — see the four exclusions above. */
+function isFailureCause(line: string): boolean {
+  return (
+    line !== "" &&
+    !FAILURE_HEADER.test(line) &&
+    !RUNNER_NOISE.test(line) &&
+    !FRAME_RUN.test(line) &&
+    !isRunnerProse(line) &&
+    FAILURE_MESSAGE.test(line)
+  );
+}
+
 /**
  * The failing phase's output read as the causes it reported, one per line.
  * Empty means the phase failed without saying anything legible about why.
@@ -236,15 +249,49 @@ export function failureMessages(output: string): string[] {
   return output
     .split("\n")
     .map((line) => line.trim())
-    .filter(
-      (line) =>
-        line !== "" &&
-        !FAILURE_HEADER.test(line) &&
-        !RUNNER_NOISE.test(line) &&
-        !FRAME_RUN.test(line) &&
-        !isRunnerProse(line) &&
-        FAILURE_MESSAGE.test(line),
-    );
+    .filter(isFailureCause);
+}
+
+/**
+ * How a runner LISTS a failing test: vitest's and jest's `FAIL <file> > <test>`
+ * in the "Failed Tests" block, playwright's and mocha's numbered
+ * `1) <file> › <test>`.
+ *
+ * Narrower than `FAILURE_HEADER` on purpose. That one asks "does this line name
+ * something that failed", which every progress bullet does; this one asks "is
+ * this the runner's VERDICT LIST", and only an entry of that list may point the
+ * triage at a test.
+ */
+const REPORTED_FAILURE = /^(?:FAIL(?:ED)?\b|\d+\)\s)/;
+
+/** The frame a runner draws behind a list entry: `1) login.spec.js › … ─────`. */
+const TRAILING_FRAME = /\s*([^\w\s\x20-\x7E])\1{2,}\s*$/u;
+
+/**
+ * The failing TEST as the runner reported it — file, test name and the cause
+ * below it — or `undefined` where the output lists no failing test at all.
+ *
+ * This is the answer to `#10`: `firstError` scans the log for the first
+ * error-shaped line, and in a repo whose negative-path tests assert on error
+ * MESSAGES that line belongs to a test that PASSED. The measured incident
+ * (community-platform #497) pointed the triage at `bookingWebhook.test.ts`,
+ * ~50.000 log lines away from the failure in `webinarSync.test.ts`, and a wrong
+ * pointer is worse than none because it is trusted.
+ *
+ * A phase is an opaque shell command, so there is no reporter to ask (see the
+ * module header): the verdict list the runner prints is the closest thing to
+ * one, and reading only THAT is what separates this from a log grep. Two lines,
+ * because that is what the ticket asks for — the header carries file and test
+ * name, the first cause under it carries the assertion.
+ */
+export function reportedFailure(output: string): string | undefined {
+  const lines = output.split("\n").map((line) => line.trim());
+  const index = lines.findIndex((line) => REPORTED_FAILURE.test(line));
+  if (index === -1) return undefined;
+
+  const header = truncateLine((lines[index] as string).replace(TRAILING_FRAME, ""));
+  const cause = lines.slice(index + 1).find(isFailureCause);
+  return cause === undefined ? header : `${header}\n${truncateLine(cause)}`;
 }
 
 /**

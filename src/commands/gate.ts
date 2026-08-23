@@ -34,7 +34,7 @@ import { phasesOfProfile, type GatePhase } from "../config.js";
 import { acquireGateLock } from "../gate/lock.js";
 import { changedFiles, phaseRuns, DIFF_BASE } from "../gate/changed.js";
 import { MachineProbe, renderMeasurement } from "../gate/machine.js";
-import { phaseExit, runPhase } from "../gate/phases.js";
+import { phaseExit, reportedFailure, runPhase } from "../gate/phases.js";
 import { DEFAULT_ENVIRONMENT, type Environment, type WakeLockState } from "../gate/environment.js";
 import type { Command, CommandContext, CommandResult } from "../cli.js";
 
@@ -277,12 +277,24 @@ async function runPhases({
     );
   }
 
+  // The failing test, taken from the runner's verdict list — and only when it
+  // has none does the answer fall back to the log scan (#10). That fallback is
+  // right for a typecheck or a lint run, which report diagnostics and no tests
+  // at all, and it is a weaker pointer for everything else — so it says so
+  // rather than passing a scanned line off as a runner verdict.
+  const named = reportedFailure(failed.output);
+  if (named === undefined) {
+    notes.push(
+      `${failed.name}: no failing test in the output — firstError is a line of the log, not a runner verdict`,
+    );
+  }
+
   return {
     ok: false,
     exit,
     notes,
     logDir,
-    data: { phases: reports, firstError: firstError(failed.output) },
+    data: { phases: reports, firstError: named ?? firstError(failed.output) },
   };
 }
 

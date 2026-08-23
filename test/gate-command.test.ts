@@ -321,6 +321,27 @@ describe("gate — logs never reach stdout (spec §3)", () => {
     expect(firstError).toMatch(/^Error: expected 1 to be 2/);
     expect(firstError.split("\n").filter((line) => line !== "…").length).toBeLessThanOrEqual(3);
     expect(firstError).not.toContain("noise");
+    // No verdict list in this output, so the answer is a log line — and says so
+    // rather than passing itself off as the runner's verdict (#10).
+    expect(result.notes?.join("\n")).toContain("no failing test in the output");
+  });
+
+  it("carries the failing test the runner reported, not the first error line (#10)", async () => {
+    const root = makeRepo([
+      {
+        name: "unit",
+        cmd:
+          "echo '[error] general.public_base_url ist nicht gesetzt'; " +
+          "echo ' FAIL  src/webinarSync.test.ts > syncs the roster'; " +
+          "echo 'AssertionError: expected 0 to be 3'; exit 1",
+      },
+    ]);
+    const result = await runGate(root);
+
+    expect(result.data?.firstError).toBe(
+      "FAIL  src/webinarSync.test.ts > syncs the roster\nAssertionError: expected 0 to be 3",
+    );
+    expect(result.notes?.join("\n")).not.toContain("no failing test");
   });
 
   it("grows with the number of phases, never with the size of their output (spec §3)", async () => {

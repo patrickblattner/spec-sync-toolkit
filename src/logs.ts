@@ -175,9 +175,20 @@ export function writePhaseLog(
   return relative;
 }
 
+/** The per-line budget of a response line (spec §3): the rest becomes `…`. */
+export function truncateLine(line: string, max = 200): string {
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
+}
+
 /**
  * Reduces command output to the first relevant error for the response
  * (spec §3: at most 3 lines, truncated with `…`).
+ *
+ * This is a LOG SCAN and nothing more — it believes the first line that looks
+ * like an error, which for a suite whose negative-path tests print error
+ * messages on purpose is the wrong line (#10). Where a runner LISTS its failures,
+ * `reportedFailure` in `gate/phases.ts` answers from that list instead; this
+ * stays the answer for everything that reports no failing test at all.
  *
  * "Relevant" means: start at the first line that looks like an error and take
  * the lines that follow. Without such a marker the last non-empty lines are the
@@ -198,7 +209,7 @@ export function firstError(output: string, maxLines = 3): string | undefined {
           .filter((line) => line.trim() !== "")
           .slice(0, maxLines);
 
-  const truncated = selected.map((line) => (line.length > 200 ? `${line.slice(0, 199)}…` : line));
+  const truncated = selected.map((line) => truncateLine(line));
   const omitted =
     start === -1
       ? nonEmpty.length > maxLines
