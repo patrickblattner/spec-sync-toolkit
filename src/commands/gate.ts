@@ -26,6 +26,7 @@
  * no ticket and must not be counted against one.
  */
 
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { EXIT, ToolkitError, progress } from "../output.js";
 import { appendEvent, ledgerPath, readLedger, LEDGER_FILE } from "../ledger.js";
@@ -171,6 +172,21 @@ export async function runGate(
   if (environment.readPowerSource() === "battery") {
     throw notGateCapable(
       "gate: not a gate-capable environment — the machine runs on battery, where it can sleep mid-suite; plug in and repeat",
+    );
+  }
+
+  // The same kind of exclusion, one level down: a fresh worktree does NOT
+  // inherit the main checkout's `node_modules`, and every phase of a Node repo
+  // runs through it. Without this the run dies wherever the first phase happens
+  // to look for its tool — measured in `wt-489` (2026-08-23, #13): `npx` did not
+  // find `spec-sync` in the tree, went to the registry and ended in an E404 that
+  // says nothing about the cause, with no log to look at.
+  if (
+    existsSync(join(ctx.repoRoot, "package.json")) &&
+    !existsSync(join(ctx.repoRoot, "node_modules"))
+  ) {
+    throw notGateCapable(
+      `gate: not a gate-capable working tree — no node_modules in ${ctx.repoRoot}; a worktree does not inherit the main checkout's install, run \`npm install\` in THIS working tree and repeat`,
     );
   }
 

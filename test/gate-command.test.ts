@@ -280,6 +280,46 @@ describe("gate records its run in the ledger (spec §8)", () => {
   });
 });
 
+/**
+ * #13: the case the preflight exists for — a working tree that was never
+ * installed — used to die wherever the first phase looked for its tool. In
+ * `wt-489` that was `npx`, which went to the registry and returned E404 on
+ * `spec-sync`: a message about nothing, and no log to look at.
+ */
+describe("gate — a working tree without its own install (#13)", () => {
+  it("ends in the preflight with exit 2, naming the cause and the way out", async () => {
+    const root = makeRepo([{ name: "unit", cmd: "true" }], "merge");
+    write(root, "package.json", JSON.stringify({ name: "under-test" }));
+
+    const error = await runGate(root, ["--profile", "merge", "--issue", "42"]).catch(
+      (e: unknown) => e,
+    );
+
+    expect(error).toBeInstanceOf(ToolkitError);
+    expect((error as ToolkitError).exit).toBe(EXIT.UNPROVABLE);
+    expect((error as ToolkitError).message).toContain("not a gate-capable working tree");
+    expect((error as ToolkitError).message).toContain("node_modules");
+    expect((error as ToolkitError).message).toContain("npm install");
+    // Nothing was started, and by #11 nothing is counted against the ticket.
+    expect((error as ToolkitError).reason).toBe("no-run");
+    expect(existsSync(join(root, ".spec-sync"))).toBe(false);
+    expect(readLedger(root).events).toEqual([]);
+  });
+
+  it("runs once the working tree carries its own node_modules", async () => {
+    const root = makeRepo([{ name: "unit", cmd: "true" }]);
+    write(root, "package.json", JSON.stringify({ name: "under-test" }));
+    mkdirSync(join(root, "node_modules"), { recursive: true });
+
+    expect((await runGate(root)).ok).toBe(true);
+  });
+
+  it("leaves a repo without a package.json alone — not every gate is a Node repo", async () => {
+    const root = makeRepo([{ name: "unit", cmd: "true" }]);
+    expect((await runGate(root)).ok).toBe(true);
+  });
+});
+
 describe("gate — phase order and the first red", () => {
   it("runs the phases in CONFIG order", async () => {
     const root = makeRepo([
