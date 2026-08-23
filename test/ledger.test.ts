@@ -1,6 +1,7 @@
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   LEDGER_EVENT_TYPES,
@@ -201,5 +202,52 @@ describe("run selection and gate evidence", () => {
     expect(latestGate(events, 1, "merge")?.at).toBe("2026-07-26T11:00:00Z");
     expect(latestGate(events, 1)?.at).toBe("2026-07-26T12:00:00Z");
     expect(latestGate(events, 2, "merge")).toBeUndefined();
+  });
+});
+
+/**
+ * The evidence has to survive the worktree it was earned in (#6): `gate --issue`
+ * runs in a linked worktree, `merge` runs in the main checkout, and
+ * `git worktree remove` takes the worktree's own `.spec-sync/` with it.
+ */
+describe("the ledger of a repository with worktrees (#6)", () => {
+  const git = (cwd: string, ...args: string[]): void => {
+    execFileSync("git", args, { cwd, stdio: "ignore" });
+  };
+
+  /** A main checkout with one commit — `git worktree add` refuses an empty repo. */
+  function mainCheckout(): string {
+    const root = repo();
+    git(root, "init", "-b", "main");
+    git(root, "config", "user.email", "test@example.invalid");
+    git(root, "config", "user.name", "test");
+    writeFileSync(join(root, "README.md"), "x\n");
+    git(root, "add", "README.md");
+    git(root, "commit", "-m", "init");
+    return root;
+  }
+
+  it("writes a worktree's gate evidence to the main checkout, where merge reads it", () => {
+    const main = mainCheckout();
+    const worktree = join(main, "..", `${basename(main)}-wt`);
+    roots.push(worktree);
+    git(main, "worktree", "add", "-b", "wt", worktree);
+
+    appendEvent(worktree, { type: "gate", issue: 3, ok: true, profile: "merge" });
+
+    // Read from the main checkout — the caller `merge` actually runs in.
+    expect(latestGate(readLedger(main).events, 3, "merge")?.ok).toBe(true);
+    expect(existsSync(join(worktree, ".spec-sync", "ledger.jsonl"))).toBe(false);
+  });
+
+  it("leaves a plain checkout writing to its own root", () => {
+    const main = mainCheckout();
+    appendEvent(main, { type: "gate", issue: 4, ok: true, profile: "merge" });
+    expect(existsSync(join(main, ".spec-sync", "ledger.jsonl"))).toBe(true);
+  });
+
+  it("falls back to the caller's root where no git repository answers", () => {
+    const root = repo();
+    expect(ledgerPath(root)).toBe(join(root, ".spec-sync", "ledger.jsonl"));
   });
 });

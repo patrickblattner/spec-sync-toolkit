@@ -26,8 +26,9 @@
  * no ticket and must not be counted against one.
  */
 
+import { join } from "node:path";
 import { EXIT, ToolkitError, progress } from "../output.js";
-import { appendEvent, readLedger } from "../ledger.js";
+import { appendEvent, ledgerPath, readLedger, LEDGER_FILE } from "../ledger.js";
 import { createLogDir, firstError, protectedLogDirs, writePhaseLog } from "../logs.js";
 import { phasesOfProfile, type GatePhase } from "../config.js";
 import { acquireGateLock } from "../gate/lock.js";
@@ -178,6 +179,13 @@ export async function runGate(
   }
 
   if (issue !== undefined) {
+    // Where the evidence went, whenever that is not where the caller stands: in
+    // a linked worktree the ledger is the main checkout's (see `ledgerPath`), and
+    // a reader looking into `<worktree>/.spec-sync/` would find nothing there.
+    const evidence = ledgerPath(ctx.repoRoot);
+    if (evidence !== join(ctx.repoRoot, LEDGER_FILE)) {
+      notes.push(`gate evidence recorded in the main checkout's ledger: ${evidence}`);
+    }
     appendEvent(ctx.repoRoot, {
       type: "gate",
       issue,

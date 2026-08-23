@@ -15,8 +15,9 @@
  * reported. The toolkit never estimates them.
  */
 
+import { spawnSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { STATE_DIR } from "./logs.js";
 
 /**
@@ -107,8 +108,36 @@ export type LedgerEventInput = Omit<LedgerEvent, "at"> & {
 /** Repo-relative path of the ledger file. */
 export const LEDGER_FILE = join(STATE_DIR, "ledger.jsonl");
 
+/**
+ * The working tree the ledger of a repository lives in: its **main checkout**,
+ * for every worktree of that repository.
+ *
+ * A linked worktree is a repo root of its own, so a `gate --issue` run inside
+ * one used to write its evidence to `<worktree>/.spec-sync/ledger.jsonl` — the
+ * one place `merge` never looks, because `merge` runs in the main checkout, and
+ * the one place that is deleted with `git worktree remove`. Since worktrees
+ * became mandatory the evidence is EARNED inside one and CONSULTED outside it,
+ * so it has to live in the checkout that outlives them all.
+ *
+ * `git rev-parse --git-common-dir` is the only thing that names that checkout:
+ * it answers `<main>/.git` from a worktree and from the main checkout alike.
+ * Anything else — no git, a bare repository, a submodule whose common dir is
+ * not called `.git` — leaves the caller's root untouched: a ledger in an
+ * unexpected place would be worse than a ledger in the obvious one.
+ */
+function ledgerRoot(repoRoot: string): string {
+  const probe = spawnSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
+  if (probe.status !== 0 || typeof probe.stdout !== "string") return repoRoot;
+  const commonDir = probe.stdout.trim();
+  if (basename(commonDir) !== ".git") return repoRoot;
+  return dirname(commonDir);
+}
+
 export function ledgerPath(repoRoot: string): string {
-  return join(repoRoot, LEDGER_FILE);
+  return join(ledgerRoot(repoRoot), LEDGER_FILE);
 }
 
 /**
