@@ -4,7 +4,7 @@ import { extractAcceptance, readMachineBlock, renderPack } from "../src/pack/ren
 
 describe("parseSpecReferences (spec §7.3, v2 key model, SST-DESIGN-018)", () => {
   it("reads backticked, key-shaped tokens as references", () => {
-    expect(parseSpecReferences("Siehe `PROC-DEV-039` und `GL-SEC-010`.")).toEqual([
+    expect(parseSpecReferences("See `PROC-DEV-039` and `GL-SEC-010`.")).toEqual([
       "PROC-DEV-039",
       "GL-SEC-010",
     ]);
@@ -18,7 +18,7 @@ describe("parseSpecReferences (spec §7.3, v2 key model, SST-DESIGN-018)", () =>
 
   it("does not mistake file paths or file names for keys", () => {
     expect(
-      parseSpecReferences("Siehe `e2e/a11y.spec.ts`, `spec-pins.json`, `package-lock.json`."),
+      parseSpecReferences("See `e2e/a11y.spec.ts`, `spec-pins.json`, `package-lock.json`."),
     ).toEqual([]);
   });
 
@@ -27,17 +27,21 @@ describe("parseSpecReferences (spec §7.3, v2 key model, SST-DESIGN-018)", () =>
   });
 
   it("ignores a key-shaped token loose in prose, outside backticks", () => {
-    expect(parseSpecReferences("Siehe PROC-DEV-039 ohne Backticks.")).toEqual([]);
+    expect(parseSpecReferences("See PROC-DEV-039 without backticks.")).toEqual([]);
   });
 
   it("drops the duplicate when a key is named twice", () => {
-    expect(parseSpecReferences("`PROC-DEV-039` … erneut `PROC-DEV-039`.")).toEqual([
+    expect(parseSpecReferences("`PROC-DEV-039` … again `PROC-DEV-039`.")).toEqual([
       "PROC-DEV-039",
     ]);
   });
 });
 
 describe("extractAcceptance", () => {
+  // Deliberately a German heading: `extractAcceptance`'s regex accepts both
+  // "abnahmekriterien" and "acceptance criteria" (see src/pack/render.ts),
+  // because it matches ticket bodies authored by others — external data, not
+  // toolkit output — and those may still be in German.
   it("takes the acceptance block up to the next heading of the same level", () => {
     const body = [
       "## Befund",
@@ -55,7 +59,7 @@ describe("extractAcceptance", () => {
   });
 
   it("is undefined when the issue names no acceptance block", () => {
-    expect(extractAcceptance("## Befund\nNur Prosa.")).toBeUndefined();
+    expect(extractAcceptance("## Finding\nJust prose.")).toBeUndefined();
   });
 });
 

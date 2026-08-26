@@ -1,14 +1,14 @@
-// subagent-stop-check — Abschluss-Abnahme eines Build-Agenten (SubagentStop-Hook, #1091 (c)).
-// (Kein Shebang hier: tsup setzt ihn als Banner in den Build.)
+// subagent-stop-check — completion acceptance of a build agent (SubagentStop hook, #1091 (c)).
+// (No shebang here: tsup sets it as a banner in the build.)
 //
-// Eigene Ventilkette, eigener Zähler JE AGENT-LAUF (Schlüssel ist das Agent-Transcript, nicht die
-// Session): zwei parallel laufende Agenten dürfen sich ihre Blocks nicht gegenseitig aufbrauchen.
-//   Pause-Flag → Budget-Stufe → Block-Obergrenze → Typ-Tor → Abnahme-Prüfer
-// Der Auftrag am Budget ist ein anderer als bei der Session: ein Agent räumt keine Werkbank auf, er
-// meldet CONTEXT LOW und gibt die Folgetickets an einen frischen Agenten ab.
+// Its own valve chain, its own counter PER AGENT RUN (the key is the agent transcript, not the
+// session): two agents running in parallel must not use up each other's blocks.
+//   pause flag → budget stage → block cap → type gate → acceptance checker
+// The task at budget is different from the session's: an agent does not clean up a workbench, it
+// reports CONTEXT LOW and hands the follow-up tickets off to a fresh agent.
 //
-// Heimat seit 2026-08-18 im Toolkit (Entscheid #193); die Worker-Repos registrieren nur den
-// Aufruf auf `dist/hooks/subagent-stop-check.js`.
+// Home in the toolkit since 2026-08-18 (decision #193); the worker repos only register the
+// call on `dist/hooks/subagent-stop-check.js`.
 import { decideSubagentStop } from "./lib.js";
 import { askAcceptance } from "./acceptance.js";
 import {

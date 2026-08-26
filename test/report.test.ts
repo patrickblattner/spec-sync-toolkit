@@ -74,8 +74,8 @@ function completeRun(root: string): void {
 }
 
 describe("the mandatory closing line is always written (§7.6, DoD)", () => {
-  it("says `keine` in so many words on an empty set", () => {
-    expect(notSweptLine([])).toBe(`${NOT_SWEPT_PREFIX} keine`);
+  it("says `none` in so many words on an empty set", () => {
+    expect(notSweptLine([])).toBe(`${NOT_SWEPT_PREFIX} none`);
   });
 
   it("names the tickets the loop deliberately left alone", () => {
@@ -84,13 +84,13 @@ describe("the mandatory closing line is always written (§7.6, DoD)", () => {
 
   it("never silently omits the line, not even when the queue was unreadable", () => {
     expect(notSweptLine(undefined)).toContain(NOT_SWEPT_PREFIX);
-    expect(notSweptLine(undefined)).not.toContain("keine");
+    expect(notSweptLine(undefined)).not.toContain("none");
   });
 
   it("appears in the response of a completely empty run", async () => {
     const root = repo();
     const result = await runReport(deps(root, emptySweep()), {});
-    expect(result.data.notSwept).toBe(`${NOT_SWEPT_PREFIX} keine`);
+    expect(result.data.notSwept).toBe(`${NOT_SWEPT_PREFIX} none`);
   });
 
   it("carries the un-swept tickets the live sweep found", async () => {
@@ -109,7 +109,7 @@ describe("the mandatory closing line is always written (§7.6, DoD)", () => {
       }),
       {},
     );
-    expect(result.data.notSwept).toMatch(/unbestimmt/);
+    expect(result.data.notSwept).toMatch(/undetermined/);
     const findings = result.data.findings as ReportFinding[];
     expect(findings.map((finding) => finding.kind)).toContain("queue-unreadable");
     expect(result.ok).toBe(false);
@@ -327,10 +327,10 @@ describe("the context line (spec §7.6, M6)", () => {
     appendEvent(root, { type: "context", run: "r1", context: 200_000 });
 
     const result = await runReport(deps(root, emptySweep()), {});
-    expect(result.data.context).toContain("Kontext: 200000 / 800000 Tokens");
+    expect(result.data.context).toContain("context: 200000 / 800000 tokens");
     // Below five increments neither number is guessed.
-    expect(result.data.context).toContain("unter 5 Messpunkten");
-    expect(result.data.context).toContain("Reichweite: nicht berechenbar");
+    expect(result.data.context).toContain("under 5 measurement points");
+    expect(result.data.context).toContain("Scope: not computable");
   });
 
   it("names the reach once five increments are on record", () => {
@@ -341,9 +341,9 @@ describe("the context line (spec §7.6, M6)", () => {
     }
 
     const line = contextLine(events, 800_000);
-    expect(line).toContain("Kontext: 250000 / 800000 Tokens");
+    expect(line).toContain("context: 250000 / 800000 tokens");
     expect(line).toContain("(p90): 50000");
-    expect(line).toContain("Reichweite: 11 Ticket(s)");
+    expect(line).toContain("Scope: 11 Ticket(s)");
   });
 
   it("reads over the whole ledger, not only the selected run", async () => {

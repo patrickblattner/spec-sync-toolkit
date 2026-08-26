@@ -458,7 +458,7 @@ describe("the failing test as the runner reported it (#10)", () => {
   // worse than none, because it is trusted.
   it("skips an error line written by a test that passed", () => {
     const output = [
-      "[error] general.public_base_url ist nicht gesetzt — die kanonische Basis-URL fehlt",
+      "[error] general.public_base_url is not set — the canonical base URL is missing",
       " ✓ server/src/routes/bookingWebhook.test.ts (7 tests) 412ms",
       ...Array.from({ length: 200 }, (_, i) => ` ✓ server/src/routes/other${i}.test.ts (1 test)`),
       "⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯",

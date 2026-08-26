@@ -126,7 +126,7 @@ async function fetchPins(project: string, server: string): Promise<Map<string, n
  * (`"url": "http://localhost:8787/mcp"`), and `--server` does whenever someone
  * copies that value out of the file. Without this, the request went to
  * `…/mcp/mcp` — 404, reported as exit 2 "unreachable", which made the
- * auto-detection useless in every repo (Befund Cockpit-Migration 2026-08-21;
+ * auto-detection useless in every repo (cockpit migration finding, 2026-08-21;
  * the workaround was passing `--server` in base form by hand).
  */
 export function toBaseUrl(url: string): string {

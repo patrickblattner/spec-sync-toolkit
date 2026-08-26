@@ -1,16 +1,16 @@
-// architect-stop-check — Turn-Ende-Budgetgrenze der Architekten-Inbox (Stop-Hook).
-// (Kein Shebang hier: tsup setzt ihn als Banner in den Build.)
+// architect-stop-check — turn-end budget boundary of the architect inbox (stop hook).
+// (No shebang here: tsup sets it as a banner in the build.)
 //
-// Kette (PROC-DEV-020 rev 4 / PROC-DEV-036 rev 5, Owner-Wort 22.08.):
-//   Pause-Flag → frisches Handover → Budget-Stufe (75 %, genau einmal je Session)
-// Keine Werkbank, kein Abnahme-Prüfer, kein Usage-Ventil: der Architekt baut nichts. Die Stufe
-// misst an JEDEM Turn-Ende aus dem Transcript und diktiert im Block das Handover mit der
-// gemessenen Zahl — die Session kennt ihr Fenster nicht, der Hook schon. Bei laufendem
-// Owner-Gespräch (Zustandsdatei des worker-harness-Hooks) erzwingt sie die Ansage statt des
-// Handovers. Fail-open über die ganze Länge: jede Messung liefert im Fehlerfall "weiss ich nicht".
+// Chain (PROC-DEV-020 rev 4 / PROC-DEV-036 rev 5, owner's word 08/22):
+//   pause flag → fresh handover → budget stage (75 %, exactly once per session)
+// No workbench, no acceptance checker, no usage valve: the architect builds nothing. The stage
+// measures at EVERY turn end from the transcript and dictates the handover in the block with the
+// measured number — the session does not know its window, the hook does. With an owner
+// conversation running (the worker-harness hook's state file) it forces the announcement instead
+// of the handover. Fail-open throughout: every measurement delivers "don't know" on error.
 //
-// Die Architekten-Repos registrieren nur den Aufruf auf `dist/hooks/architect-stop-check.js`;
-// das Budget steht in ihrer `spec-sync.config.json` (`contextBudget`).
+// The architect repos only register the call on `dist/hooks/architect-stop-check.js`;
+// the budget lives in their `spec-sync.config.json` (`contextBudget`).
 import { decideArchitectStop } from "./lib.js";
 import {
   budgetAlreadyBlocked,

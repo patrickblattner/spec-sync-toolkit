@@ -13,7 +13,7 @@
  *      on failure, `firstError` — at most three lines.
  *   3. A red is either broken (exit 1) or unprovable (exit 2), and which one it
  *      is follows from a LOGGED measurement of the box, never from a guess
- *      (`foundation.testing.guideline` §Lastabhängige Messungen).
+ *      (`foundation.testing.guideline` §load-dependent measurements).
  *
  * The response stays inside the line budget of spec §3 by carrying nothing
  * beyond what §7.1 asks for: `phases[]`, `firstError` when red, `logDir`.

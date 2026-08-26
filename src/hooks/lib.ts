@@ -1,27 +1,27 @@
-// Entscheidungslogik der Turn-Ende-Hooks (#1091 Ventilkette, #1095 Handover-Frische).
+// Decision logic of the turn-end hooks (#1091 valve chain, #1095 handover freshness).
 //
-// Heimat seit 2026-08-18 hier im Toolkit (Entscheid #193): EINE Quelle für alle Worker-Repos,
-// die Repos registrieren nur noch den Hook-Aufruf auf `dist/hooks/*` — identisches Verhalten
-// überall ist damit Konstruktion, nicht Kopier-Disziplin. Portiert 1:1 aus
-// production-cockpit `scripts/stop-check.lib.mjs` (Stand e070647b/011896b4).
+// Home since 2026-08-18 here in the toolkit (decision #193): ONE source for all worker repos,
+// the repos only register the hook call on `dist/hooks/*` — identical behaviour everywhere is
+// thus construction, not copy discipline. Ported 1:1 from production-cockpit
+// `scripts/stop-check.lib.mjs` (as of e070647b/011896b4).
 //
-// Hier steht alles, was ohne Prozess, Netz und Dateisystem entscheidbar ist: die Frische-Messung,
-// die Kontextmessung aus dem Transcript und die beiden Ventilketten. Die Treiber
-// (`stop-check.ts`, `subagent-stop-check.ts`) liefern die Messwerte und führen aus, was hier
-// beschlossen wird — deshalb ist die Kette testbar, ohne einen Hook zu starten.
+// This is everything decidable without a process, network or filesystem: the freshness
+// measurement, the context measurement from the transcript, and the two valve chains. The
+// drivers (`stop-check.ts`, `subagent-stop-check.ts`) supply the measurements and execute what
+// is decided here — that is what makes the chain testable without starting a hook.
 //
-// --- Frische-Messung des Handovers (#1095, dev.process 2.35.0 §Worker-Loop) ---
+// --- Handover freshness measurement (#1095, dev.process 2.35.0 §Worker-Loop) ---
 //
-// "Frisch" ist die SCHREIBZEIT des Handovers, nicht die Dateizeit: `/unpause` und der
-// Harness-`touch` fassen `.spec-sync-handover.md` an, ohne dass ein neues Handover geschrieben
-// wurde — über `mtime` gemessen entwaffnete das die Werkbank-Prüfung für die Dauer des
-// Frische-Fensters, obwohl danach neue Arbeit läuft. Gemessen wird deshalb der Zeitstempel aus dem
-// Inhalt (`- Zeit: <ISO>`, so schreibt `spec-sync handover` ihn); `mtime` bleibt Fallback für den
-// Fall, dass die Zeile fehlt oder nicht parsebar ist.
+// "Fresh" is the handover's WRITE TIME, not the file time: `/unpause` and the harness `touch`
+// touch `.spec-sync-handover.md` without a new handover having been written — measured via
+// `mtime` that disarmed the workbench check for the length of the freshness window even though
+// new work was running afterwards. So the timestamp measured is the one from the content
+// (`- Time: <ISO>`, that is how `spec-sync handover` writes it); `mtime` stays the fallback for
+// when the line is missing or unparsable.
 
-const TIME_LINE = /^[-*]\s*Zeit:\s*(\S+)/m;
+const TIME_LINE = /^[-*]\s*Time:\s*(\S+)/m;
 
-/** Zeitstempel aus dem Handover-Inhalt in ms, oder null wenn keine parsebare `- Zeit:`-Zeile. */
+/** Timestamp from the handover content in ms, or null when there is no parsable `- Time:` line. */
 export function parseHandoverTime(content: unknown): number | null {
   const m = TIME_LINE.exec(String(content ?? ""));
   if (!m) return null;
@@ -30,7 +30,7 @@ export function parseHandoverTime(content: unknown): number | null {
 }
 
 /**
- * Alter des Handovers in Minuten. `content` schlägt `mtimeMs`; ohne beides null (unbekannt).
+ * Age of the handover in minutes. `content` beats `mtimeMs`; without either, null (unknown).
  */
 export function handoverAgeMinutes({
   content,
@@ -46,15 +46,15 @@ export function handoverAgeMinutes({
   return written === null ? null : (now - written) / 60000;
 }
 
-// --- Kontextmessung aus dem Transcript (#1091 (a), Messlogik wie `spec-sync budget`) ---
+// --- Context measurement from the transcript (#1091 (a), same measuring logic as `spec-sync budget`) ---
 //
-// Eine Session kann ihr eigenes Fenster nicht beobachten, der Client schreibt es aber mit. Zwei
-// Fallen stecken darin, beide hier abgebildet: Streaming schreibt bis zu drei Einträge je
-// API-Aufruf, jeden mit vollem `usage`-Block — deshalb wird nach `message.id` dedupliziert. Und der
-// Stand ist der JÜNGSTE Eintrag, nicht die Summe: der letzte Aufruf trägt das ganze Fenster, eine
-// Summe über die Session zählte es dutzendfach.
+// A session cannot observe its own window, but the client writes it along. Two traps are in
+// there, both mapped here: streaming writes up to three entries per API call, each with a full
+// `usage` block — so it is deduplicated by `message.id`. And the level is the YOUNGEST entry, not
+// the sum: the last call carries the whole window, a sum over the session would count it dozens
+// of times over.
 
-/** Kontextstand (Tokens) eines Transcripts, oder null wenn nichts Messbares drinsteht. */
+/** Context level (tokens) of a transcript, or null when nothing measurable is in it. */
 export function contextFromTranscript(raw: unknown): number | null {
   const seen = new Set<string>();
   let latest: number | null = null;
@@ -64,7 +64,7 @@ export function contextFromTranscript(raw: unknown): number | null {
     try {
       parsed = JSON.parse(line);
     } catch {
-      // Halb geschriebene letzte Zeile: das Transcript wird live geschrieben — überspringen.
+      // Half-written last line: the transcript is written live — skip it.
       continue;
     }
     if (parsed === null || typeof parsed !== "object") continue;
@@ -86,7 +86,7 @@ function num(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
-/** Kontextstand in Prozent des Budgets; null, wenn eine der beiden Größen fehlt. */
+/** Context level in percent of the budget; null when either quantity is missing. */
 export function contextPercent(context: number | null, budget: number | null): number | null {
   if (
     !Number.isFinite(context as number) ||
@@ -97,13 +97,13 @@ export function contextPercent(context: number | null, budget: number | null): n
   return ((context as number) / (budget as number)) * 100;
 }
 
-// --- Ventilketten (#1091 (b)/(c)) ---
+// --- Valve chains (#1091 (b)/(c)) ---
 
 export const MAX_BLOCKS = 3;
 export const HANDOVER_FRESH_MIN = 60;
-/** Schwelle des Usage-Ventils — dieselbe wie beim Harness-Guard (dev.process §Worker-Loop). */
+/** Threshold of the usage valve — the same as the harness guard's (dev.process §Worker-Loop). */
 export const USAGE_THRESHOLD_PERCENT = 95;
-/** Ab hier erzwingt der Hook den geordneten Abschluss — 100 % des `contextBudget`. */
+/** From here the hook forces an orderly close — 100 % of `contextBudget`. */
 export const BUDGET_PERCENT = 100;
 
 export interface HookDecision {
@@ -124,33 +124,32 @@ export interface UsageWindow {
 }
 
 const HANDOVER_INSTRUCTION =
-  "Schreibe JETZT `npx spec-sync handover --reason budget` und beende danach den Turn. " +
-  "Nichts anderes mehr anfangen — der Kontext ist am Budget.";
+  "Write `npx spec-sync handover --reason budget` NOW and end the turn afterwards. " +
+  "Start nothing else — the context is at budget.";
 
 /**
- * Die Ventilkette des Stop-Hooks, als eine Entscheidung.
+ * The valve chain of the stop hook, as one decision.
  *
- * RANGORDNUNG (dev.process 2.36.1 §Worker-Loop (b)): Pause-Flag → frisches Handover → Budget-Stufe →
- * Usage-Ventil → Block-Obergrenze, dahinter die blockfähigen Teilschritte Werkbank-Prüfung und
- * Abnahme-Prüfer. Sie sagt, WELCHES VENTIL GEWINNT, wenn mehrere greifen könnten — nicht, wann
- * jedes abgefragt wird.
+ * RANK ORDER (dev.process 2.36.1 §Worker-Loop (b)): pause flag → fresh handover → budget stage →
+ * usage valve → block cap, behind that the blockable sub-steps workbench check and acceptance
+ * checker. It says WHICH VALVE WINS when several could apply — not when each is checked.
  *
- * PRÜFZEITPUNKT — jedes Ventil nennt seinen eigenen (#1107, Q&A #447/#448):
- *   - Die Budget-Stufe misst an JEDEM Turn-Ende (dev.process §Worker-Loop (a)) und steht deshalb
- *     vor dem Tor.
- *   - Das Usage-Ventil wird NUR UNMITTELBAR VOR EINEM BLOCK abgefragt, „nie bei normalen
- *     Turn-Enden" (§Usage-Stopp im Worker (a)) — es steht deshalb hinter dem Tor, direkt vor den
- *     Block-Teilschritten. Ein Ventil vor dem Tor abzufragen, das den Hook nur ÖFFNEN kann, ändert
- *     keinen Ausgang: es bestätigt das „erlauben", das ohnehin eintritt, und bezahlt dafür
- *     Keychain-Zugriff, Netzaufruf und Latenz an jedem Warte- und Zwischenstands-Turn.
+ * CHECK TIMING — each valve names its own (#1107, Q&A #447/#448):
+ *   - The budget stage measures at EVERY turn end (dev.process §Worker-Loop (a)) and therefore
+ *     stands in front of the gate.
+ *   - The usage valve is checked ONLY IMMEDIATELY BEFORE A BLOCK, "never at normal turn ends"
+ *     (§Usage-Stopp im Worker (a)) — it therefore stands behind the gate, right before the block
+ *     sub-steps. Checking a valve in front of the gate that can only OPEN the hook changes no
+ *     outcome: it just confirms the "allow" that would happen anyway, and pays keychain access,
+ *     a network call and latency for it on every waiting and interim-status turn.
  *
- * Die teuren Sonden (Usage-Abfrage, Werkbank, Prüfer) kommen als FUNKTIONEN herein, nicht als
- * Werte: so misst die Kette erst, wenn sie die Antwort auch braucht, und ein Test kann den
- * Prüfzeitpunkt daran festnageln, dass die Sonde nie gerufen wurde.
+ * The expensive probes (usage query, workbench, checker) come in as FUNCTIONS, not values: this
+ * way the chain measures only once it actually needs the answer, and a test can pin down the
+ * check timing by the fact that the probe was never called.
  *
- * `blockCount` ist der Zähler des GANZEN Hooks, nicht der eines Teilschritts: drei Blocks sind drei
- * Blocks, gleich aus welchem Grund — sonst summierten sich die Teilschritte zu einer Schleife, die
- * keine einzelne Obergrenze je beendet.
+ * `blockCount` is the counter of the WHOLE hook, not of one sub-step: three blocks are three
+ * blocks, whatever the reason — otherwise the sub-steps would add up into a loop that no single
+ * cap ever ends.
  */
 export function decideStop({
   paused = false,
@@ -178,20 +177,20 @@ export function decideStop({
   if (handoverAgeMin !== null && handoverAgeMin < HANDOVER_FRESH_MIN)
     return { action: "allow", stage: "handover" };
 
-  // Budget-Stufe: genau EIN Block je Session. Danach läuft die Kette normal weiter — schreibt die
-  // Session trotzdem kein Handover, lässt die Block-Obergrenze sie irgendwann durch. Der Hook
-  // erzwingt einen geordneten Abschluss, er sperrt die Session nicht ein.
+  // Budget stage: exactly ONE block per session. After that the chain runs on normally — if the
+  // session still writes no handover, the block cap lets it through eventually. The hook forces
+  // an orderly close, it does not lock the session up.
   if (percent !== null && percent >= BUDGET_PERCENT && !budgetAlreadyBlocked)
     return {
       action: "block",
       stage: "budget",
-      reason: `stop-check: Kontext bei ${Math.round(percent)} % des Budgets. ${HANDOVER_INSTRUCTION}`,
+      reason: `stop-check: context at ${Math.round(percent)} % of the budget. ${HANDOVER_INSTRUCTION}`,
     };
 
-  // Tor für ALLES, was dahinter liegt: nur eine Grenz-Behauptung wird geprüft. Ein Zwischenstand,
-  // eine Rückfrage, ein Owner-Dialog ist kein Durchlauf-Ende und wird nie angefasst. Das Tor steht
-  // VOR dem Usage-Ventil (#1107): hinter ihm kann noch geblockt werden, davor nie — und das
-  // Usage-Ventil wird laut Norm nur unmittelbar vor einem Block abgefragt.
+  // Gate for EVERYTHING behind it: only one boundary claim is checked. An interim status, a
+  // follow-up question, an owner dialogue is not a run end and is never touched. The gate stands
+  // BEFORE the usage valve (#1107): behind it a block can still happen, in front of it never —
+  // and per the norm the usage valve is checked only immediately before a block.
   if (!claimsBoundary) return { action: "allow", stage: "gate" };
 
   const over = usageOver();
@@ -199,14 +198,14 @@ export function decideStop({
     return {
       action: "allow",
       stage: "usage",
-      note: `stop-check: Usage-Ventil — ${over.kind} ${over.percent} % >= ${USAGE_THRESHOLD_PERCENT} %, Session endet still. Aufgeräumt wird, wenn wieder Guthaben da ist.`,
+      note: `stop-check: usage valve — ${over.kind} ${over.percent} % >= ${USAGE_THRESHOLD_PERCENT} %, the session ends quietly. Cleanup happens once there is budget again.`,
     };
 
   if (blockCount >= MAX_BLOCKS)
     return {
       action: "allow",
       stage: "cap",
-      note: `stop-check: nach ${MAX_BLOCKS} Blocks durchgelassen — der Befund bleibt und gehört in den Zielabgleich.`,
+      note: `stop-check: let through after ${MAX_BLOCKS} blocks — the finding stays and belongs in the goal reconciliation.`,
     };
 
   const workbench = findings();
@@ -214,7 +213,7 @@ export function decideStop({
     return {
       action: "block",
       stage: "workbench",
-      reason: `Werkbank nicht leer (Block ${blockCount + 1}/${MAX_BLOCKS}): ${workbench.join("; ")}. Erst aufräumen (Worktree entfernen, Branch löschen, Push), dann Turn beenden — oder Handover mit belegtem Grund schreiben.`,
+      reason: `Workbench not empty (block ${blockCount + 1}/${MAX_BLOCKS}): ${workbench.join("; ")}. Clean up first (remove worktree, delete branch, push), then end the turn — or write a handover with an evidenced reason.`,
     };
 
   const verdict = acceptance();
@@ -222,24 +221,25 @@ export function decideStop({
     return {
       action: "block",
       stage: "acceptance",
-      reason: `Abnahme (Block ${blockCount + 1}/${MAX_BLOCKS}): ${verdict.reason}`,
+      reason: `Acceptance (block ${blockCount + 1}/${MAX_BLOCKS}): ${verdict.reason}`,
     };
 
   return { action: "allow", stage: "clean" };
 }
 
 /**
- * Die Ventilkette des SubagentStop-Hooks (#1091 (c)) — eigene Kette, eigener Zähler je Agent-Lauf.
+ * The valve chain of the SubagentStop hook (#1091 (c)) — its own chain, its own counter per
+ * agent run.
  *
- * Der Unterschied zur Session-Kette ist der Auftrag: ein Agent am Budget räumt keine Werkbank auf,
- * er beendet sauber und gibt den Rest ab. Geprüft wird nur, wer ein Ticket baut oder abnimmt —
- * jeder andere Agent-Typ läuft ungeprüft durch.
+ * The difference from the session chain is the task: an agent at budget does not clean up a
+ * workbench, it closes cleanly and hands off the rest. Only whoever builds or accepts a ticket is
+ * checked — every other agent type runs through unchecked.
  */
 export const CHECKED_AGENT_TYPES = ["impl", "impl-fast", "impl-deep", "review"];
 
 const AGENT_BUDGET_INSTRUCTION =
-  "Melde jetzt deinen Stand mit der Schlusszeile `CONTEXT LOW` und beende den Lauf. " +
-  "Folgetickets gehören an einen frischen Agenten, nicht mehr in diesen Lauf.";
+  "Report your status now with the closing line `CONTEXT LOW` and end the run. " +
+  "Follow-up tickets belong to a fresh agent, not this run anymore.";
 
 export function decideSubagentStop({
   paused = false,
@@ -262,14 +262,14 @@ export function decideSubagentStop({
     return {
       action: "block",
       stage: "budget",
-      reason: `subagent-stop-check: Kontext bei ${Math.round(percent)} % des Budgets. ${AGENT_BUDGET_INSTRUCTION}`,
+      reason: `subagent-stop-check: context at ${Math.round(percent)} % of the budget. ${AGENT_BUDGET_INSTRUCTION}`,
     };
 
   if (blockCount >= MAX_BLOCKS)
     return {
       action: "allow",
       stage: "cap",
-      note: `subagent-stop-check: nach ${MAX_BLOCKS} Blocks durchgelassen — der Befund gehört in den Bericht.`,
+      note: `subagent-stop-check: let through after ${MAX_BLOCKS} blocks — the finding belongs in the report.`,
     };
 
   if (!CHECKED_AGENT_TYPES.includes(agentType)) return { action: "allow", stage: "gate" };
@@ -279,21 +279,22 @@ export function decideSubagentStop({
     return {
       action: "block",
       stage: "acceptance",
-      reason: `Abnahme (Block ${blockCount + 1}/${MAX_BLOCKS}): ${verdict.reason}`,
+      reason: `Acceptance (block ${blockCount + 1}/${MAX_BLOCKS}): ${verdict.reason}`,
     };
 
   return { action: "allow", stage: "clean" };
 }
 
 /**
- * Die Ventilkette des Architekten-Stop-Hooks (PROC-DEV-020 / PROC-DEV-036, Owner-Wort 22.08.).
+ * The valve chain of the architect stop hook (PROC-DEV-020 / PROC-DEV-036, owner's word 08/22).
  *
- * Der Architekt hat keine Werkbank und keinen Abnahme-Prüfer — seine natürliche Grenze ist eine
- * beantwortete Frage, also das Turn-Ende. Deshalb EINE Stufe bei 75 % (der Schwelle, ab der der
- * Harness `budget` attestiert), genau einmal je Session. Die Block-Meldung diktiert das Handover
- * mit der gemessenen Zahl — die Session kennt ihr Fenster nicht, der Hook schon. Läuft ein
- * Owner-Gespräch (Owner-Eingabe in dieser Session), wird nicht das Handover, sondern die Ansage
- * erzwungen: der Owner beendet das Gespräch mit `/handover` (PROC-DEV-020 (4), Register #204).
+ * The architect has no workbench and no acceptance checker — its natural boundary is an answered
+ * question, i.e. the turn end. Hence ONE stage at 75 % (the threshold from which the harness
+ * attests `budget`), exactly once per session. The block message dictates the handover with the
+ * measured number — the session does not know its window, the hook does. If an owner
+ * conversation is running (owner input in this session), it is not the handover but the
+ * announcement that is forced: the owner ends the conversation with `/handover` (PROC-DEV-020 (4),
+ * register #204).
  */
 export const ARCHITECT_BUDGET_PERCENT = 75;
 
@@ -323,25 +324,25 @@ export function decideArchitectStop({
   if (percent === null || percent < ARCHITECT_BUDGET_PERCENT || budgetAlreadyBlocked)
     return { action: "allow", stage: "clean" };
 
-  const stand = `Kontext bei ${contextTokens} Tokens (${Math.round(percent)} % des Budgets ${budgetTokens}).`;
+  const stand = `Context at ${contextTokens} tokens (${Math.round(percent)} % of the budget ${budgetTokens}).`;
   if (ownerEngaged)
     return {
       action: "block",
       stage: "budget-owner",
       reason:
-        `architect-stop-check: ${stand} Owner-Gespräch läuft (Owner-Eingabe in dieser Session): ` +
-        "KEIN Handover schreiben. Sag dem Owner in einer Zeile „Kontext bei " +
-        `${Math.round(percent)} % — bitte /handover, sobald wir fertig sind“ und beende den Turn.`,
+        `architect-stop-check: ${stand} An owner conversation is running (owner input in this ` +
+        "session): do NOT write a handover. Tell the owner in one line \"Context at " +
+        `${Math.round(percent)} % — please /handover once we are done\" and end the turn.`,
     };
   return {
     action: "block",
     stage: "budget",
     reason:
-      `architect-stop-check: ${stand} Schreibe JETZT per Write-Tool \`.spec-sync-handover.md\` ins ` +
-      "Arbeitsverzeichnis: Zeile 1 exakt `reason: budget`, dann 3–5 Zeilen Übergabe (behandelte " +
-      "Fragen-IDs, gesetzte spec_refs, Offenes), dann genau dieser Block:\n" +
-      `## Kontext\n- Stand: ${contextTokens} Tokens (gemessen ${measuredAt})\n` +
-      "Danach den Turn beenden — kein weiterer Werkzeugaufruf. Läuft doch ein Owner-Gespräch: " +
-      "nicht schreiben, sondern ansagen („Kontext bei X % — bitte /handover“).",
+      `architect-stop-check: ${stand} Write \`.spec-sync-handover.md\` into the working directory ` +
+      "NOW via the Write tool: line 1 exactly `reason: budget`, then 3–5 lines of handoff (question " +
+      "ids handled, spec_refs set, what's open), then exactly this block:\n" +
+      `## Context\n- State: ${contextTokens} Tokens (measured ${measuredAt})\n` +
+      "Then end the turn — no further tool call. If an owner conversation is running instead: " +
+      "do not write, announce it (\"Context at X % — please /handover\").",
   };
 }

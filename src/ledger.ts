@@ -303,13 +303,13 @@ export function interruptedMerge(events: LedgerEvent[], issue: number): LedgerEv
 }
 
 /**
- * The gate evidence `merge` checks as a precondition (spec §7.4, "Gate-Beleg
- * grün"): the newest `gate` event of the ticket. The caller decides what to do
+ * The gate evidence `merge` checks as a precondition (spec §7.4, "gate evidence
+ * green"): the newest `gate` event of the ticket. The caller decides what to do
  * with a missing or red one — this function only reports what the ledger holds.
  *
  * `profile` narrows the search to one gate profile; the merge precondition uses
- * `merge`, because foundation.dev.process §Worker-Loop merges only "erst,
- * nachdem das komplette lokale Merge-Gate grün ist".
+ * `merge`, because foundation.dev.process §Worker-Loop merges only "after
+ * the complete local merge gate is green".
  */
 export function latestGate(
   events: LedgerEvent[],

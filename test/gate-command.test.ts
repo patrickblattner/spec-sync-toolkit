@@ -376,7 +376,7 @@ describe("gate — logs never reach stdout (spec §3)", () => {
       "no-unused-vars",
     );
     // The measurement condition is evidence, so it is logged too
-    // (foundation.testing.guideline §Lastabhängige Messungen).
+    // (foundation.testing.guideline §load-dependent measurements).
     const measurement = readFileSync(join(root, result.logDir ?? "", "_measurement.log"), "utf8");
     expect(measurement).toMatch(/load before:/);
     expect(measurement).toMatch(/load after:/);
@@ -405,7 +405,7 @@ describe("gate — logs never reach stdout (spec §3)", () => {
       {
         name: "unit",
         cmd:
-          "echo '[error] general.public_base_url ist nicht gesetzt'; " +
+          "echo '[error] general.public_base_url is not set'; " +
           "echo ' FAIL  src/webinarSync.test.ts > syncs the roster'; " +
           "echo 'AssertionError: expected 0 to be 3'; exit 1",
       },

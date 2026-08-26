@@ -33,14 +33,14 @@ const AGENTS: Record<string, string> = {
 
 const effortTable = (rows: Record<string, string> = AGENTS): string =>
   [
-    "| Auslöser (beobachtbar, nicht gefühlt) | Agent | effort |",
+    "| Trigger (observable, not felt) | Agent | effort |",
     "|---|---|---|",
-    "| kein Gate-Lauf, keine offene Suche | **Worker selbst** | — |",
-    ...Object.entries(rows).map(([agent, effort]) => `| Auslöser | \`${agent}\` | ${effort} |`),
+    "| no gate run, no open search | **worker itself** | — |",
+    ...Object.entries(rows).map(([agent, effort]) => `| Trigger | \`${agent}\` | ${effort} |`),
   ].join("\n");
 
 const normSection = (rows?: Record<string, string>): string =>
-  ["## Worker-Loop (/spec-sync)", "", "Choreografie …", "", effortTable(rows), ""].join("\n");
+  ["## Worker-Loop (/spec-sync)", "", "Choreography …", "", effortTable(rows), ""].join("\n");
 
 interface Env {
   agents?: Record<string, string>;
@@ -325,7 +325,7 @@ describe("doctor (spec §7.7)", () => {
   it("falls back to a skill-only check when PROC-DEV-042 carries no table (prose, not a table)", async () => {
     const result = await runDoctor(
       context(fakeRepo()),
-      deps(fakeHome(), fakeTools({ section: "Nur Prosa, keine Tabelle mehr." })),
+      deps(fakeHome(), fakeTools({ section: "Just prose, no table anymore." })),
     );
     expect(findingsOf(result.data)).toEqual([]);
     expect(result.notes?.join(" ")).toContain("carries no parseable effort table");
@@ -762,14 +762,14 @@ describe("parseEffortTable", () => {
 
   it("takes the agent from the agent cell, not from the trigger cell", () => {
     const table = [
-      "| Auslöser | Agent | effort |",
+      "| Trigger | Agent | effort |",
       "|---|---|---|",
-      "| Merge-Review, eine Lens je Spawn (`acceptance`/`security`) | `review` | high |",
+      "| Merge review, one lens per spawn (`acceptance`/`security`) | `review` | high |",
     ].join("\n");
     expect(parseEffortTable(table)).toEqual([{ agent: "review", effort: "high" }]);
   });
 
   it("finds no table in a document that has none", () => {
-    expect(parseEffortTable("# Nur Prosa\n\nKeine Tabelle.\n")).toEqual([]);
+    expect(parseEffortTable("# Just prose\n\nNo table.\n")).toEqual([]);
   });
 });

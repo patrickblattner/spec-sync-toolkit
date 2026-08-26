@@ -32,7 +32,7 @@ export interface KeyResolution {
 }
 
 const HEADER = /^#\s+(\S+)\s+—\s+(.+)$/mu;
-const META = /^Status:\s*(\S+)\s*·\s*Art:\s*\S+\s*·\s*rev\s*(\d+)\s*·/mu;
+const META = /^Status:\s*(\S+)\s*·\s*Type:\s*\S+\s*·\s*rev\s*(\d+)\s*·/mu;
 
 /** Resolves every key of a ticket in one call. Empty input costs no roundtrip. */
 export async function resolveKeys(keys: string[], tools: Tools): Promise<KeyResolution> {

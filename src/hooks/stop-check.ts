@@ -1,19 +1,19 @@
-// stop-check — Turn-Ende-Abnahme der Worker-Session (Stop-Hook, Harness Level 3).
-// (Kein Shebang hier: tsup setzt ihn als Banner in den Build.)
+// stop-check — turn-end acceptance of the worker session (stop hook, harness level 3).
+// (No shebang here: tsup sets it as a banner in the build.)
 //
-// Eine Kette, ein Zähler (#1091, dev.process 2.36.1 §Worker-Loop (b)) — RANGORDNUNG:
-//   Pause-Flag → frisches Handover → Budget-Stufe → Usage-Ventil → Block-Obergrenze
-//   → Werkbank-Prüfung → Abnahme-Prüfer
-// Die Rangordnung sagt, welches Ventil GEWINNT, nicht wann jedes abgefragt wird. Den
-// PRÜFZEITPUNKT nennt jedes Ventil selbst: die Budget-Stufe misst an jedem Turn-Ende, das
-// Usage-Ventil nur unmittelbar vor einem Block (#1107) — es liegt deshalb hinter dem
-// Grenz-Behauptungs-Tor, sonst kostete es Keychain und Netz an jedem Warte-Turn.
-// Die Reihenfolge steht in `decideStop` (lib.ts), die Messung in io.ts, hier nur die
-// Verdrahtung. Fail-open über die ganze Länge: der Hook darf nie härter sein als sein
-// Wissen — dafür liefert jede Messung im Fehlerfall "weiss ich nicht" statt eines Blocks.
+// One chain, one counter (#1091, dev.process 2.36.1 §Worker-Loop (b)) — RANK ORDER:
+//   pause flag → fresh handover → budget stage → usage valve → block cap
+//   → workbench check → acceptance checker
+// The rank order says which valve WINS, not when each is checked. Each valve names its own
+// CHECK TIMING: the budget stage measures at every turn end, the usage valve only immediately
+// before a block (#1107) — it therefore sits behind the boundary-claim gate, otherwise it would
+// cost keychain and network on every waiting turn.
+// The order lives in `decideStop` (lib.ts), the measurement in io.ts, only the wiring here.
+// Fail-open throughout: the hook must never be stricter than its own knowledge — so every
+// measurement delivers "don't know" instead of a block on error.
 //
-// Heimat seit 2026-08-18 im Toolkit (Entscheid #193); die Worker-Repos registrieren nur den
-// Aufruf auf `dist/hooks/stop-check.js`.
+// Home in the toolkit since 2026-08-18 (decision #193); the worker repos only register the
+// call on `dist/hooks/stop-check.js`.
 import { decideStop, USAGE_THRESHOLD_PERCENT } from "./lib.js";
 import { askAcceptance } from "./acceptance.js";
 import {
@@ -39,11 +39,9 @@ const key = String(input.session_id || "unknown");
 const message = String(input.last_assistant_message || "");
 const count = readCount(KIND, key);
 
-// Nur Grenz-Behauptungen werden geprüft — dasselbe Tor für Werkbank-Prüfung und Abnahme-Prüfer.
+// Only boundary claims are checked — the same gate for the workbench check and the acceptance checker.
 const claimsBoundary =
-  /zielabgleich|in sync|handover|durchlauf\s+(ist\s+)?(fertig|beendet|abgeschlossen)/i.test(
-    message,
-  );
+  /goal reconciliation|in sync|handover|run\s+(is\s+)?(done|finished|completed)/i.test(message);
 
 const decision = decideStop({
   paused: isPaused(cwd),

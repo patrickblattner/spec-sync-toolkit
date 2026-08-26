@@ -59,7 +59,7 @@ const pinsPayload = {
   result: { content: [{ type: "text", text: "PROC-DEV-031=2\nGL-CODE-010=1\n" }] },
 };
 
-describe("repin endpoint resolution (Befund Cockpit-Migration 2026-08-21)", () => {
+describe("repin endpoint resolution (cockpit migration finding, 2026-08-21)", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });

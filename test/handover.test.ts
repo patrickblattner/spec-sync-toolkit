@@ -70,7 +70,7 @@ describe("the mandatory fields of §7.9", () => {
   it("names repo, time and the main HEAD with short hash and subject", () => {
     const document = render();
     expect(document).toContain("- Repo: /repo");
-    expect(document).toContain("- Zeit: 2026-07-29T12:00:00.000Z");
+    expect(document).toContain("- Time: 2026-07-29T12:00:00.000Z");
     expect(document).toContain("- `main`-HEAD: abc1234 chore: v0.6.0");
   });
 
@@ -78,8 +78,8 @@ describe("the mandatory fields of §7.9", () => {
     const document = render({
       pins: { pinnedAt: "2026-07-29T10:00:00.000Z", units: 137 },
     });
-    expect(document).toContain("zuletzt gepinnt: 2026-07-29T10:00:00.000Z");
-    expect(document).toContain("Einträge: 137");
+    expect(document).toContain("last pinned: 2026-07-29T10:00:00.000Z");
+    expect(document).toContain("entries: 137");
   });
 
   it("renders the queue head, the needsPin count and the findings count", () => {
@@ -99,41 +99,41 @@ describe("the mandatory fields of §7.9", () => {
 
   it("lists every merge-started that never completed", () => {
     const document = render({ openMerges: [{ issue: 9, at: "2026-07-29T11:00:00Z" }] });
-    expect(document).toContain("#9: `merge-started` 2026-07-29T11:00:00Z ohne `merge-completed`");
+    expect(document).toContain("#9: `merge-started` 2026-07-29T11:00:00Z without `merge-completed`");
   });
 
   it("carries the driver's note", () => {
-    expect(render({ note: "Kontext knapp." })).toContain("Kontext knapp.");
+    expect(render({ note: "Context low." })).toContain("Context low.");
   });
 });
 
 describe("empty sets are named, never left out (spec §7.9, M6)", () => {
   it("says so when no context was ever measured", () => {
     const document = render();
-    expect(document).toContain("keine Messung");
-    expect(document).toContain("## Kontext");
+    expect(document).toContain("no measurement");
+    expect(document).toContain("## Context");
   });
 
   it("says so when the queue is empty", () => {
-    expect(render()).toContain("keine offenen Tickets");
+    expect(render()).toContain("no open tickets");
   });
 
   it("says so when no merge is open", () => {
-    expect(render()).toContain("kein `merge-started` ohne `merge-completed`");
+    expect(render()).toContain("no `merge-started` without `merge-completed`");
   });
 
   it("says so when the driver left no note", () => {
     const lines = render().split("\n");
-    const index = lines.indexOf("## Notiz des Treibers");
-    expect(lines[index + 2]).toBe("keine");
+    const index = lines.indexOf("## Driver's Note");
+    expect(lines[index + 2]).toBe("none");
   });
 
   it("says so when there are no readable pins", () => {
-    expect(render({ pins: undefined })).toContain("Kein lesbares spec-pins.json");
+    expect(render({ pins: undefined })).toContain("No readable spec-pins.json");
   });
 
   it("names an unreadable main HEAD instead of dropping the field", () => {
-    expect(render({ mainHead: undefined })).toContain("- `main`-HEAD: nicht lesbar");
+    expect(render({ mainHead: undefined })).toContain("- `main`-HEAD: not readable");
   });
 });
 
@@ -147,18 +147,18 @@ describe("the context section (spec §7.9)", () => {
         forecastTickets: 12,
       },
     });
-    expect(document).toContain("- Stand: 200000 Tokens (gemessen 2026-07-29T11:30:00Z)");
+    expect(document).toContain("- State: 200000 Tokens (measured 2026-07-29T11:30:00Z)");
     expect(document).toContain("(p90): 50000");
-    expect(document).toContain("Reichweite: 12 Ticket(s)");
+    expect(document).toContain("Scope: 12 Ticket(s)");
   });
 
   it("names the level but not a guessed reach below five measurements", () => {
     const document = render({
       context: { value: 200_000, at: "t", p90PerTicket: null, forecastTickets: null },
     });
-    expect(document).toContain("- Stand: 200000 Tokens");
-    expect(document).toContain("unter 5 Messpunkten");
-    expect(document).toContain("Reichweite: nicht berechenbar");
+    expect(document).toContain("- State: 200000 Tokens");
+    expect(document).toContain("under 5 measurement points");
+    expect(document).toContain("Scope: not computable");
   });
 });
 
@@ -184,11 +184,11 @@ describe("open merges from the ledger", () => {
 
 describe("the note is the only non-mechanical part (spec §7.9)", () => {
   it("keeps at most three sentences", () => {
-    expect(trimNote("Eins. Zwei. Drei. Vier. Fünf.")).toBe("Eins. Zwei. Drei.");
+    expect(trimNote("One. Two. Three. Four. Five.")).toBe("One. Two. Three.");
   });
 
   it("leaves a shorter note untouched", () => {
-    expect(trimNote("Nur ein Satz ohne Punkt")).toBe("Nur ein Satz ohne Punkt");
+    expect(trimNote("Just one sentence with no period")).toBe("Just one sentence with no period");
   });
 
   it("cuts at sentence ends, not mid-word", () => {
@@ -201,22 +201,22 @@ describe("the file is overwritten atomically (spec §7.9, M6)", () => {
     const root = repo();
     const path = join(root, HANDOVER_FILE);
 
-    writeAtomic(path, "erste Fassung\n");
-    writeAtomic(path, "zweite Fassung\n");
+    writeAtomic(path, "first version\n");
+    writeAtomic(path, "second version\n");
 
-    expect(readFileSync(path, "utf8")).toBe("zweite Fassung\n");
+    expect(readFileSync(path, "utf8")).toBe("second version\n");
     expect(readdirSync(root).filter((name) => name.endsWith(".tmp"))).toEqual([]);
   });
 
   it("never leaves a half-written file in place of the old one", () => {
     const root = repo();
     const path = join(root, HANDOVER_FILE);
-    writeFileSync(path, "alt\n");
+    writeFileSync(path, "old\n");
 
     // Writing into a directory that does not exist fails before the rename, so
     // the previous snapshot survives intact rather than being truncated.
-    expect(() => writeAtomic(join(root, "missing", "x.md"), "neu")).toThrow();
-    expect(readFileSync(path, "utf8")).toBe("alt\n");
+    expect(() => writeAtomic(join(root, "missing", "x.md"), "new")).toThrow();
+    expect(readFileSync(path, "utf8")).toBe("old\n");
   });
 });
 
@@ -230,8 +230,8 @@ describe("the handover command end to end", () => {
     expect(existsSync(join(root, HANDOVER_FILE))).toBe(true);
 
     const document = readFileSync(join(root, HANDOVER_FILE), "utf8");
-    expect(document).toContain("keine Messung");
-    expect(document).toContain("keine offenen Tickets");
+    expect(document).toContain("no measurement");
+    expect(document).toContain("no open tickets");
   });
 
   it("takes the newest context measurement out of the ledger", async () => {
@@ -240,7 +240,7 @@ describe("the handover command end to end", () => {
     appendEvent(root, { type: "context", context: 222_000 });
 
     await runHandover(ctx(root), CONFIG, deps(), {});
-    expect(readFileSync(join(root, HANDOVER_FILE), "utf8")).toContain("- Stand: 222000 Tokens");
+    expect(readFileSync(join(root, HANDOVER_FILE), "utf8")).toContain("- State: 222000 Tokens");
   });
 
   it("names an unreadable queue instead of failing the handover", async () => {
@@ -256,7 +256,7 @@ describe("the handover command end to end", () => {
     const result = await runHandover(ctx(root), CONFIG, broken, {});
     expect(result.ok).toBe(true);
     expect(readFileSync(join(root, HANDOVER_FILE), "utf8")).toContain(
-      "nicht lesbar: gh: not found",
+      "not readable: gh: not found",
     );
   });
 
@@ -323,8 +323,8 @@ describe("`--reason budget` bound to the measurement (SST-DESIGN-024 rev 3)", ()
     expect(error.field).toBe("--reason");
     expect(error.message).toContain("599999");
     expect(error.message).toContain("600000");
-    expect(error.message).toContain("frage-offen");
-    expect(error.message).toContain("Handover ohne --reason");
+    expect(error.message).toContain("question-open");
+    expect(error.message).toContain("handover without --reason");
     expect(existsSync(join(root, HANDOVER_FILE))).toBe(false);
   });
 
@@ -333,7 +333,7 @@ describe("`--reason budget` bound to the measurement (SST-DESIGN-024 rev 3)", ()
 
     const error = await caught(root, { reason: "budget" });
     expect(error.exit).toBe(EXIT.FAILED);
-    expect(error.message).toContain("fehlt");
+    expect(error.message).toContain("missing");
     expect(existsSync(join(root, HANDOVER_FILE))).toBe(false);
   });
 

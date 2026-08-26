@@ -50,10 +50,10 @@ export interface PinnedNormSpec {
  * defaults above may be stale.
  */
 export const PINNED_NORM_SPECS: readonly PinnedNormSpec[] = [
-  { key: "PROC-DEV-039", rev: 2 }, // Sortierstufen (1)-(4) & Wegbereiter-Erbung
-  { key: "PROC-DEV-010", rev: 3 }, // Ticket-Tracking & Label-Taxonomie
-  { key: "PROC-DEV-047", rev: 2 }, // Betriebsprofil: Autonomie, Label-Semantik, owner-hold
-  { key: "PROC-DEV-044", rev: 3 }, // Ticket-Abschluss: Merge-Modell & Aufräumen
+  { key: "PROC-DEV-039", rev: 2 }, // sort tiers (1)-(4) & pathfinder inheritance
+  { key: "PROC-DEV-010", rev: 3 }, // ticket tracking & label taxonomy
+  { key: "PROC-DEV-047", rev: 2 }, // operating profile: autonomy, label semantics, owner-hold
+  { key: "PROC-DEV-044", rev: 3 }, // ticket closure: merge model & cleanup
 ];
 
 /** The project the pinned norm specs live in — always `foundation` (SST-DESIGN-015). */

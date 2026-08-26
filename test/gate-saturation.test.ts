@@ -1,7 +1,7 @@
 /**
  * The reference cases of `production-cockpit/scripts/test-gate.test.mjs`, ported
- * with the logic they hold (spec §7.1, M2 acceptance: "die portierte
- * Sättigungslogik liefert auf den Referenzfällen dieselben Verdikte").
+ * with the logic they hold (spec §7.1, M2 acceptance: "the ported saturation
+ * logic delivers the same verdicts on the reference cases").
  *
  * Every case is kept for the same reason it exists there: each one is a
  * measurement that once proved an earlier version of this gate wrong. The
@@ -102,9 +102,9 @@ describe("parseProcessTable", () => {
   });
 });
 
-// foundation.testing.guideline §Teststufen states it outright: "Ein
-// vorgeschalteter Load-Guard muss self-match-sicher sein (der naive Guard zählt
-// sich selbst in der Prozessliste)."
+// foundation.testing.guideline §Teststufen states it outright: "An
+// upstream load guard must be self-match-safe (the naive guard counts
+// itself in the process list)."
 describe("ownProcessIds — self-match safety", () => {
   const rows = parseProcessTable(
     [

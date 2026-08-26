@@ -18,23 +18,23 @@ const LENSES_KEY = "SST-DESIGN-020";
 
 const SPECS: Record<string, { title: string; status: string; rev: number; body: string }> = {
   [PACK_KEY]: {
-    title: "Befehl: pack",
+    title: "Command: pack",
     status: "approved",
     rev: 2,
-    body: "`pack` erzeugt `.spec-sync/ticket-<nr>.md`, das Wissenspaket.",
+    body: "`pack` generates `.spec-sync/ticket-<nr>.md`, the knowledge pack.",
   },
   [LENSES_KEY]: {
-    title: "Befehl: lenses",
+    title: "Command: lenses",
     status: "approved",
     rev: 2,
-    body: "Leitet das Lens-Set aus dem Diff ab.",
+    body: "Derives the lens set from the diff.",
   },
 };
 
 function blockFor(key: string): string {
   const spec = SPECS[key];
-  if (spec === undefined) return `Spec "${key}" nicht gefunden.`;
-  return `# ${key} — ${spec.title}\n\nStatus: ${spec.status} · Art: design · rev ${spec.rev} · Projekt: spec-sync-toolkit\n\n${spec.body}`;
+  if (spec === undefined) return `Spec "${key}" not found.`;
+  return `# ${key} — ${spec.title}\n\nStatus: ${spec.status} · Type: design · rev ${spec.rev} · Project: spec-sync-toolkit\n\n${spec.body}`;
 }
 
 const config = {
@@ -50,18 +50,18 @@ const config = {
 };
 
 const issueBody = [
-  "## Befund",
+  "## Finding",
   "",
-  "`pack` fehlt noch.",
+  "`pack` is still missing.",
   "",
-  "## Abnahmekriterien",
+  "## Acceptance Criteria",
   "",
-  "1. `spec-sync pack 142` schreibt das Wissenspaket.",
-  "2. Jeder referenzierte Spec trägt `key@rev`.",
+  "1. `spec-sync pack 142` writes the knowledge pack.",
+  "2. Every referenced spec carries `key@rev`.",
   "",
-  "## Spec-Bezug",
+  "## Spec reference",
   "",
-  `\`${PACK_KEY}\` und \`${LENSES_KEY}\`.`,
+  `\`${PACK_KEY}\` and \`${LENSES_KEY}\`.`,
 ].join("\n");
 
 interface Fakes {
@@ -169,8 +169,8 @@ describe("pack (spec §7.3, SST-DESIGN-018)", () => {
     const pack = readFileSync(join(root, ".spec-sync", "ticket-142.md"), "utf8");
 
     // acceptance criteria, spec content, candidate files, gate command
-    expect(pack).toContain("1. `spec-sync pack 142` schreibt das Wissenspaket.");
-    expect(pack).toContain("`pack` erzeugt `.spec-sync/ticket-<nr>.md`, das Wissenspaket.");
+    expect(pack).toContain("1. `spec-sync pack 142` writes the knowledge pack.");
+    expect(pack).toContain("`pack` generates `.spec-sync/ticket-<nr>.md`, the knowledge pack.");
     expect(pack).toContain("`src/commands/pack.ts` — impact: pack");
     expect(pack).toContain("spec-sync gate --profile local");
     expect(pack).toContain("1. lint — `npm run lint`");
@@ -184,8 +184,8 @@ describe("pack (spec §7.3, SST-DESIGN-018)", () => {
         fakeTools({
           issue: {
             number: 142,
-            title: "public-Lane prüft ein stale dist",
-            body: "Kein Spec-Bezug.",
+            title: "public lane checks a stale dist",
+            body: "No spec reference.",
             labels: [],
           },
         }),

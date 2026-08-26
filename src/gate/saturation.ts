@@ -198,9 +198,9 @@ export function parseProcessTable(text: string | null | undefined): ProcessRow[]
 
 /**
  * SELF-MATCH SAFETY — a hard requirement, not a nicety
- * (`foundation.testing.guideline` §Teststufen: "Ein vorgeschalteter Load-Guard
- * muss self-match-sicher sein — der naive Guard zählt sich selbst in der
- * Prozessliste"). A gate whose own workers count as "foreign load" would
+ * (`foundation.testing.guideline` §Teststufen: "An upstream load guard must be
+ * self-match-safe — the naive guard counts itself in the process
+ * list"). A gate whose own workers count as "foreign load" would
  * declare every run saturated and therefore every red run unprovable — worse
  * than the bug it fixes.
  *

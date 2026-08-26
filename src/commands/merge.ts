@@ -40,7 +40,7 @@ export const MAIN_BRANCH = "main";
 
 /**
  * The gate profile whose evidence gates a merge: §Worker-Loop merges only
- * "erst, nachdem das komplette lokale Merge-Gate grün ist".
+ * "after the complete local merge gate is green".
  */
 export const MERGE_GATE_PROFILE = "merge";
 

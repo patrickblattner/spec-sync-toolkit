@@ -1,9 +1,9 @@
-// Portiert aus production-cockpit scripts/stop-check.test.mjs (Stand e070647b/011896b4),
-// Heimat-Umzug Entscheid #193 — inhaltlich unverändert, nur Import-Pfade und TS-Annotationen.
-// Gegenprobe zur Handover-Frische des Stop-Hook-Ventils (#1095).
+// Ported from production-cockpit scripts/stop-check.test.mjs (as of e070647b/011896b4),
+// home move decision #193 — content unchanged, only import paths and TS annotations.
+// Counter-check for the handover freshness of the stop-hook valve (#1095).
 //
-// Der Fehlerpfad, den diese Datei festnagelt: ein `touch` auf ein ALTES Handover (frische mtime,
-// alter Inhalt) darf das Ventil nicht mehr öffnen.
+// The failure path this file nails down: a `touch` on an OLD handover (fresh mtime, old
+// content) must no longer open the valve.
 
 import { describe, expect, it } from "vitest";
 
@@ -29,24 +29,24 @@ import { join } from "node:path";
 
 const NOW = Date.parse("2026-08-17T12:00:00.000Z");
 const handover = (iso: string) =>
-  `reason: done\n\n# spec-sync handover\n\n- Repo: /Users/pbl/projects/production-cockpit\n- Zeit: ${iso}\n`;
+  `reason: done\n\n# spec-sync handover\n\n- Repo: /Users/pbl/projects/production-cockpit\n- Time: ${iso}\n`;
 
 describe("parseHandoverTime", () => {
-  it("liest die `- Zeit:`-Zeile aus dem Handover", () => {
+  it("reads the `- Time:` line from the handover", () => {
     expect(parseHandoverTime(handover("2026-08-17T11:30:00.000Z"))).toBe(
       Date.parse("2026-08-17T11:30:00.000Z"),
     );
   });
 
-  it("meldet null ohne Zeile und bei unparsebarem Wert", () => {
+  it("reports null without a line and for an unparsable value", () => {
     expect(parseHandoverTime("# spec-sync handover\n\n- Repo: /x\n")).toBeNull();
-    expect(parseHandoverTime("- Zeit: gestern\n")).toBeNull();
+    expect(parseHandoverTime("- Time: yesterday\n")).toBeNull();
     expect(parseHandoverTime(undefined)).toBeNull();
   });
 });
 
 describe("handoverAgeMinutes", () => {
-  it("frischer Inhalt: Ventil öffnet (Alter unter dem Fenster)", () => {
+  it("fresh content: valve opens (age below the window)", () => {
     const age = handoverAgeMinutes({
       content: handover("2026-08-17T11:30:00.000Z"),
       mtimeMs: NOW,
@@ -55,16 +55,16 @@ describe("handoverAgeMinutes", () => {
     expect(age).toBe(30);
   });
 
-  it("alter Inhalt trotz frischer mtime: Ventil bleibt zu (touch wirkt nicht)", () => {
+  it("old content despite fresh mtime: valve stays shut (touch has no effect)", () => {
     const age = handoverAgeMinutes({
       content: handover("2026-08-16T12:00:00.000Z"),
-      mtimeMs: NOW, // gerade angefasst
+      mtimeMs: NOW, // just touched
       now: NOW,
     });
     expect(age).toBe(24 * 60);
   });
 
-  it("Fallback: ohne parsebare Zeile zählt die mtime", () => {
+  it("fallback: without a parsable line, the mtime counts", () => {
     expect(
       handoverAgeMinutes({
         content: "# spec-sync handover\n\n- Repo: /x\n",
@@ -73,27 +73,27 @@ describe("handoverAgeMinutes", () => {
       }),
     ).toBe(10);
     expect(
-      handoverAgeMinutes({ content: "- Zeit: gestern\n", mtimeMs: NOW - 5 * 60000, now: NOW }),
+      handoverAgeMinutes({ content: "- Time: yesterday\n", mtimeMs: NOW - 5 * 60000, now: NOW }),
     ).toBe(5);
   });
 
-  it("weder Inhalt noch mtime: unbekannt (null)", () => {
+  it("neither content nor mtime: unknown (null)", () => {
     expect(handoverAgeMinutes({ content: "", mtimeMs: undefined, now: NOW })).toBeNull();
   });
 });
 
-// --- Ventilkette (#1091) ---
+// --- Valve chain (#1091) ---
 //
-// Die Kette ist die eigentliche Mechanik dieses Hooks, und ihre Fehler sind still: eine vertauschte
-// Reihenfolge blockt eine Session, die still enden sollte, ein je-Teilschritt gezählter Block macht
-// aus der Obergrenze eine Endlosschleife, und ein Budget-Block ohne Marke wiederholt sich für immer.
-// Genau diese vier Fälle stehen unten.
+// The chain is this hook's actual mechanism, and its failures are silent: a swapped order blocks
+// a session that should have ended quietly, a block counted per sub-step turns the cap into an
+// infinite loop, and a budget block without a marker repeats forever. Exactly these four cases
+// are below.
 
 describe("contextFromTranscript", () => {
   const line = (id: string, usage: Record<string, unknown>) =>
     JSON.stringify({ type: "assistant", message: { id, usage } });
 
-  it("nimmt den JÜNGSTEN Eintrag, nicht die Summe", () => {
+  it("takes the YOUNGEST entry, not the sum", () => {
     const raw = [
       line("a", { input_tokens: 10, cache_read_input_tokens: 90 }),
       line("b", { input_tokens: 20, cache_read_input_tokens: 180 }),
@@ -101,7 +101,7 @@ describe("contextFromTranscript", () => {
     expect(contextFromTranscript(raw)).toBe(200);
   });
 
-  it("dedupliziert nach message.id — Streaming schreibt denselben Aufruf mehrfach", () => {
+  it("deduplicates by message.id — streaming writes the same call multiple times", () => {
     const raw = [
       line("a", { input_tokens: 100 }),
       line("a", { input_tokens: 100 }),
@@ -110,7 +110,7 @@ describe("contextFromTranscript", () => {
     expect(contextFromTranscript(raw)).toBe(100);
   });
 
-  it("überspringt kaputte und fremde Zeilen, statt zu werfen (live geschriebene Datei)", () => {
+  it("skips broken and foreign lines instead of throwing (a file written live)", () => {
     const raw = [
       '{"type":"user","message":{"id":"u","usage":{"input_tokens":999}}}',
       line("a", { input_tokens: 50 }),
@@ -119,15 +119,15 @@ describe("contextFromTranscript", () => {
     expect(contextFromTranscript(raw)).toBe(50);
   });
 
-  it("ohne verwertbare Einträge: null (unbekannt, nicht null Tokens)", () => {
+  it("without usable entries: null (unknown, not zero tokens)", () => {
     expect(contextFromTranscript("")).toBeNull();
-    expect(contextFromTranscript("kein json")).toBeNull();
+    expect(contextFromTranscript("not json")).toBeNull();
   });
 });
 
-describe("decideStop — Reihenfolge der Ventile", () => {
-  // Die Sonden zählen ihre Aufrufe: "das Ventil hat vorher gegriffen" heisst, dass die teure
-  // Messung dahinter GAR NICHT lief — das ist die Reihenfolge, nachweisbar statt behauptet.
+describe("decideStop — order of the valves", () => {
+  // The probes count their own calls: "the valve already caught it" means the expensive
+  // measurement behind it did NOT run at all — that is the order, proven rather than claimed.
   const probes = () => {
     const calls = { usage: 0, findings: 0, acceptance: 0 };
     return {
@@ -138,30 +138,30 @@ describe("decideStop — Reihenfolge der Ventile", () => {
       },
       findings: () => {
         calls.findings += 1;
-        return ["ein Worktree neben dem Hauptbaum"];
+        return ["a worktree next to the main tree"];
       },
       acceptance: (): AcceptanceVerdict => {
         calls.acceptance += 1;
-        return { decision: "block", reason: "kein Gate-Beleg" };
+        return { decision: "block", reason: "no gate evidence" };
       },
     };
   };
 
-  it("Pause schlägt alles — keine Sonde läuft", () => {
+  it("pause beats everything — no probe runs", () => {
     const p = probes();
     const d = decideStop({ paused: true, claimsBoundary: true, contextPercent: 150, ...p });
     expect(d).toMatchObject({ action: "allow", stage: "pause" });
     expect(p.calls).toEqual({ usage: 0, findings: 0, acceptance: 0 });
   });
 
-  it("frisches Handover schlägt die Budget-Stufe", () => {
+  it("a fresh handover beats the budget stage", () => {
     const p = probes();
     const d = decideStop({ handoverAgeMin: 5, contextPercent: 150, claimsBoundary: true, ...p });
     expect(d).toMatchObject({ action: "allow", stage: "handover" });
     expect(p.calls.usage).toBe(0);
   });
 
-  it("Budget-Stufe schlägt Usage und Werkbank", () => {
+  it("the budget stage beats usage and workbench", () => {
     const p = probes();
     const d = decideStop({ contextPercent: 100, claimsBoundary: true, ...p });
     expect(d).toMatchObject({ action: "block", stage: "budget" });
@@ -169,7 +169,7 @@ describe("decideStop — Reihenfolge der Ventile", () => {
     expect(p.calls).toEqual({ usage: 0, findings: 0, acceptance: 0 });
   });
 
-  it("Usage-Ventil lässt still durch, ohne die Werkbank überhaupt zu messen", () => {
+  it("the usage valve lets through quietly, without even measuring the workbench", () => {
     const p = probes();
     const d = decideStop({
       ...p,
@@ -180,7 +180,7 @@ describe("decideStop — Reihenfolge der Ventile", () => {
     expect(p.calls.findings).toBe(0);
   });
 
-  it("ohne Grenz-Behauptung werden BEIDE Teilschritte übersprungen", () => {
+  it("without a boundary claim BOTH sub-steps are skipped", () => {
     const p = probes();
     const d = decideStop({ claimsBoundary: false, ...p });
     expect(d).toMatchObject({ action: "allow", stage: "gate" });
@@ -188,12 +188,12 @@ describe("decideStop — Reihenfolge der Ventile", () => {
     expect(p.calls.acceptance).toBe(0);
   });
 
-  // #1107 / dev.process 2.36.1 §Worker-Loop (b), Q&A #447/#448: die Kette ist eine RANGORDNUNG,
-  // kein Ausführungsplan. Das Usage-Ventil wird laut Norm "nur unmittelbar vor einem Block"
-  // abgefragt und "nie bei normalen Turn-Enden" — ein Warte- oder Zwischenstands-Turn darf
-  // deshalb weder Keychain noch Netz kosten. Der Fehlbau, den dieser Test festnagelt: das Ventil
-  // stand vor dem Tor und lief an JEDEM Turn-Ende, für ein Ergebnis, das nur öffnen kann.
-  it("ohne Grenz-Behauptung wird das Usage-Ventil NIE abgefragt — auch nicht, wenn es greifen würde", () => {
+  // #1107 / dev.process 2.36.1 §Worker-Loop (b), Q&A #447/#448: the chain is a RANK ORDER, not
+  // an execution plan. Per the norm the usage valve is checked "only immediately before a block"
+  // and "never at normal turn ends" — a waiting or interim-status turn must therefore cost
+  // neither keychain nor network. The wrong build this test pins down: the valve stood in front
+  // of the gate and ran at EVERY turn end, for a result that can only open.
+  it("without a boundary claim the usage valve is NEVER queried — not even when it would apply", () => {
     const p = probes();
     const d = decideStop({
       ...p,
@@ -207,7 +207,7 @@ describe("decideStop — Reihenfolge der Ventile", () => {
     expect(p.calls.usage).toBe(0);
   });
 
-  it("die Rangordnung bleibt: Usage schlägt Block-Obergrenze, Werkbank und Abnahme", () => {
+  it("the rank order holds: usage beats the block cap, workbench and acceptance", () => {
     const p = probes();
     const d = decideStop({
       ...p,
@@ -219,7 +219,7 @@ describe("decideStop — Reihenfolge der Ventile", () => {
     expect(p.calls).toMatchObject({ findings: 0, acceptance: 0 });
   });
 
-  it("Werkbank vor Abnahme: der Prüfer wird erst bei leerer Werkbank befragt", () => {
+  it("workbench before acceptance: the checker is asked only once the workbench is empty", () => {
     const p = probes();
     expect(decideStop({ claimsBoundary: true, ...p })).toMatchObject({
       action: "block",
@@ -230,24 +230,24 @@ describe("decideStop — Reihenfolge der Ventile", () => {
     const q = probes();
     const d = decideStop({ claimsBoundary: true, ...q, findings: () => [] });
     expect(d).toMatchObject({ action: "block", stage: "acceptance" });
-    expect(d.reason).toContain("kein Gate-Beleg");
+    expect(d.reason).toContain("no gate evidence");
   });
 });
 
-describe("decideStop — hook-weiter Zähler und Budget-Marke", () => {
-  it("die Obergrenze zählt hook-weit: drei Blocks sind drei Blocks, gleich welcher Stufe", () => {
+describe("decideStop — hook-wide counter and budget marker", () => {
+  it("the cap counts hook-wide: three blocks are three blocks, whatever the stage", () => {
     const args = {
       claimsBoundary: true,
-      findings: () => ["ein Worktree neben dem Hauptbaum"],
+      findings: () => ["a worktree next to the main tree"],
       acceptance: (): AcceptanceVerdict => ({ decision: "block", reason: "x" }),
     };
     expect(decideStop({ ...args, blockCount: MAX_BLOCKS - 1 }).action).toBe("block");
     const capped = decideStop({ ...args, blockCount: MAX_BLOCKS });
     expect(capped).toMatchObject({ action: "allow", stage: "cap" });
-    expect(capped.note).toContain(`nach ${MAX_BLOCKS} Blocks`);
+    expect(capped.note).toContain(`after ${MAX_BLOCKS} blocks`);
   });
 
-  it("Budget blockt GENAU EINMAL — mit gesetzter Marke läuft die Kette weiter", () => {
+  it("budget blocks EXACTLY ONCE — with the marker set, the chain keeps running", () => {
     const first = decideStop({ contextPercent: 120, claimsBoundary: false });
     expect(first).toMatchObject({ action: "block", stage: "budget" });
 
@@ -259,11 +259,11 @@ describe("decideStop — hook-weiter Zähler und Budget-Marke", () => {
     expect(second).toMatchObject({ action: "allow", stage: "gate" });
   });
 
-  it("unmessbarer Kontext blockt nie (fail-open)", () => {
+  it("an unmeasurable context never blocks (fail-open)", () => {
     expect(decideStop({ contextPercent: null, claimsBoundary: false }).stage).toBe("gate");
   });
 
-  it("unter dem Budget blockt die Stufe nicht", () => {
+  it("below the budget the stage does not block", () => {
     expect(decideStop({ contextPercent: 99.9, claimsBoundary: false }).stage).toBe("gate");
   });
 });
@@ -271,10 +271,10 @@ describe("decideStop — hook-weiter Zähler und Budget-Marke", () => {
 describe("decideSubagentStop", () => {
   const blocking = (): AcceptanceVerdict => ({
     decision: "block",
-    reason: "Fertig ohne Gate-Beleg",
+    reason: "Done without gate evidence",
   });
 
-  it("prüft nur bauende und abnehmende Agenten", () => {
+  it("checks only building and accepting agents", () => {
     expect(decideSubagentStop({ agentType: "investigate", acceptance: blocking }).stage).toBe(
       "gate",
     );
@@ -286,7 +286,7 @@ describe("decideSubagentStop", () => {
       });
   });
 
-  it("Budget erzwingt den sauberen Abschluss, genau einmal", () => {
+  it("budget forces a clean close, exactly once", () => {
     const first = decideSubagentStop({ agentType: "impl", contextPercent: 100 });
     expect(first).toMatchObject({ action: "block", stage: "budget" });
     expect(first.reason).toContain("CONTEXT LOW");
@@ -296,7 +296,7 @@ describe("decideSubagentStop", () => {
     ).toBe("clean");
   });
 
-  it("Pause und Obergrenze lassen durch", () => {
+  it("pause and the cap let through", () => {
     expect(
       decideSubagentStop({ paused: true, agentType: "impl", acceptance: blocking }).action,
     ).toBe("allow");
@@ -305,56 +305,56 @@ describe("decideSubagentStop", () => {
     ).toMatchObject({ action: "allow", stage: "cap" });
   });
 
-  it("ein Prüfer ohne Verdikt erlaubt (fail-open)", () => {
+  it("a checker without a verdict allows (fail-open)", () => {
     expect(decideSubagentStop({ agentType: "impl", acceptance: () => null }).stage).toBe("clean");
   });
 });
 
 describe("parseVerdict", () => {
-  it("liest ein Block-Verdikt aus der JSON-Hülle des Prüfprozesses", () => {
-    const raw = JSON.stringify({ result: '{"decision":"block","reason":"kein Gate-Beleg"}' });
-    expect(parseVerdict(raw)).toEqual({ decision: "block", reason: "kein Gate-Beleg" });
+  it("reads a block verdict from the checker process's JSON envelope", () => {
+    const raw = JSON.stringify({ result: '{"decision":"block","reason":"no gate evidence"}' });
+    expect(parseVerdict(raw)).toEqual({ decision: "block", reason: "no gate evidence" });
   });
 
-  it("liest es auch ohne Hülle und mit Geschwätz drumherum", () => {
-    expect(parseVerdict('Klar: {"decision":"block","reason":"kein Verdict"} — fertig')).toEqual({
+  it("reads it also without an envelope and with chatter around it", () => {
+    expect(parseVerdict('Sure: {"decision":"block","reason":"no verdict"} — done')).toEqual({
       decision: "block",
-      reason: "kein Verdict",
+      reason: "no verdict",
     });
   });
 
-  it("trennt ERLAUBT von UNLESBAR — genau diese Trennung trägt das Protokoll", () => {
+  it("separates ALLOWED from UNREADABLE — exactly this distinction carries the log", () => {
     expect(parseVerdict('{"decision":"allow"}')).toEqual({ decision: "allow" });
     expect(parseVerdict("")).toBeNull();
     expect(parseVerdict(undefined)).toBeNull();
-    expect(parseVerdict("{kaputt")).toBeNull();
-    expect(parseVerdict('{"entscheidung":"block"}')).toBeNull();
+    expect(parseVerdict("{broken")).toBeNull();
+    expect(parseVerdict('{"verdict":"block"}')).toBeNull();
   });
 
-  it("Block ohne Begründung bekommt eine, statt zu verschwinden", () => {
+  it("a block without a reason gets one, instead of disappearing", () => {
     expect(parseVerdict('{"decision":"block"}')).toEqual({
       decision: "block",
-      reason: "Beleg fehlt",
+      reason: "missing evidence",
     });
   });
 });
 
-describe("classify — Timeout vom Laufzeitfehler getrennt", () => {
-  it("erkennt den abgewürgten Prüfer als Timeout", () => {
+describe("classify — timeout told apart from a runtime error", () => {
+  it("recognises the killed checker as a timeout", () => {
     expect(classify(Object.assign(new Error("killed"), { killed: true }))).toBe("timeout");
     expect(classify(Object.assign(new Error("x"), { code: "ETIMEDOUT" }))).toBe("timeout");
     expect(classify(Object.assign(new Error("x"), { signal: "SIGTERM" }))).toBe("timeout");
   });
 
-  it("alles andere ist Laufzeit", () => {
+  it("everything else is runtime", () => {
     expect(classify(new Error("command not found"))).toBe("runtime");
     expect(classify(undefined)).toBe("runtime");
   });
 });
 
-// Das Protokoll ist die Gegenprobe zur Nachsicht des Hooks: "erlaubt" und "konnte nicht fragen"
-// sehen von aussen gleich aus, und ohne Zeile wüsste niemand, ob der Prüfer je geantwortet hat.
-describe("askAcceptance — Verdikt und Protokoll", () => {
+// The log is the counter-check to the hook's leniency: "allowed" and "could not ask" look the
+// same from outside, and without a line nobody would know whether the checker ever answered.
+describe("askAcceptance — verdict and log", () => {
   const collect = () => {
     const lines: LogEntry[] = [];
     return {
@@ -365,7 +365,7 @@ describe("askAcceptance — Verdikt und Protokoll", () => {
     };
   };
 
-  it("fragt gar nicht erst bei leerer Nachricht", () => {
+  it("does not even ask on an empty message", () => {
     let called = false;
     const { log } = collect();
     const verdict = askAcceptance({
@@ -381,11 +381,11 @@ describe("askAcceptance — Verdikt und Protokoll", () => {
     expect(called).toBe(false);
   });
 
-  it("protokolliert den Timeout als fail-open MIT Grund und erlaubt", () => {
+  it("logs the timeout as fail-open WITH a reason and allows", () => {
     const { lines, log } = collect();
     const verdict = askAcceptance({
       kind: "stop",
-      message: "Durchlauf ist fertig.",
+      message: "The run is done.",
       log,
       run: () => {
         throw Object.assign(new Error("ETIMEDOUT"), { killed: true });
@@ -396,20 +396,20 @@ describe("askAcceptance — Verdikt und Protokoll", () => {
     expect(lines[0]).toMatchObject({ outcome: "fail-open", failReason: "timeout" });
   });
 
-  it("protokolliert eine unlesbare Antwort getrennt als parse", () => {
+  it("logs an unreadable answer separately as parse", () => {
     const { lines, log } = collect();
     expect(
-      askAcceptance({ kind: "stop", message: "Zielabgleich.", log, run: () => "kein json" }),
+      askAcceptance({ kind: "stop", message: "Goal reconciliation.", log, run: () => "not json" }),
     ).toBeNull();
     expect(lines[0]).toMatchObject({ outcome: "fail-open", failReason: "parse" });
   });
 
-  it("protokolliert ein ERLAUBT als solches — nicht als fail-open", () => {
+  it("logs an ALLOWED as such — not as fail-open", () => {
     const { lines, log } = collect();
     expect(
       askAcceptance({
         kind: "stop",
-        message: "Zielabgleich.",
+        message: "Goal reconciliation.",
         log,
         run: () => '{"decision":"allow"}',
       }),
@@ -418,34 +418,34 @@ describe("askAcceptance — Verdikt und Protokoll", () => {
     expect(lines[0]?.failReason).toBeUndefined();
   });
 
-  it("reicht ein Block durch und protokolliert Verdikt UND Begründung", () => {
+  it("passes a block through and logs verdict AND reason", () => {
     const { lines, log } = collect();
     let seen = "";
     const verdict = askAcceptance({
       kind: "subagent",
       agentType: "impl-fast",
-      message: "Ticket ist fertig, merge-bereit.",
+      message: "Ticket is done, ready to merge.",
       log,
       run: (prompt: string) => {
         seen = prompt;
-        return '{"decision":"block","reason":"kein Gate-Beleg"}';
+        return '{"decision":"block","reason":"no gate evidence"}';
       },
     });
-    expect(verdict).toEqual({ decision: "block", reason: "kein Gate-Beleg" });
-    expect(seen).toContain("Agent-Typ: impl-fast");
-    expect(seen).toContain("Ticket ist fertig, merge-bereit.");
+    expect(verdict).toEqual({ decision: "block", reason: "no gate evidence" });
+    expect(seen).toContain("Agent type: impl-fast");
+    expect(seen).toContain("Ticket is done, ready to merge.");
     expect(lines[0]).toMatchObject({
       outcome: "block",
-      reason: "kein Gate-Beleg",
+      reason: "no gate evidence",
       agentType: "impl-fast",
     });
   });
 
-  it("schreibt die Zeile wirklich auf die Platte, als JSONL", () => {
+  it("really writes the line to disk, as JSONL", () => {
     const cwd = mkdtempSync(join(tmpdir(), "stop-check-log-"));
     askAcceptance({
       kind: "stop",
-      message: "Zielabgleich.",
+      message: "Goal reconciliation.",
       cwd,
       run: () => '{"decision":"allow"}',
     });
@@ -453,38 +453,38 @@ describe("askAcceptance — Verdikt und Protokoll", () => {
     expect(JSON.parse(written)).toMatchObject({ kind: "stop", outcome: "allow" });
   });
 
-  it("ein unschreibbares Protokoll ändert die Entscheidung nicht", () => {
+  it("an unwritable log does not change the decision", () => {
     expect(
       askAcceptance({
         kind: "stop",
-        message: "Zielabgleich.",
-        cwd: "/nicht/beschreibbar",
-        run: () => '{"decision":"block","reason":"kein Beleg"}',
+        message: "Goal reconciliation.",
+        cwd: "/not/writable",
+        run: () => '{"decision":"block","reason":"no evidence"}',
       }),
-    ).toEqual({ decision: "block", reason: "kein Beleg" });
+    ).toEqual({ decision: "block", reason: "no evidence" });
   });
 });
 
-// Die Messung selbst, an ihrer wichtigsten Eigenschaft festgenagelt: sie darf im Fehlerfall NICHTS
-// blocken. Ein Ventil, das bei Messfehlern zuschlägt, friert die Queue ein — der teuerste
-// Fehlermodus dieses Repos.
-describe("measureContextPercent — fail-open der Messung", () => {
-  it("ohne Transcript-Pfad oder ohne Budget: null (kein Block)", () => {
+// The measurement itself, pinned down on its most important property: it must block NOTHING on
+// error. A valve that strikes on a measurement failure freezes the queue — the most expensive
+// failure mode of this repo.
+describe("measureContextPercent — fail-open of the measurement", () => {
+  it("without a transcript path or without a budget: null (no block)", () => {
     expect(measureContextPercent(undefined, 250000)).toBeNull();
-    expect(measureContextPercent("/nicht/vorhanden.jsonl", null)).toBeNull();
+    expect(measureContextPercent("/does/not/exist.jsonl", null)).toBeNull();
   });
 
-  it("nicht lesbares Transcript: null statt Ausnahme", () => {
-    expect(measureContextPercent("/nicht/vorhanden.jsonl", 250000)).toBeNull();
+  it("unreadable transcript: null instead of an exception", () => {
+    expect(measureContextPercent("/does/not/exist.jsonl", 250000)).toBeNull();
   });
 
-  it("lesbares Transcript ohne Usage-Einträge: null", () => {
+  it("readable transcript without usage entries: null", () => {
     const file = join(mkdtempSync(join(tmpdir(), "stop-check-")), "t.jsonl");
-    writeFileSync(file, "kein json\n");
+    writeFileSync(file, "not json\n");
     expect(measureContextPercent(file, 250000)).toBeNull();
   });
 
-  it("misst in Prozent des Budgets", () => {
+  it("measures in percent of the budget", () => {
     const file = join(mkdtempSync(join(tmpdir(), "stop-check-")), "t.jsonl");
     writeFileSync(
       file,
@@ -494,10 +494,10 @@ describe("measureContextPercent — fail-open der Messung", () => {
   });
 });
 
-// Die Werkbank-Prüfung an der einen Ausnahme festgenagelt, die sie nie melden darf:
-// `.claude/**` ist Owner-/Overmind-Domäne (Entscheid #192) — der Worker könnte den Befund
-// nie beräumen, die Chore-Regel lässt die Änderung bewusst liegen.
-describe("workbenchFindings — .claude/** ist nie ein Befund", () => {
+// The workbench check pinned down on the one exception it must never report: `.claude/**` is
+// owner/Overmind domain (decision #192) — the worker could never clear the finding, the chore
+// rule deliberately leaves the change lying there.
+describe("workbenchFindings — .claude/** is never a finding", () => {
   function scratchRepoWithClaude(): string {
     const dir = mkdtempSync(join(tmpdir(), "workbench-"));
     const git = (...args: string[]) =>
@@ -510,18 +510,18 @@ describe("workbenchFindings — .claude/** ist nie ein Befund", () => {
     writeFileSync(join(dir, "code.txt"), "a\n");
     git("add", "-A");
     git("commit", "-q", "-m", "init");
-    // origin/main auf denselben Stand zeigen lassen, damit nur die dirty-Prüfung spricht.
+    // Point origin/main at the same state so only the dirty check speaks.
     git("update-ref", "refs/remotes/origin/main", "HEAD");
     return dir;
   }
 
-  it("eine geänderte .claude/settings.json (Overmind-Chore) blockt nicht", () => {
+  it("a changed .claude/settings.json (an Overmind chore) does not block", () => {
     const dir = scratchRepoWithClaude();
     writeFileSync(join(dir, ".claude", "settings.json"), '{"changed":true}\n');
     expect(workbenchFindings(dir)).toEqual([]);
   });
 
-  it("eine geänderte getrackte Code-Datei bleibt ein Befund", () => {
+  it("a changed tracked code file remains a finding", () => {
     const dir = scratchRepoWithClaude();
     writeFileSync(join(dir, "code.txt"), "b\n");
     const findings = workbenchFindings(dir);
@@ -530,13 +530,14 @@ describe("workbenchFindings — .claude/** ist nie ein Befund", () => {
   });
 });
 
-// Architekten-Kette (PROC-DEV-020 rev 4 / PROC-DEV-036 rev 5, Owner-Wort 22.08.): eine Stufe bei
-// 75 %, genau einmal, Handover diktiert mit der Messung; Owner-Gespräch erzwingt die Ansage.
+// Architect chain (PROC-DEV-020 rev 4 / PROC-DEV-036 rev 5, owner's word 08/22): one stage at
+// 75 %, exactly once, the handover dictated with the measurement; an owner conversation forces
+// the announcement.
 describe("decideArchitectStop", () => {
   const AT = "2026-08-22T14:00:00.000Z";
   const base = { budgetTokens: 250_000, measuredAt: AT };
 
-  it("Schwelle ist 75 % — darunter erlaubt, ohne Block", () => {
+  it("the threshold is 75 % — below it, allow, no block", () => {
     expect(ARCHITECT_BUDGET_PERCENT).toBe(75);
     expect(decideArchitectStop({ ...base, contextTokens: 187_499 })).toMatchObject({
       action: "allow",
@@ -544,26 +545,26 @@ describe("decideArchitectStop", () => {
     });
   });
 
-  it("ab 75 % blockt sie einmal und diktiert das Handover mit der gemessenen Zahl", () => {
+  it("from 75 % it blocks once and dictates the handover with the measured number", () => {
     const d = decideArchitectStop({ ...base, contextTokens: 187_500 });
     expect(d).toMatchObject({ action: "block", stage: "budget" });
     expect(d.reason).toContain("reason: budget");
-    expect(d.reason).toContain(`- Stand: 187500 Tokens (gemessen ${AT})`);
-    expect(d.reason).toContain("75 % des Budgets 250000");
+    expect(d.reason).toContain(`- State: 187500 Tokens (measured ${AT})`);
+    expect(d.reason).toContain("75 % of the budget 250000");
     expect(
       decideArchitectStop({ ...base, contextTokens: 300_000, budgetAlreadyBlocked: true }),
     ).toMatchObject({ action: "allow", stage: "clean" });
   });
 
-  it("Owner-Gespräch erzwingt die Ansage statt des Handovers", () => {
+  it("an owner conversation forces the announcement instead of the handover", () => {
     const d = decideArchitectStop({ ...base, contextTokens: 200_000, ownerEngaged: true });
     expect(d).toMatchObject({ action: "block", stage: "budget-owner" });
-    expect(d.reason).toContain("KEIN Handover");
+    expect(d.reason).toContain("do NOT write a handover");
     expect(d.reason).toContain("/handover");
-    expect(d.reason).not.toContain("- Stand:");
+    expect(d.reason).not.toContain("- State:");
   });
 
-  it("Pause-Flag und frisches Handover schlagen die Budget-Stufe; ohne Messung kein Block", () => {
+  it("pause flag and a fresh handover beat the budget stage; no block without a measurement", () => {
     expect(decideArchitectStop({ ...base, contextTokens: 300_000, paused: true })).toMatchObject({
       action: "allow",
       stage: "pause",
@@ -583,7 +584,7 @@ describe("decideArchitectStop", () => {
 });
 
 describe("ownerEngaged", () => {
-  it("liest last_owner_prompt_at aus der Zustandsdatei des worker-harness-Hooks; fehlt sie, false", () => {
+  it("reads last_owner_prompt_at from the worker-harness hook's state file; false when absent", () => {
     const stateDir = mkdtempSync(join(tmpdir(), "wh-state-"));
     const cwd = "/Users/pbl/projects/specs-meta/projects/community-platform";
     const slug = cwd.replace(/[^A-Za-z0-9]/g, "-");

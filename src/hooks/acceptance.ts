@@ -1,17 +1,17 @@
-// Abnahme-Teilschritt der Turn-Ende-Hooks (#1091 (b)/(c)).
+// Acceptance sub-step of the turn-end hooks (#1091 (b)/(c)).
 //
-// Bis zum 17.08. war das ein nativer `prompt`-Hook. Verboten ist genau diese Bauform — sie steht
-// vor keiner Ventilkette und blockte deshalb ungebremst (Vorfall 16./17.08.); die Prüfung selbst
-// ist gefordert. Sie kehrt hier als Teilschritt EINES Command-Hooks zurück: befragt wird nur, wer
-// das Regex-Tor passiert hat und an dem alle Ventile vorbei sind, geantwortet wird strukturiert,
-// geparst wird deterministisch. Der Wortlaut der Prüfaufträge ist der der entfernten prompt-Hooks
-// (production-cockpit Commit 0c80ded4), nicht neu erfunden.
+// Until 08/17 this was a native `prompt` hook. That exact construction is forbidden — it sits in
+// front of no valve chain and therefore blocked unchecked (incident 08/16–17); the check itself is
+// required. It comes back here as a sub-step of ONE command hook: only whoever has passed the
+// regex gate and gotten past every valve is asked, the answer is structured, parsing is
+// deterministic. The wording of the check prompts is that of the removed prompt hooks
+// (production-cockpit commit 0c80ded4), not reinvented.
 //
-// Die eine Regel, die über allem steht: **fail-open**. Kein Prüfer, kein Netz, kaputte Antwort,
-// Zeitüberschreitung — alles endet in ERLAUBEN. Ein Hook, der härter ist als sein Wissen, hält die
-// Session an, ohne etwas zu wissen; genau das war der Block-Loop. Damit "erlaubt" nicht mit
-// "geantwortet" verwechselt wird, wird JEDER fail-open-Fall mit seinem Grund protokolliert: ein
-// Prüfer, der nie antwortet, sieht sonst aus wie einer, der nie etwas zu beanstanden hat.
+// The one rule that stands above everything: **fail-open**. No checker, no network, a broken
+// answer, a timeout — all of it ends in ALLOW. A hook that is stricter than its own knowledge
+// halts the session without knowing anything; that was exactly the block loop. So that "allowed"
+// is never confused with "answered", EVERY fail-open case is logged with its reason: a checker
+// that never answers would otherwise look like one that never has anything to object to.
 
 import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync } from "node:fs";
@@ -19,39 +19,39 @@ import { join } from "node:path";
 
 import type { AcceptanceVerdict } from "./lib.js";
 
-// Modell explizit gepinnt: ein `claude -p` ohne `--model` erbt den globalen Eintrag — auf diesem Weg
-// liefen beide Worker vom 13.–17.08. unbemerkt auf einem grossen Modell (doppelte Quote-Last). Für
-// ein Ein-Zeilen-Verdikt über einen kurzen Text ist Haiku die richtige Klasse.
+// Model explicitly pinned: a `claude -p` without `--model` inherits the global entry — this is how
+// both workers ran unnoticed on a large model from 08/13–17 (double quota load). For a one-line
+// verdict on a short text, Haiku is the right class.
 const MODEL = "claude-haiku-4-5-20251001";
-/** Harte Obergrenze des Prüfaufrufs. Der Hook-Timeout in den Settings muss darüber liegen. */
+/** Hard upper bound of the check call. The hook timeout in the settings must be above this. */
 const TIMEOUT_MS = 45_000;
-/** So viel Schlussnachricht sieht der Prüfer — der Rest trägt zur Beurteilung nichts bei. */
+/** This much of the final message the checker sees — the rest contributes nothing to the judgment. */
 const MAX_MESSAGE_CHARS = 6000;
-/** Auszählbares Protokoll, eine JSON-Zeile je Befragung. */
+/** Countable log, one JSON line per query. */
 const LOG_FILE = join(".spec-sync", "acceptance-check.jsonl");
 
 const OUTPUT_CONTRACT =
-  'Antworte mit GENAU einer Zeile JSON, ohne Rahmen, ohne Erklärung davor oder danach: {"decision":"allow"} oder {"decision":"block","reason":"<der fehlende Beleg, ein Satz>"}.';
+  'Answer with EXACTLY one line of JSON, no fencing, no explanation before or after: {"decision":"allow"} or {"decision":"block","reason":"<the missing evidence, one sentence>"}.';
 
 const STOP_PROMPT =
-  "Abnahme-Prüfer für das Turn-Ende einer spec-sync-Worker-Session. Beurteile NUR die unten stehende " +
-  "Schlussnachricht. ERLAUBE, wenn die Nachricht kein Durchlauf-Ende behauptet (Zwischenstand, " +
-  "Rückfrage, Owner-Dialog) — normale Turns nie blocken. ERLAUBE ein behauptetes Durchlauf-Ende bei " +
-  "einem der drei belegten Ausgänge: (1) Handover geschrieben (npx spec-sync handover, beliebiger " +
-  "--reason) — immer erlauben, nie nach einem Handover blocken. (2) In-sync-Ende: nachgewiesener Pin-Drift " +
-  "ohne Änderungen UND leerer Ticket-Sweep (auto-audit, type: bug, spec-sync) sind konkret genannt. " +
-  "(3) Durchlauf-DoD: Zielabgleich nennt Drift→Tickets→Merges, die Zuordnung der offenen Issues, die " +
-  "Section-Zuordnung und die leere Werkbank (keine Worktrees/Ticket-Branches, Agents gestoppt, Merges " +
-  "gepusht). BLOCKE nur, wenn ein Durchlauf-Ende oder Zielabgleich behauptet wird und ein Beleg fehlt " +
-  "— nenne den fehlenden Beleg präzise. Im Zweifel erlauben.";
+  "Acceptance checker for the turn end of a spec-sync worker session. Judge ONLY the final message " +
+  "below. ALLOW when the message does not claim the run has ended (an interim status, a follow-up " +
+  "question, an owner dialogue) — never block normal turns. ALLOW a claimed run end for one of three " +
+  "evidenced outcomes: (1) Handover written (npx spec-sync handover, any --reason) — always allow, " +
+  "never block after a handover. (2) In-sync ending: a proven pin drift with no changes AND an empty " +
+  "ticket sweep (auto-audit, type: bug, spec-sync) are named concretely. (3) Run DoD: the goal " +
+  "reconciliation names drift→tickets→merges, the assignment of the open issues, the section mapping, " +
+  "and the empty workbench (no worktrees/ticket branches, agents stopped, merges pushed). BLOCK only " +
+  "when a run end or goal reconciliation is claimed and evidence is missing — name the missing " +
+  "evidence precisely. When in doubt, allow.";
 
 const SUBAGENT_PROMPT =
-  "Abnahme-Prüfer für den Abschluss eines Build-Agenten in einem spec-sync-Worker-Repo. Beurteile NUR " +
-  "die unten stehende Schlussnachricht. Zwischenstände immer erlauben (Frage, Statusmeldung, " +
-  "CONTEXT LOW, Eskalation oder Blockade mit Grund). BLOCKE nur, wenn die Nachricht behauptet, das " +
-  "Ticket sei fertig gebaut oder bereit zum Merge, ohne Gate-Beleg (Gate-Kommando mit grünem Ergebnis " +
-  "bzw. Exit-Code) — bei einem review-Agenten ohne abgegebenes Verdict. Nenne den fehlenden Beleg " +
-  "präzise. Im Zweifel erlauben.";
+  "Acceptance checker for the completion of a build agent in a spec-sync worker repo. Judge ONLY the " +
+  "final message below. Always allow interim states (a question, a status update, CONTEXT LOW, an " +
+  "escalation or a block with a reason). BLOCK only when the message claims the ticket is built and " +
+  "done or ready to merge, without gate evidence (a gate command with a green result or exit code) — " +
+  "for a review agent, without a delivered verdict. Name the missing evidence precisely. When in " +
+  "doubt, allow.";
 
 export interface LogEntry {
   kind: string;
@@ -64,9 +64,9 @@ export interface LogEntry {
 }
 
 /**
- * Fragt den Prüfer und gibt `{decision, reason}` zurück, wenn er BLOCKT — sonst `null`. Für die
- * Kette heisst `null` immer ERLAUBEN, gleich ob der Prüfer erlaubt hat oder gar nicht antworten
- * konnte; welcher der beiden Fälle es war, steht danach im Protokoll.
+ * Asks the checker and returns `{decision, reason}` when it BLOCKS — otherwise `null`. For the
+ * chain, `null` always means ALLOW, whether the checker allowed or could not answer at all; which
+ * of the two cases it was is recorded in the log afterwards.
  */
 export function askAcceptance({
   kind,
@@ -98,25 +98,25 @@ export function askAcceptance({
 
   const verdict = parseVerdict(raw);
   if (verdict === null) {
-    // Antwort da, aber unlesbar — das ist ein anderer Fehler als "nicht erreichbar", und nur
-    // getrennt gezählt sieht man, ob das Modell strukturell danebenliegt.
+    // An answer came back but is unreadable — that is a different error than "unreachable", and
+    // only counted separately can you see whether the model is structurally off.
     log(cwd, { ...entry, outcome: "fail-open", failReason: "parse", raw: short(raw) });
     return null;
   }
 
-  // Verdikt UND Begründung wandern ins Protokoll: ein Block, dessen eigene Begründung auf ERLAUBEN
-  // schliessen lässt, ist nur so später überhaupt auffindbar.
+  // Verdict AND reason go into the log: a block whose own reason would suggest ALLOW is only
+  // findable later this way.
   log(cwd, { ...entry, outcome: verdict.decision, reason: verdict.reason });
   return verdict.decision === "block" ? verdict : null;
 }
 
 function buildPrompt(kind: string, text: string, agentType: unknown): string {
   const head = kind === "subagent" ? SUBAGENT_PROMPT : STOP_PROMPT;
-  const context = kind === "subagent" ? `\n\nAgent-Typ: ${String(agentType ?? "unbekannt")}` : "";
-  return `${head}\n\n${OUTPUT_CONTRACT}${context}\n\nSchlussnachricht:\n"""\n${text}\n"""`;
+  const context = kind === "subagent" ? `\n\nAgent type: ${String(agentType ?? "unknown")}` : "";
+  return `${head}\n\n${OUTPUT_CONTRACT}${context}\n\nFinal message:\n"""\n${text}\n"""`;
 }
 
-/** Der eine Aufruf nach draussen. Getrennt gehalten, damit Tests ihn ersetzen können. */
+/** The one call to the outside. Kept separate so tests can replace it. */
 function runChecker(prompt: string): string {
   return execFileSync("claude", ["-p", prompt, "--model", MODEL, "--output-format", "json"], {
     encoding: "utf8",
@@ -125,7 +125,7 @@ function runChecker(prompt: string): string {
   });
 }
 
-/** Zeitüberschreitung oder sonstiger Laufzeitfehler — die beiden trennen sich am Kill-Signal. */
+/** Timeout or other runtime error — the two are told apart by the kill signal. */
 export function classify(error: unknown): string {
   const e = error as { killed?: boolean; code?: string; signal?: string } | null;
   if (e && (e.killed === true || e.code === "ETIMEDOUT" || e.signal === "SIGTERM"))
@@ -138,7 +138,7 @@ function short(value: unknown): string {
   return text.slice(0, 300);
 }
 
-/** Best-effort-Protokoll: eine JSON-Zeile. Schlägt das Schreiben fehl, bleibt es beim Erlauben. */
+/** Best-effort log: one JSON line. If the write fails, it stays at allow. */
 export function logLine(cwd: string, entry: LogEntry): void {
   try {
     const dir = join(cwd || process.cwd(), ".spec-sync");
@@ -148,14 +148,14 @@ export function logLine(cwd: string, entry: LogEntry): void {
       `${JSON.stringify({ ts: new Date().toISOString(), ...entry })}\n`,
     );
   } catch {
-    // Protokoll nicht schreibbar — der Hook entscheidet trotzdem, nur leiser.
+    // Log not writable — the hook still decides, just more quietly.
   }
 }
 
 /**
- * Liest das Verdikt aus der Prüfer-Antwort: `{decision, reason}` bei `block`, `{decision:"allow"}`
- * bei `allow`, und `null`, wenn nichts Lesbares da war. Zwei Hüllen sind möglich — die JSON-Hülle
- * des Clients (`{"result":"…"}`) und die blanke Antwort; beides wird versucht.
+ * Reads the verdict from the checker's answer: `{decision, reason}` for `block`, `{decision:"allow"}`
+ * for `allow`, and `null` when nothing readable was there. Two envelopes are possible — the
+ * client's JSON envelope (`{"result":"…"}`) and the bare answer; both are tried.
  */
 export function parseVerdict(raw: unknown): AcceptanceVerdict | null {
   const text = String(raw ?? "").trim();
@@ -171,7 +171,7 @@ export function parseVerdict(raw: unknown): AcceptanceVerdict | null {
     )
       inner = (envelope as { result: string }).result.trim();
   } catch {
-    // Keine Hülle — dann ist die Ausgabe selbst die Antwort.
+    // No envelope — then the output itself is the answer.
   }
 
   const match = /\{[\s\S]*\}/u.exec(inner);
@@ -189,6 +189,6 @@ export function parseVerdict(raw: unknown): AcceptanceVerdict | null {
   if (v.decision !== "block") return null;
 
   const reason =
-    typeof v.reason === "string" && v.reason.trim() !== "" ? v.reason.trim() : "Beleg fehlt";
+    typeof v.reason === "string" && v.reason.trim() !== "" ? v.reason.trim() : "missing evidence";
   return { decision: "block", reason };
 }

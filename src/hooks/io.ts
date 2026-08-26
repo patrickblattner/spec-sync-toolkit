@@ -1,13 +1,14 @@
-// Die Aussenwelt der Turn-Ende-Hooks (#1091): Hook-Input, Zähler, Kontextmessung, Usage, Werkbank.
+// The outside world of the turn-end hooks (#1091): hook input, counters, context measurement,
+// usage, workbench.
 //
-// Getrennt von `lib.ts`, weil dort die Entscheidung steht und hier die Messung. Jede
-// Funktion hier ist so gebaut, dass ihr Fehlschlag NICHTS blockt: sie liefert dann den Wert, den
-// die Kette als "weiss ich nicht" liest (null, false, leere Liste). Fail-open ist keine Zutat des
-// Hooks, sondern seine Bauart.
+// Kept separate from `lib.ts`, because that is where the decision lives and this is where the
+// measurement lives. Every function here is built so that its own failure blocks NOTHING: it
+// then delivers the value the chain reads as "don't know" (null, false, an empty list). Fail-open
+// is not an ingredient of the hook, it is its construction.
 //
-// Die Hooks sind eigene Binaries mit dem stdout-Protokoll des Claude-Code-Hook-Vertrags —
-// der CLI-Envelope-Vertrag (spec §3, src/output.ts) gilt für sie nicht; die beiden
-// console.log in `emit()` tragen dafür begründete Inline-Disables.
+// The hooks are their own binaries with the stdout protocol of the Claude Code hook contract —
+// the CLI envelope contract (spec §3, src/output.ts) does not apply to them; the two
+// console.log calls in `emit()` carry a justified inline disable for that reason.
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
@@ -19,7 +20,7 @@ import type { HookDecision, UsageWindow } from "./lib.js";
 
 export type HookInput = Record<string, unknown>;
 
-/** Hook-Input von stdin. Leer oder kaputt heisst Defaults — nie ein Abbruch. */
+/** Hook input from stdin. Empty or broken means defaults — never an abort. */
 export function readHookInput(): HookInput {
   try {
     const parsed: unknown = JSON.parse(readFileSync(0, "utf8") || "{}");
@@ -33,7 +34,7 @@ export function isPaused(cwd: string): boolean {
   return existsSync(join(cwd, ".spec-sync-pause"));
 }
 
-/** Alter des Handovers in Minuten, oder null wenn keines daliegt oder es nicht lesbar ist. */
+/** Age of the handover in minutes, or null when none is there or it is not readable. */
 export function handoverAge(cwd: string): number | null {
   const file = join(cwd, ".spec-sync-handover.md");
   if (!existsSync(file)) return null;
@@ -47,7 +48,7 @@ export function handoverAge(cwd: string): number | null {
   }
 }
 
-/** `contextBudget` aus der Repo-Konfiguration; null, wenn dort keines steht. */
+/** `contextBudget` from the repo configuration; null when there is none there. */
 export function readContextBudget(cwd: string): number | null {
   try {
     const parsed: unknown = JSON.parse(readFileSync(join(cwd, "spec-sync.config.json"), "utf8"));
@@ -58,7 +59,7 @@ export function readContextBudget(cwd: string): number | null {
   }
 }
 
-/** Kontextstand des Transcripts in Tokens; null, wenn nichts Messbares drinsteht. */
+/** Context level of the transcript in tokens; null when nothing measurable is in it. */
 export function measureContextTokens(transcriptPath: unknown): number | null {
   if (!transcriptPath) return null;
   try {
@@ -69,10 +70,11 @@ export function measureContextTokens(transcriptPath: unknown): number | null {
 }
 
 /**
- * Owner-Gespräch in dieser Session? Gelesen aus der Zustandsdatei des worker-harness-Hooks
- * (bin/session-state.js: `<stateDir>/sessions/<slug(cwd)>/<session_id>.json`, Feld
- * `last_owner_prompt_at` — nur echte Owner-Eingaben, keine Wrapper). Fehlt die Datei oder das
- * Feld: kein Gespräch bekannt (false) — die Block-Meldung trägt die Ansage-Regel dann als Hinweis.
+ * An owner conversation in this session? Read from the worker-harness hook's state file
+ * (bin/session-state.js: `<stateDir>/sessions/<slug(cwd)>/<session_id>.json`, field
+ * `last_owner_prompt_at` — only real owner input, no wrappers). If the file or the field is
+ * missing: no conversation known (false) — the block message then carries the announcement rule
+ * as a hint.
  */
 export function ownerEngaged(cwd: string, sessionId: string): boolean {
   try {
@@ -88,7 +90,7 @@ export function ownerEngaged(cwd: string, sessionId: string): boolean {
   }
 }
 
-/** Kontextstand des Transcripts in Prozent des Budgets; null, sobald eine Größe fehlt. */
+/** Context level of the transcript in percent of the budget; null as soon as one quantity is missing. */
 export function measureContextPercent(
   transcriptPath: unknown,
   budget: number | null,
@@ -104,8 +106,8 @@ export function measureContextPercent(
   }
 }
 
-// Zähler und Budget-Marke liegen im tmp-Verzeichnis, je Lauf unter einem eigenen Schlüssel: für die
-// Session die session_id, für einen Agenten sein eigenes Transcript — "je Agent-Lauf" ist genau das.
+// Counter and budget marker live in the tmp directory, per run under its own key: for the session
+// the session_id, for an agent its own transcript — "per agent run" is exactly that.
 const state = (kind: string, key: string) => join(tmpdir(), `${kind}-${key || "unknown"}`);
 
 export function counterKeyOf(input: HookInput): string {
@@ -126,7 +128,7 @@ export function bumpCount(kind: string, key: string, count: number): void {
   try {
     writeFileSync(state(kind, `${key}.count`), String(count + 1));
   } catch {
-    // Zähler nicht schreibbar: der Block gilt trotzdem, nur die Obergrenze greift später.
+    // Counter not writable: the block still applies, only the cap kicks in later.
   }
 }
 
@@ -134,13 +136,13 @@ export function clearCount(kind: string, key: string): void {
   try {
     unlinkSync(state(kind, `${key}.count`));
   } catch {
-    // Kein Zähler da — nichts zu tun.
+    // No counter there — nothing to do.
   }
 }
 
-// Die Budget-Marke überlebt das Aufräumen des Zählers ABSICHTLICH: "genau einmal" gilt für den
-// ganzen Lauf. Würde sie mit dem Zähler fallen, blockte die Budget-Stufe nach jedem erlaubten Turn
-// erneut — aus einer einmaligen Anweisung würde eine Schleife.
+// The budget marker DELIBERATELY survives the counter being cleared: "exactly once" applies to
+// the whole run. If it fell with the counter, the budget stage would block again after every
+// allowed turn — a one-time instruction would turn into a loop.
 export function budgetAlreadyBlocked(kind: string, key: string): boolean {
   return existsSync(state(kind, `${key}.budget`));
 }
@@ -149,7 +151,7 @@ export function markBudgetBlocked(kind: string, key: string): void {
   try {
     writeFileSync(state(kind, `${key}.budget`), new Date().toISOString());
   } catch {
-    // Nicht markierbar: schlimmstenfalls blockt die Stufe ein zweites Mal, die Obergrenze fängt es.
+    // Cannot be marked: worst case the stage blocks a second time, the cap catches it.
   }
 }
 
@@ -192,46 +194,46 @@ export function usageOverThreshold(threshold: number): UsageWindow | null {
   }
 }
 
-/** Werkbank-Befund: Worktrees, Ticket-Branches, ungepushte Commits, getrackte Änderungen. */
+/** Workbench finding: worktrees, ticket branches, unpushed commits, tracked changes. */
 export function workbenchFindings(cwd: string): string[] {
   const git = (...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
   const findings: string[] = [];
   try {
     const wts = git("worktree", "list", "--porcelain").split("\n\n").filter(Boolean);
     if (wts.length > 1)
-      findings.push(`${wts.length - 1} Worktree(s) neben dem Hauptbaum — git worktree remove`);
+      findings.push(`${wts.length - 1} worktree(s) next to the main tree — git worktree remove`);
     const branches = git("branch", "--format=%(refname:short)")
       .split("\n")
       .filter((b) => b && b !== "main");
     if (branches.length)
-      findings.push(`lokale Branches neben main: ${branches.join(", ")} — gemergte löschen`);
+      findings.push(`local branches next to main: ${branches.join(", ")} — delete the merged ones`);
     const ahead = git("rev-list", "origin/main..main", "--count");
     if (ahead !== "0")
-      findings.push(`${ahead} ungepushte(r) Commit(s) auf main — git push origin main`);
+      findings.push(`${ahead} unpushed commit(s) on main — git push origin main`);
     const dirty = git("status", "--porcelain")
       .split("\n")
       .filter((l) => l && !l.startsWith("??"))
-      // `.claude/**` ist Owner-/Overmind-Domäne (Entscheid #192): der Worker darf die Datei
-      // nicht anfassen und könnte diesen Befund deshalb NIE beräumen — die Chore-Regel lässt
-      // die Änderung absichtlich liegen (fährt mit dem nächsten Push mit). Als Werkbank-Befund
-      // gewertet blockte sie jedes Turn-Ende bis zur Obergrenze (gemessen 18.08.,
-      // Cockpit-/unpause: Block auf `M .claude/settings.json` direkt nach dem Settings-Chore).
-      // Regex statt Spalten-Slice: das `trim()` der git-Hilfe kappt die führende
-      // Statusspalte der ersten Zeile, feste Offsets lügen dann.
+      // `.claude/**` is owner/Overmind domain (decision #192): the worker must not touch the
+      // file and could therefore NEVER clear this finding — the chore rule deliberately leaves
+      // the change lying there (it rides along with the next push). Counted as a workbench
+      // finding it blocked every turn end up to the cap (measured 08/18, cockpit/unpause: a
+      // block on `M .claude/settings.json` right after the settings chore).
+      // Regex instead of a column slice: the git helper's `trim()` cuts off the leading status
+      // column of the first line, so fixed offsets would then lie.
       .filter((l) => !/(^|\s)\.claude\//.test(l));
     if (dirty.length)
-      findings.push(`Änderungen an getrackten Dateien: ${dirty.slice(0, 5).join(" | ")}`);
+      findings.push(`changes to tracked files: ${dirty.slice(0, 5).join(" | ")}`);
   } catch {
-    // git nicht befragbar: keine Aussage über die Werkbank, also kein Befund und kein Block.
+    // git not queryable: no statement about the workbench, so no finding and no block.
     return [];
   }
   return findings;
 }
 
-/** Entscheidung ausgeben und den Hook beenden. Ausgabeformat wie bisher (Stop/SubagentStop). */
+/** Emits the decision and ends the hook. Output format as before (Stop/SubagentStop). */
 export function emit(decision: HookDecision, hookEventName: string): never {
   if (decision.action === "block") {
-    // eslint-disable-next-line no-console -- Hook-Protokoll: stdout gehört hier dem Hook-Vertrag.
+    // eslint-disable-next-line no-console -- hook protocol: stdout belongs to the hook contract here.
     console.log(
       JSON.stringify({
         decision: "block",
@@ -240,7 +242,7 @@ export function emit(decision: HookDecision, hookEventName: string): never {
       }),
     );
   } else if (decision.note) {
-    // eslint-disable-next-line no-console -- Hook-Protokoll: stdout gehört hier dem Hook-Vertrag.
+    // eslint-disable-next-line no-console -- hook protocol: stdout belongs to the hook contract here.
     console.log(JSON.stringify({ systemMessage: decision.note }));
   }
   process.exit(0);

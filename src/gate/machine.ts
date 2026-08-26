@@ -1,9 +1,9 @@
 /**
  * The measurement condition of a gate run (spec §7.1, `foundation.testing.guideline`
- * §Teststufen "Lastabhängige Messungen").
+ * §Teststufen "load-dependent measurements").
  *
- * The norm is explicit: "der Lauf protokolliert den Load (z. B. `loadavg`
- * vor/nach) — ohne protokollierte Messbedingung ist die Zahl kein Beleg."
+ * The norm is explicit: "the run logs the load (e.g. `loadavg` before/after) —
+ * without a logged measurement condition, the number is no evidence."
  * So this module samples the box around the phases and hands the numbers to the
  * pure logic in `saturation.ts`; the gate writes the rendered condition into the
  * run's log directory next to the phase logs.
@@ -192,7 +192,7 @@ export function renderMeasurement(
       : `${value.load1.toFixed(2)} ${value.load5.toFixed(2)} ${value.load15.toFixed(2)}`;
 
   const lines = [
-    "# measurement condition (foundation.testing.guideline §Lastabhängige Messungen)",
+    "# measurement condition (foundation.testing.guideline §load-dependent measurements)",
     "",
     `cores:          ${condition.ncpu}`,
     `wall seconds:   ${condition.wallSeconds.toFixed(1)}`,

@@ -45,10 +45,10 @@ const MAX_NOTE_SENTENCES = 3;
 export const HANDOVER_REASONS = [
   "budget",
   "done",
-  "rot-2x",
-  "frage-offen",
+  "red-2x",
+  "question-open",
   "pause",
-  "unerwartet",
+  "unexpected",
 ] as const;
 
 export type HandoverReason = (typeof HANDOVER_REASONS)[number];
@@ -159,38 +159,38 @@ export function renderHandover(input: {
     "# spec-sync handover",
     "",
     `- Repo: ${input.repoRoot}`,
-    `- Zeit: ${input.now.toISOString()}`,
-    `- \`main\`-HEAD: ${input.mainHead ?? "nicht lesbar"}`,
+    `- Time: ${input.now.toISOString()}`,
+    `- \`main\`-HEAD: ${input.mainHead ?? "not readable"}`,
     "",
     "## spec-pins.json",
     "",
   ];
 
   if (input.pins === undefined) {
-    lines.push(`Kein lesbares ${PINS_FILE} — Drift ist gegen nichts prüfbar.`);
+    lines.push(`No readable ${PINS_FILE} — drift cannot be checked against anything.`);
   } else {
-    lines.push(`- zuletzt gepinnt: ${input.pins.pinnedAt}`);
-    lines.push(`- Einträge: ${input.pins.units}`);
+    lines.push(`- last pinned: ${input.pins.pinnedAt}`);
+    lines.push(`- entries: ${input.pins.units}`);
   }
 
-  lines.push("", "## Kontext", "");
+  lines.push("", "## Context", "");
   if (input.context === undefined) {
-    lines.push("keine Messung — kein `context`-Ereignis im Ledger.");
+    lines.push("no measurement — no `context` event in the ledger.");
   } else {
-    lines.push(`- Stand: ${input.context.value} Tokens (gemessen ${input.context.at})`);
+    lines.push(`- State: ${input.context.value} Tokens (measured ${input.context.at})`);
     lines.push(
-      `- Zuwachs je Ticket (p90): ${input.context.p90PerTicket ?? "nicht berechenbar (unter 5 Messpunkten)"}`,
+      `- growth per ticket (p90): ${input.context.p90PerTicket ?? "not computable (under 5 measurement points)"}`,
     );
     lines.push(
-      `- Reichweite: ${input.context.forecastTickets === null ? "nicht berechenbar" : `${input.context.forecastTickets} Ticket(s)`}`,
+      `- Scope: ${input.context.forecastTickets === null ? "not computable" : `${input.context.forecastTickets} Ticket(s)`}`,
     );
   }
 
   lines.push("", "## Queue", "");
   if (input.queueError !== undefined) {
-    lines.push(`nicht lesbar: ${input.queueError}`);
+    lines.push(`not readable: ${input.queueError}`);
   } else if (input.queueHead.length === 0) {
-    lines.push("keine offenen Tickets in der sortierten Queue.");
+    lines.push("no open tickets in the sorted queue.");
   } else {
     for (const entry of input.queueHead) lines.push(`1. #${entry.issue} — ${entry.title}`);
   }
@@ -198,17 +198,17 @@ export function renderHandover(input: {
     lines.push("", `- needsPin: ${input.needsPin}`, `- findings: ${input.findings}`);
   }
 
-  lines.push("", "## Offene Vorgänge", "");
+  lines.push("", "## Open Operations", "");
   if (input.openMerges.length === 0) {
-    lines.push("keine — kein `merge-started` ohne `merge-completed`.");
+    lines.push("none — no `merge-started` without `merge-completed`.");
   } else {
     for (const open of input.openMerges) {
-      lines.push(`- #${open.issue}: \`merge-started\` ${open.at} ohne \`merge-completed\``);
+      lines.push(`- #${open.issue}: \`merge-started\` ${open.at} without \`merge-completed\``);
     }
   }
 
-  lines.push("", "## Notiz des Treibers", "");
-  lines.push(input.note === undefined || input.note.trim() === "" ? "keine" : trimNote(input.note));
+  lines.push("", "## Driver's Note", "");
+  lines.push(input.note === undefined || input.note.trim() === "" ? "none" : trimNote(input.note));
   lines.push("");
 
   return lines.join("\n");
@@ -281,7 +281,7 @@ export async function runHandover(
     const min = Math.round((config.contextBudget * BUDGET_REASON_MIN_PERCENT) / 100);
     if (context === undefined || context.value < min) {
       throw new ToolkitError(
-        `--reason budget verweigert — Kontextmessung ${context?.value ?? "fehlt"} Tokens < ${min} (${BUDGET_REASON_MIN_PERCENT} % von ${config.contextBudget}); Alternativen: --reason frage-offen (mit Frage-ID in --note) oder Handover ohne --reason (nicht baubare Queue ist keine Grenze, PROC-DEV-035).`,
+        `--reason budget refused — context measurement ${context?.value ?? "missing"} tokens < ${min} (${BUDGET_REASON_MIN_PERCENT} % of ${config.contextBudget}); alternatives: --reason question-open (with a question id in --note) or a handover without --reason (a queue that cannot be built is not a boundary, PROC-DEV-035).`,
         EXIT.FAILED,
         { field: "--reason" },
       );

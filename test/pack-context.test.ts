@@ -11,29 +11,29 @@ import { resolveKeys } from "../src/pack/spec.js";
 
 const SPECS: Record<string, { title: string; status: string; rev: number; body: string }> = {
   "SST-DESIGN-018": {
-    title: "Befehl: pack",
+    title: "Command: pack",
     status: "approved",
     rev: 2,
-    body: "`pack` erzeugt das Wissenspaket, mit dem ein Sub-Agent ein Ticket beginnen kann.",
+    body: "`pack` generates the knowledge pack a sub-agent can start a ticket with.",
   },
   "SST-DESIGN-020": {
-    title: "Befehl: lenses",
+    title: "Command: lenses",
     status: "approved",
     rev: 2,
-    body: "Leitet das Lens-Set aus dem Diff ab.",
+    body: "Derives the lens set from the diff.",
   },
   "SST-ADR-001": {
-    title: "CLI-Toolkit statt zweitem MCP-Server, eigenes Repo",
+    title: "CLI toolkit instead of a second MCP server, own repo",
     status: "approved",
     rev: 3,
-    body: "Normen kommen aus der Foundation, nicht aus dem Code.",
+    body: "Norms come from the foundation, not from the code.",
   },
 };
 
 function blockFor(key: string): string {
   const spec = SPECS[key];
-  if (spec === undefined) return `Spec "${key}" nicht gefunden.`;
-  return `# ${key} — ${spec.title}\n\nStatus: ${spec.status} · Art: design · rev ${spec.rev} · Projekt: spec-sync-toolkit\n\n${spec.body}`;
+  if (spec === undefined) return `Spec "${key}" not found.`;
+  return `# ${key} — ${spec.title}\n\nStatus: ${spec.status} · Type: design · rev ${spec.rev} · Project: spec-sync-toolkit\n\n${spec.body}`;
 }
 
 interface Recorded {
@@ -84,11 +84,11 @@ describe("resolveKeys over spec_get_many (SMCP-DESIGN-012, SST-DESIGN-018)", () 
     const resolution = await resolveKeys(["SST-ADR-001"], tools);
     expect(resolution.specs[0]).toMatchObject({
       key: "SST-ADR-001",
-      title: "CLI-Toolkit statt zweitem MCP-Server, eigenes Repo",
+      title: "CLI toolkit instead of a second MCP server, own repo",
       status: "approved",
       rev: 3,
     });
-    expect(resolution.specs[0]?.content).toContain("Normen kommen aus der Foundation");
+    expect(resolution.specs[0]?.content).toContain("Norms come from the foundation");
   });
 
   it("reports an unknown key as unresolved, matched positionally", async () => {
@@ -102,7 +102,7 @@ describe("resolveKeys over spec_get_many (SMCP-DESIGN-012, SST-DESIGN-018)", () 
 
   it("treats an alias-redirect block (no header, only a redirect line) as unresolved", async () => {
     const { tools } = fakeTools((keys) =>
-      keys.map(() => "→ ersetzt durch: PROC-DEV-001, PROC-DEV-015").join("\n\n---\n\n"),
+      keys.map(() => "→ replaced by: PROC-DEV-001, PROC-DEV-015").join("\n\n---\n\n"),
     );
     const resolution = await resolveKeys(["SMCP-DESIGN-999"], tools);
     expect(resolution.unknown).toEqual(["SMCP-DESIGN-999"]);

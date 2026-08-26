@@ -31,13 +31,13 @@ spec-sync lenses [--base main]
 spec-sync report [--run <id>]
 spec-sync doctor
 spec-sync budget [--session <id|path>] [--label <text>]
-spec-sync handover [--note <text>] [--reason <budget|done|rot-2x|frage-offen|pause|unerwartet>]
+spec-sync handover [--note <text>] [--reason <budget|done|red-2x|question-open|pause|unexpected>]
 spec-sync repin [--ids <a,b>] [--server <url>]
 ```
 
-`--reason budget` ist an die Messung gebunden: es wird nur geschrieben, wenn der jüngste
-`context`-Stand des Ledgers mindestens 75 % des konfigurierten Kontextbudgets erreicht —
-sonst schreibt `handover` nichts und endet mit Exit 1 (SST-DESIGN-024 rev 3, PROC-DEV-037).
+`--reason budget` is bound to the measurement: it is only written when the ledger's newest
+`context` level reaches at least 75 % of the configured context budget —
+otherwise `handover` writes nothing and ends with exit 1 (SST-DESIGN-024 rev 3, PROC-DEV-037).
 
 `stdout` carries exactly one JSON object (`--human` renders text instead). Full command
 output goes to `.spec-sync/logs/<timestamp>/<phase>.log`; the response carries only the exit
@@ -60,35 +60,35 @@ ticket, the next run is a _first_ run of that ticket.
 Everything project-specific lives in one file, `spec-sync.config.json`: gate phases and
 profiles, path globs for review lenses, label names, log retention, context budget.
 
-## Turn-Ende-Hooks (`dist/hooks/`)
+## Turn-End Hooks (`dist/hooks/`)
 
-Neben der CLI baut das Paket eigenständige Hook-Binaries für Claude Code
-(Heimat-Umzug aus den Worker-Repos, Entscheid #193, 2026-08-18):
+Besides the CLI, the package builds standalone hook binaries for Claude Code
+(moved home from the worker repos, decision #193, 2026-08-18):
 
 ```bash
-node <toolkit>/dist/hooks/stop-check.js            # Stop-Hook: Ventilkette der Worker-Session
-node <toolkit>/dist/hooks/subagent-stop-check.js   # SubagentStop-Hook: Abschluss-Abnahme der Build-Agenten
-node <toolkit>/dist/hooks/architect-stop-check.js  # Stop-Hook: Budgetgrenze der Architekten-Inbox (75 %, einmal)
+node <toolkit>/dist/hooks/stop-check.js            # stop hook: valve chain of the worker session
+node <toolkit>/dist/hooks/subagent-stop-check.js   # SubagentStop hook: completion acceptance of the build agents
+node <toolkit>/dist/hooks/architect-stop-check.js  # stop hook: budget boundary of the architect inbox (75 %, once)
 ```
 
-`architect-stop-check` (Owner-Wort 22.08., PROC-DEV-020 rev 4 / PROC-DEV-036 rev 5) ist die
-Architekten-Variante: Pause-Flag → frisches Handover → Budget-Stufe bei **75 %** des
-`contextBudget` aus der `spec-sync.config.json` des Spec-Repos, genau einmal je Session. Keine
-Werkbank, kein Prüfer. Der Block diktiert das Handover mit der gemessenen Zahl (die Session
-kennt ihr Fenster nicht, der Hook schon); läuft ein Owner-Gespräch (Zustandsdatei des
-worker-harness-Hooks `session-state.js`, Feld `last_owner_prompt_at`), erzwingt er die Ansage
-„bitte /handover" statt des Handovers.
+`architect-stop-check` (owner's word 08/22, PROC-DEV-020 rev 4 / PROC-DEV-036 rev 5) is the
+architect variant: pause flag → fresh handover → budget stage at **75 %** of
+`contextBudget` from the spec repo's `spec-sync.config.json`, exactly once per session. No
+workbench, no checker. The block dictates the handover with the measured number (the session
+does not know its window, the hook does); if an owner conversation is running (the
+worker-harness hook's state file `session-state.js`, field `last_owner_prompt_at`), it forces
+the announcement "please /handover" instead of the handover.
 
-Die Worker-Repos registrieren die Hooks per **absolutem Pfad** in ihrer getrackten
-`.claude/settings.json` (dasselbe Muster wie `role-guard.sh`): eine Quelle, ein
-`npm run build`, und jedes Repo verhält sich sofort identisch — keine Script-Kopien,
-keine Versions-Bumps für die Hooks. Sie sprechen das Hook-stdout-Protokoll von Claude
-Code, NICHT den JSON-Envelope der CLI; ihr Verhalten (Ventilketten, Budget-Stufe,
-fail-open) ist in `src/hooks/` dokumentiert und in `test/hooks.test.ts` festgenagelt.
-Konfiguriert werden sie über die Dateien des konsumierenden Repos
+The worker repos register the hooks by **absolute path** in their tracked
+`.claude/settings.json` (the same pattern as `role-guard.sh`): one source, one
+`npm run build`, and every repo behaves identically right away — no script copies,
+no version bumps for the hooks. They speak Claude Code's hook stdout protocol,
+NOT the CLI's JSON envelope; their behaviour (valve chains, budget stage,
+fail-open) is documented in `src/hooks/` and pinned down in `test/hooks.test.ts`.
+They are configured through the files of the consuming repo
 (`spec-sync.config.json` → `contextBudget`, `.spec-sync-pause`, `.spec-sync-handover.md`).
 
-**Nach jeder Änderung an `src/hooks/` gilt: `npm run build` — die Repos rufen `dist/` auf.**
+**After every change to `src/hooks/`: `npm run build` — the repos call `dist/`.**
 
 ## Requirements
 
@@ -96,11 +96,11 @@ Node ≥ 22, `git`, and `gh` on the `PATH`. Some commands read a spec server ove
 endpoint comes from the `spec` entry in `.mcp.json` (`--server` overrides, both accept the
 full endpoint or the base URL).
 
-**Spec-Server-Port während der v2-Umstellung:** `.mcp.json` zeigt auf
-`http://localhost:8788/mcp`. **Finale-Flip → 8787**: sobald v2 den Regelport übernimmt,
-wird dieser Eintrag zurückgestellt. Der Wert steht nur an dieser einen Stelle — die Datei
-ist striktes JSON (`JSON.parse` in `src/commands/repin.ts`), verträgt also keinen Kommentar,
-deshalb steht der Hinweis hier.
+**Spec server port during the v2 cutover:** `.mcp.json` points at
+`http://localhost:8788/mcp`. **Final flip → 8787**: once v2 takes over the regular port,
+this entry is reverted. The value lives in this one place only — the file
+is strict JSON (`JSON.parse` in `src/commands/repin.ts`), so it tolerates no comment,
+which is why the note is here.
 
 ## Licence
 
