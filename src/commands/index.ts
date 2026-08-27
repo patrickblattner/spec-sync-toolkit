@@ -21,6 +21,8 @@ import { doctorCommand } from "./doctor.js";
 import { budgetCommand } from "./budget.js";
 import { handoverCommand } from "./handover.js";
 import { repinCommand } from "./repin.js";
+import { driftCommand } from "./drift.js";
+import { coverCommand } from "./cover.js";
 
 export const ALL_COMMANDS: readonly Command[] = [
   gateCommand,
@@ -33,4 +35,6 @@ export const ALL_COMMANDS: readonly Command[] = [
   budgetCommand,
   handoverCommand,
   repinCommand,
+  driftCommand,
+  coverCommand,
 ];

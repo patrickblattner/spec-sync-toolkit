@@ -1,10 +1,12 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CommandContext } from "../src/cli.js";
 import type { Config } from "../src/config.js";
 import { runRepin, toBaseUrl } from "../src/commands/repin.js";
+import { COVERAGE_FILE } from "../src/coverage.js";
+import { EXIT } from "../src/output.js";
 
 describe("toBaseUrl (SST-DESIGN-025, endpoint vs. base URL)", () => {
   it("strips the endpoint suffix `callSpecTool` appends itself", () => {
@@ -85,5 +87,100 @@ describe("repin endpoint resolution (cockpit migration finding, 2026-08-21)", ()
 
     expect(result.ok).toBe(true);
     expect(new Set(seen)).toEqual(new Set(["http://localhost:8788/mcp"]));
+  });
+});
+
+/** Server state of `pinsPayload`: PROC-DEV-031 rev 2, GL-CODE-010 rev 1. */
+describe("repin coverage gate (SST-ADR-011, spec rev 4)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const writingCtx = (repo: string, args: string[] = []): CommandContext => ({
+    flags: { human: false, dryRun: false },
+    args,
+    repoRoot: repo,
+    config: { project: "production-cockpit" } as Config,
+  });
+
+  const receiptLine = (key: string, from: number | null, to: number | null): string =>
+    `${JSON.stringify({ ts: "t", key, from, to, disposition: "ticket", ref: "16" })}\n`;
+
+  it("bootstrap without a pin file stays exempt and writes", async () => {
+    vi.stubGlobal("fetch", fakeFetch([]));
+    const repo = repoWithMcpJson("http://localhost:8787/mcp");
+
+    const result = await runRepin(writingCtx(repo));
+    expect(result.ok).toBe(true);
+    expect(JSON.parse(readFileSync(join(repo, "spec-pins.json"), "utf8"))).toEqual({
+      "PROC-DEV-031": 2,
+      "GL-CODE-010": 1,
+    });
+  });
+
+  it("blocks an unreceipted moved key: exit 4, names it, pin file untouched", async () => {
+    vi.stubGlobal("fetch", fakeFetch([]));
+    const repo = repoWithMcpJson("http://localhost:8787/mcp");
+    const before = JSON.stringify({ "PROC-DEV-031": 1, "GL-CODE-010": 1 });
+    writeFileSync(join(repo, "spec-pins.json"), before);
+
+    const result = await runRepin(writingCtx(repo));
+    expect(result).toMatchObject({ ok: false, exit: EXIT.PRECONDITION });
+    expect(result.data).toMatchObject({ uncovered: ["PROC-DEV-031"] });
+    expect(readFileSync(join(repo, "spec-pins.json"), "utf8")).toBe(before);
+  });
+
+  it("a stale receipt (server moved on) does not count", async () => {
+    vi.stubGlobal("fetch", fakeFetch([]));
+    const repo = repoWithMcpJson("http://localhost:8787/mcp");
+    writeFileSync(join(repo, "spec-pins.json"), JSON.stringify({ "PROC-DEV-031": 1 }));
+    mkdirSync(join(repo, ".spec-sync"), { recursive: true });
+    // Receipted towards rev 3; the server now answers rev 2 — unexamined diff.
+    writeFileSync(join(repo, COVERAGE_FILE), receiptLine("PROC-DEV-031", 1, 3));
+
+    const result = await runRepin(writingCtx(repo));
+    expect(result).toMatchObject({ ok: false, exit: EXIT.PRECONDITION });
+  });
+
+  it("writes once every moved key carries a matching receipt", async () => {
+    vi.stubGlobal("fetch", fakeFetch([]));
+    const repo = repoWithMcpJson("http://localhost:8787/mcp");
+    // PROC-DEV-031 changes, GL-CODE-010 is new, GL-GONE-001 disappears.
+    writeFileSync(
+      join(repo, "spec-pins.json"),
+      JSON.stringify({ "PROC-DEV-031": 1, "GL-GONE-001": 4 }),
+    );
+    mkdirSync(join(repo, ".spec-sync"), { recursive: true });
+    writeFileSync(
+      join(repo, COVERAGE_FILE),
+      receiptLine("PROC-DEV-031", 1, 2) +
+        receiptLine("GL-CODE-010", null, 1) +
+        receiptLine("GL-GONE-001", 4, null),
+    );
+
+    const result = await runRepin(writingCtx(repo));
+    expect(result.ok).toBe(true);
+    expect(JSON.parse(readFileSync(join(repo, "spec-pins.json"), "utf8"))).toEqual({
+      "PROC-DEV-031": 2,
+      "GL-CODE-010": 1,
+    });
+  });
+
+  it("--ids gates the named entries that would change", async () => {
+    vi.stubGlobal("fetch", fakeFetch([]));
+    const repo = repoWithMcpJson("http://localhost:8787/mcp");
+    writeFileSync(join(repo, "spec-pins.json"), JSON.stringify({ "PROC-DEV-031": 1 }));
+
+    const blocked = await runRepin(writingCtx(repo, ["--ids", "PROC-DEV-031"]));
+    expect(blocked).toMatchObject({ ok: false, exit: EXIT.PRECONDITION });
+
+    mkdirSync(join(repo, ".spec-sync"), { recursive: true });
+    writeFileSync(join(repo, COVERAGE_FILE), receiptLine("PROC-DEV-031", 1, 2));
+    vi.stubGlobal("fetch", fakeFetch([]));
+    const result = await runRepin(writingCtx(repo, ["--ids", "PROC-DEV-031"]));
+    expect(result.ok).toBe(true);
+    expect(JSON.parse(readFileSync(join(repo, "spec-pins.json"), "utf8"))).toEqual({
+      "PROC-DEV-031": 2,
+    });
   });
 });

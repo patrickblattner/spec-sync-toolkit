@@ -17,12 +17,18 @@
  * Server unreachable or handshake aborted ⇒ exit 2. The response carries
  * `pinsPath`, `mode` (`full`|`ids`) and `units` — counts and a path, never the
  * pin content itself.
+ *
+ * Coverage gate (SST-ADR-011, spec rev 4): a moved key without a valid receipt
+ * in the coverage ledger blocks the write — exit 4, `uncovered` names the keys,
+ * the pin file stays untouched. Only the bootstrap full run (no existing pin
+ * file) is exempt; there is no bypass flag.
  */
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Command, CommandContext, CommandResult } from "../cli.js";
 import type { Config } from "../config.js";
+import { computeMoved, isCovered, readReceipts } from "../coverage.js";
 import { callSpecTool, parsePins } from "../norms.js";
 import { EXIT, ToolkitError } from "../output.js";
 import { checkFlags, valueFlag } from "../pack/args.js";
@@ -40,17 +46,9 @@ export async function runRepin(ctx: CommandContext): Promise<CommandResult> {
   const config = ctx.config as Config;
 
   const idsFlag = valueFlag(ctx.args, "--ids");
-  const endpoint = valueFlag(ctx.args, "--server") ?? readMcpServerUrl(ctx.repoRoot);
-  if (endpoint === undefined) {
-    throw new ToolkitError(
-      "no spec server endpoint — set the `spec` entry in .mcp.json or pass --server",
-      EXIT.PRECONDITION,
-      { field: "server" },
-    );
-  }
-  const server = toBaseUrl(endpoint);
+  const server = resolveServer(ctx.repoRoot, ctx.args);
 
-  const existing = idsFlag === undefined ? undefined : readPinsFile(ctx.repoRoot);
+  const existing = readPinsFile(ctx.repoRoot);
   if (idsFlag !== undefined && existing === undefined) {
     throw new ToolkitError(`--ids needs an existing ${PINS_FILE}`, EXIT.PRECONDITION, {
       field: PINS_FILE,
@@ -63,16 +61,41 @@ export async function runRepin(ctx: CommandContext): Promise<CommandResult> {
   let pins: PinsMap;
   let units: number;
   const mode: "full" | "ids" = idsFlag === undefined ? "full" : "ids";
+  const wanted =
+    idsFlag === undefined
+      ? []
+      : idsFlag
+          .split(",")
+          .map((id) => id.trim())
+          .filter((id) => id !== "");
+
+  // Coverage gate (SST-ADR-011): bootstrap (no pin file) is the one exemption.
+  if (existing !== undefined) {
+    const moved = computeMoved(existing, fetched);
+    // --ids cannot remove entries, so removed keys (`to: null`) never change there.
+    const relevant =
+      mode === "full" ? moved : moved.filter((m) => wanted.includes(m.key) && m.to !== null);
+    if (relevant.length > 0) {
+      const receipts = readReceipts(ctx.repoRoot);
+      const uncovered = relevant.filter((m) => !isCovered(m, receipts)).map((m) => m.key);
+      if (uncovered.length > 0) {
+        return {
+          ok: false,
+          exit: EXIT.PRECONDITION,
+          notes: [
+            `coverage gate: ${uncovered.length} moved key(s) without a valid receipt — spec_diff and cover them first (SST-ADR-011)`,
+          ],
+          data: { pinsPath: PINS_FILE, mode, uncovered },
+        };
+      }
+    }
+  }
 
   if (mode === "full") {
     pins = Object.fromEntries(fetched);
     units = fetched.size;
   } else {
     pins = { ...(existing as PinsMap) };
-    const wanted = (idsFlag as string)
-      .split(",")
-      .map((id) => id.trim())
-      .filter((id) => id !== "");
     let updated = 0;
     for (const id of wanted) {
       const rev = fetched.get(id);
@@ -102,7 +125,7 @@ export async function runRepin(ctx: CommandContext): Promise<CommandResult> {
  * exception to the toolkit's usual exit-4-for-unreachable default. A
  * well-formed JSON-RPC error stays whatever `callSpecTool` threw.
  */
-async function fetchPins(project: string, server: string): Promise<Map<string, number>> {
+export async function fetchPins(project: string, server: string): Promise<Map<string, number>> {
   try {
     const text = await callSpecTool("spec_pins", { project }, server);
     return parsePins(text);
@@ -129,6 +152,19 @@ async function fetchPins(project: string, server: string): Promise<Map<string, n
  * auto-detection useless in every repo (cockpit migration finding, 2026-08-21;
  * the workaround was passing `--server` in base form by hand).
  */
+/** Endpoint resolution shared with `drift` and `cover`: `--server` beats `.mcp.json`. */
+export function resolveServer(repoRoot: string, args: string[]): string {
+  const endpoint = valueFlag(args, "--server") ?? readMcpServerUrl(repoRoot);
+  if (endpoint === undefined) {
+    throw new ToolkitError(
+      "no spec server endpoint — set the `spec` entry in .mcp.json or pass --server",
+      EXIT.PRECONDITION,
+      { field: "server" },
+    );
+  }
+  return toBaseUrl(endpoint);
+}
+
 export function toBaseUrl(url: string): string {
   return url
     .replace(/\/+$/, "")
