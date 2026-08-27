@@ -5,7 +5,11 @@ coverage/
 
 # Toolkit runtime state (spec §3): logs, ledger, gate lock. The config itself
 # lives at the repo root and stays versioned — it is not under .spec-sync/.
-.spec-sync/
+# The drift-coverage ledger is the one versioned file inside (SST-DESIGN-029);
+# the `/*` form keeps the negation effective (an ignored directory cannot be
+# re-included file-wise).
+.spec-sync/*
+!.spec-sync/drift-coverage.jsonl
 .spec-sync-pause
 # Session snapshot written by `handover` (spec §7.9) — a momentary state, not history.
 .spec-sync-handover.md
