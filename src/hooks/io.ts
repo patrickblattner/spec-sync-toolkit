@@ -208,8 +208,7 @@ export function workbenchFindings(cwd: string): string[] {
     if (branches.length)
       findings.push(`local branches next to main: ${branches.join(", ")} — delete the merged ones`);
     const ahead = git("rev-list", "origin/main..main", "--count");
-    if (ahead !== "0")
-      findings.push(`${ahead} unpushed commit(s) on main — git push origin main`);
+    if (ahead !== "0") findings.push(`${ahead} unpushed commit(s) on main — git push origin main`);
     const dirty = git("status", "--porcelain")
       .split("\n")
       .filter((l) => l && !l.startsWith("??"))
@@ -221,8 +220,7 @@ export function workbenchFindings(cwd: string): string[] {
       // Regex instead of a column slice: the git helper's `trim()` cuts off the leading status
       // column of the first line, so fixed offsets would then lie.
       .filter((l) => !/(^|\s)\.claude\//.test(l));
-    if (dirty.length)
-      findings.push(`changes to tracked files: ${dirty.slice(0, 5).join(" | ")}`);
+    if (dirty.length) findings.push(`changes to tracked files: ${dirty.slice(0, 5).join(" | ")}`);
   } catch {
     // git not queryable: no statement about the workbench, so no finding and no block.
     return [];

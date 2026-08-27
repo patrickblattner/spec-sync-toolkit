@@ -331,8 +331,8 @@ export function decideArchitectStop({
       stage: "budget-owner",
       reason:
         `architect-stop-check: ${stand} An owner conversation is running (owner input in this ` +
-        "session): do NOT write a handover. Tell the owner in one line \"Context at " +
-        `${Math.round(percent)} % — please /handover once we are done\" and end the turn.`,
+        'session): do NOT write a handover. Tell the owner in one line "Context at ' +
+        `${Math.round(percent)} % — please /handover once we are done" and end the turn.`,
     };
   return {
     action: "block",
@@ -343,6 +343,6 @@ export function decideArchitectStop({
       "ids handled, spec_refs set, what's open), then exactly this block:\n" +
       `## Context\n- State: ${contextTokens} Tokens (measured ${measuredAt})\n` +
       "Then end the turn — no further tool call. If an owner conversation is running instead: " +
-      "do not write, announce it (\"Context at X % — please /handover\").",
+      'do not write, announce it ("Context at X % — please /handover").',
   };
 }

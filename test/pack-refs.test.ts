@@ -31,9 +31,7 @@ describe("parseSpecReferences (spec §7.3, v2 key model, SST-DESIGN-018)", () =>
   });
 
   it("drops the duplicate when a key is named twice", () => {
-    expect(parseSpecReferences("`PROC-DEV-039` … again `PROC-DEV-039`.")).toEqual([
-      "PROC-DEV-039",
-    ]);
+    expect(parseSpecReferences("`PROC-DEV-039` … again `PROC-DEV-039`.")).toEqual(["PROC-DEV-039"]);
   });
 });
 

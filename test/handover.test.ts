@@ -99,7 +99,9 @@ describe("the mandatory fields of §7.9", () => {
 
   it("lists every merge-started that never completed", () => {
     const document = render({ openMerges: [{ issue: 9, at: "2026-07-29T11:00:00Z" }] });
-    expect(document).toContain("#9: `merge-started` 2026-07-29T11:00:00Z without `merge-completed`");
+    expect(document).toContain(
+      "#9: `merge-started` 2026-07-29T11:00:00Z without `merge-completed`",
+    );
   });
 
   it("carries the driver's note", () => {
