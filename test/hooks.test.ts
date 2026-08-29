@@ -17,6 +17,8 @@ import {
   decideStop,
   decideSubagentStop,
   handoverAgeMinutes,
+  handoverAttestValid,
+  handoverReason,
   parseHandoverTime,
 } from "../src/hooks/lib.js";
 import { askAcceptance, classify, parseVerdict } from "../src/hooks/acceptance.js";
@@ -580,6 +582,80 @@ describe("decideArchitectStop", () => {
       action: "allow",
       stage: "clean",
     });
+  });
+
+  // Attest verification (PROC-DEV-037, incident 2026-08-29): the architect translated the
+  // dictated `- State: … (measured …)` literal, the harness read no measurement and refused
+  // the renewal — the hook now verifies the freshly written handover and dictates the fix.
+  it("a fresh budget handover with an unreadable attestation is blocked with the exact literal", () => {
+    const broken = `reason: budget\n\nhandoff\n\n## Context\n- Stand: 194585 Tokens (gemessen ${AT})\n`;
+    const d = decideArchitectStop({
+      ...base,
+      contextTokens: 200_000,
+      handoverAgeMin: 1,
+      handoverText: broken,
+    });
+    expect(d).toMatchObject({ action: "block", stage: "attest" });
+    expect(d.reason).toContain(`- State: 200000 Tokens (measured ${AT})`);
+    expect(d.reason).toContain("do not translate");
+  });
+
+  it("a readable attestation, a non-budget handover, no measurement, or the cap let it pass", () => {
+    const good = `reason: budget\n\nhandoff\n\n## Context\n- State: 194585 Tokens (measured ${AT})\n`;
+    const broken = `reason: budget\n\n## Context\n- Stand: 1 Tokens (gemessen ${AT})\n`;
+    const pass = { action: "allow", stage: "handover" };
+    expect(
+      decideArchitectStop({
+        ...base,
+        contextTokens: 200_000,
+        handoverAgeMin: 1,
+        handoverText: good,
+      }),
+    ).toMatchObject(pass);
+    expect(
+      decideArchitectStop({
+        ...base,
+        contextTokens: 200_000,
+        handoverAgeMin: 1,
+        handoverText: `reason: done\n\nowner reset\n`,
+      }),
+    ).toMatchObject(pass);
+    expect(
+      decideArchitectStop({
+        ...base,
+        contextTokens: null,
+        handoverAgeMin: 1,
+        handoverText: broken,
+      }),
+    ).toMatchObject(pass);
+    expect(
+      decideArchitectStop({
+        ...base,
+        contextTokens: 200_000,
+        handoverAgeMin: 1,
+        handoverText: broken,
+        attestBlockCount: MAX_BLOCKS,
+      }),
+    ).toMatchObject(pass);
+  });
+});
+
+describe("handoverAttestValid / handoverReason", () => {
+  const AT = "2026-08-28T22:24:00.739Z";
+  it("accepts exactly the harness contract, refuses translations and broken timestamps", () => {
+    expect(handoverAttestValid(`## Context\n- State: 194585 Tokens (measured ${AT})\n`)).toBe(true);
+    expect(handoverAttestValid(`## Context\n- Stand: 194585 Tokens (gemessen ${AT})\n`)).toBe(
+      false,
+    );
+    expect(handoverAttestValid(`- State: 194585 Tokens (measured not-a-date)\n`)).toBe(false);
+    expect(handoverAttestValid("")).toBe(false);
+    expect(handoverAttestValid(null)).toBe(false);
+  });
+  it("reads the reason line like the harness does", () => {
+    expect(handoverReason("reason: budget\n\nrest")).toBe("budget");
+    expect(handoverReason("reason:   done   \n")).toBe("done");
+    expect(handoverReason("# handover\nreason: budget\n")).toBe(undefined);
+    expect(handoverReason(null)).toBe(undefined);
   });
 });
 

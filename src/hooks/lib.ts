@@ -298,9 +298,30 @@ export function decideSubagentStop({
  */
 export const ARCHITECT_BUDGET_PERCENT = 75;
 
+/**
+ * Does a `reason: budget` handover carry the attestation the harness can read? Mirror of
+ * worker-harness `parseContextAttest` (PROC-DEV-037): the `## Context` block must hold
+ * `- State: <n> Tokens (measured <ISO>)` with a parseable timestamp. Incident 2026-08-29:
+ * the architect translated the dictated literal ("Stand … gemessen"), the harness read no
+ * measurement and hard-stopped instead of renewing — six questions sat for 16 hours.
+ */
+export function handoverAttestValid(content: unknown): boolean {
+  const m = /^- State: \d+ Tokens \(measured ([^)]+)\)[ \t]*\r?$/m.exec(String(content ?? ""));
+  return m !== null && Number.isFinite(Date.parse(m[1] as string));
+}
+
+/** The machine-readable first line of a handover, mirror of worker-harness `parseReason`. */
+export function handoverReason(content: unknown): string | undefined {
+  const firstLine = String(content ?? "").split("\n", 1)[0] as string;
+  const m = /^reason:[ \t]*(\S+)[ \t]*\r?$/.exec(firstLine);
+  return m === null ? undefined : m[1];
+}
+
 export function decideArchitectStop({
   paused = false,
   handoverAgeMin = null,
+  handoverText = null,
+  attestBlockCount = 0,
   contextTokens = null,
   budgetTokens = null,
   budgetAlreadyBlocked = false,
@@ -309,6 +330,8 @@ export function decideArchitectStop({
 }: {
   paused?: boolean;
   handoverAgeMin?: number | null;
+  handoverText?: string | null;
+  attestBlockCount?: number;
   contextTokens?: number | null;
   budgetTokens?: number | null;
   budgetAlreadyBlocked?: boolean;
@@ -317,8 +340,32 @@ export function decideArchitectStop({
 }): HookDecision {
   if (paused) return { action: "allow", stage: "pause" };
 
-  if (handoverAgeMin !== null && handoverAgeMin < HANDOVER_FRESH_MIN)
+  if (handoverAgeMin !== null && handoverAgeMin < HANDOVER_FRESH_MIN) {
+    // Attest verification (PROC-DEV-037): a fresh `reason: budget` handover whose attestation
+    // the harness cannot parse is a hard stop over there — catch it HERE, while the session can
+    // still fix the file. Capped like every block; without a measurement to dictate, fail-open.
+    if (
+      handoverText !== null &&
+      handoverReason(handoverText) === "budget" &&
+      !handoverAttestValid(handoverText) &&
+      contextTokens !== null &&
+      attestBlockCount < MAX_BLOCKS
+    ) {
+      return {
+        action: "block",
+        stage: "attest",
+        reason:
+          `architect-stop-check: your \`.spec-sync-handover.md\` carries \`reason: budget\` but ` +
+          "its attestation is unreadable for the harness — it will refuse the renewal. Rewrite " +
+          "the file NOW via the Write tool: keep line 1 `reason: budget` and your handoff lines, " +
+          "and make the context block EXACTLY these two lines, verbatim — do not translate or " +
+          "reword them:\n" +
+          `## Context\n- State: ${contextTokens} Tokens (measured ${measuredAt})\n` +
+          "Then end the turn — no further tool call.",
+      };
+    }
     return { action: "allow", stage: "handover" };
+  }
 
   const percent = contextPercent(contextTokens, budgetTokens);
   if (percent === null || percent < ARCHITECT_BUDGET_PERCENT || budgetAlreadyBlocked)

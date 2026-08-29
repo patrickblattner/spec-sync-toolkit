@@ -14,6 +14,7 @@
 import { decideArchitectStop } from "./lib.js";
 import {
   budgetAlreadyBlocked,
+  bumpCount,
   emit,
   handoverAge,
   isPaused,
@@ -21,10 +22,13 @@ import {
   measureContextTokens,
   ownerEngaged,
   readContextBudget,
+  readCount,
+  readHandoverText,
   readHookInput,
 } from "./io.js";
 
 const KIND = "architect-stop-check";
+const ATTEST_KIND = "architect-attest";
 const input = readHookInput();
 const cwd = String(input.cwd || process.cwd());
 const sessionId = String(input.session_id || "unknown");
@@ -32,12 +36,19 @@ const sessionId = String(input.session_id || "unknown");
 const decision = decideArchitectStop({
   paused: isPaused(cwd),
   handoverAgeMin: handoverAge(cwd),
+  handoverText: readHandoverText(cwd),
+  attestBlockCount: readCount(ATTEST_KIND, sessionId),
   contextTokens: measureContextTokens(input.transcript_path),
   budgetTokens: readContextBudget(cwd),
   budgetAlreadyBlocked: budgetAlreadyBlocked(KIND, sessionId),
   ownerEngaged: ownerEngaged(cwd, sessionId),
 });
 
-if (decision.action === "block") markBudgetBlocked(KIND, sessionId);
+// The attest correction may repeat (capped via its counter); the budget marker stays
+// one-time — marking it on an attest block would be right too (the budget stage already
+// ran, or the handover would not say budget), but each stage keeps its own state.
+if (decision.action === "block" && decision.stage === "attest")
+  bumpCount(ATTEST_KIND, sessionId, readCount(ATTEST_KIND, sessionId));
+else if (decision.action === "block") markBudgetBlocked(KIND, sessionId);
 
 emit(decision, "Stop");

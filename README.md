@@ -72,12 +72,16 @@ node <toolkit>/dist/hooks/architect-stop-check.js  # stop hook: budget boundary 
 ```
 
 `architect-stop-check` (owner's word 08/22, PROC-DEV-020 rev 4 / PROC-DEV-036 rev 5) is the
-architect variant: pause flag → fresh handover → budget stage at **75 %** of
-`contextBudget` from the spec repo's `spec-sync.config.json`, exactly once per session. No
-workbench, no checker. The block dictates the handover with the measured number (the session
-does not know its window, the hook does); if an owner conversation is running (the
-worker-harness hook's state file `session-state.js`, field `last_owner_prompt_at`), it forces
-the announcement "please /handover" instead of the handover.
+architect variant: pause flag → fresh handover (with attest verification) → budget stage at
+**75 %** of `contextBudget` from the spec repo's `spec-sync.config.json`, exactly once per
+session. No workbench, no checker. The block dictates the handover with the measured number
+(the session does not know its window, the hook does); if an owner conversation is running
+(the worker-harness hook's state file `session-state.js`, field `last_owner_prompt_at`), it
+forces the announcement "please /handover" instead of the handover. A freshly written
+`reason: budget` handover is verified against the harness's attestation contract
+(`- State: <n> Tokens (measured <ISO>)`, PROC-DEV-037): unreadable — e.g. a translated
+literal, incident 2026-08-29 — means another block that dictates the exact lines, capped at
+3 attempts, fail-open beyond that.
 
 The worker repos register the hooks by **absolute path** in their tracked
 `.claude/settings.json` (the same pattern as `role-guard.sh`): one source, one

@@ -48,6 +48,15 @@ export function handoverAge(cwd: string): number | null {
   }
 }
 
+/** Raw handover text, or null when none is there or it is not readable. */
+export function readHandoverText(cwd: string): string | null {
+  try {
+    return readFileSync(join(cwd, ".spec-sync-handover.md"), "utf8");
+  } catch {
+    return null;
+  }
+}
+
 /** `contextBudget` from the repo configuration; null when there is none there. */
 export function readContextBudget(cwd: string): number | null {
   try {
