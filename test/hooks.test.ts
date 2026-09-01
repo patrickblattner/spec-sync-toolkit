@@ -532,6 +532,59 @@ describe("workbenchFindings — .claude/** is never a finding", () => {
   });
 });
 
+// PROC-DEV-044 rev 7 (#18): a worktree held by a running build agent is in progress, not
+// leftover. "Held" is the git lock — the worker locks on spawn, unlocks after the report.
+describe("workbenchFindings — a locked worktree is agent-held, not leftover", () => {
+  function scratchRepo(): string {
+    const dir = mkdtempSync(join(tmpdir(), "workbench-wt-"));
+    const git = (...args: string[]) =>
+      execFileSync("git", args, { cwd: dir, encoding: "utf8" }).trim();
+    git("init", "-q", "-b", "main");
+    git("config", "user.email", "t@t");
+    git("config", "user.name", "t");
+    writeFileSync(join(dir, "code.txt"), "a\n");
+    git("add", "-A");
+    git("commit", "-q", "-m", "init");
+    // Point origin/main at the same state so only worktrees and branches speak.
+    git("update-ref", "refs/remotes/origin/main", "HEAD");
+    return dir;
+  }
+
+  const addWorktree = (dir: string, name: string, lock: boolean) => {
+    const git = (...args: string[]) =>
+      execFileSync("git", args, { cwd: dir, encoding: "utf8" }).trim();
+    const path = `${dir}-${name}`;
+    git("worktree", "add", "-q", path, "-b", name);
+    if (lock) git("worktree", "lock", path);
+  };
+
+  it("a locked worktree and its branch are exempt — silently, without a note", () => {
+    const dir = scratchRepo();
+    addWorktree(dir, "18-ticket", true);
+    expect(workbenchFindings(dir)).toEqual([]);
+  });
+
+  it("an unlocked worktree and its branch keep being reported", () => {
+    const dir = scratchRepo();
+    addWorktree(dir, "19-leftover", false);
+    const findings = workbenchFindings(dir);
+    expect(findings).toHaveLength(2);
+    expect(findings[0]).toContain("1 worktree(s)");
+    expect(findings[1]).toContain("19-leftover");
+  });
+
+  it("mixed: only the unlocked worktree and its branch are named", () => {
+    const dir = scratchRepo();
+    addWorktree(dir, "18-ticket", true);
+    addWorktree(dir, "19-leftover", false);
+    const findings = workbenchFindings(dir);
+    expect(findings).toHaveLength(2);
+    expect(findings[0]).toContain("1 worktree(s)");
+    expect(findings[1]).toContain("19-leftover");
+    expect(findings[1]).not.toContain("18-ticket");
+  });
+});
+
 // Architect chain (PROC-DEV-020 rev 4 / PROC-DEV-036 rev 5, owner's word 08/22): one stage at
 // 75 %, exactly once, the handover dictated with the measurement; an owner conversation forces
 // the announcement.

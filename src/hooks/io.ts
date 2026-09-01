@@ -208,12 +208,24 @@ export function workbenchFindings(cwd: string): string[] {
   const git = (...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
   const findings: string[] = [];
   try {
-    const wts = git("worktree", "list", "--porcelain").split("\n\n").filter(Boolean);
-    if (wts.length > 1)
-      findings.push(`${wts.length - 1} worktree(s) next to the main tree — git worktree remove`);
+    // PROC-DEV-044 rev 7 (#18): a worktree LOCKED in git is held by a running build agent and
+    // counts as in progress, not as leftover — it and its checked-out branch are exempt
+    // silently (no note), cleanup follows the agent's report. Blocks of
+    // `git worktree list --porcelain`; the main tree is always the first one.
+    const wts = git("worktree", "list", "--porcelain")
+      .split("\n\n")
+      .filter(Boolean)
+      .map((b) => b.split("\n"));
+    const isLocked = (b: string[]) => b.some((l) => l === "locked" || l.startsWith("locked "));
+    const branchOf = (b: string[]) =>
+      b.find((l) => l.startsWith("branch refs/heads/"))?.slice("branch refs/heads/".length);
+    const loose = wts.slice(1).filter((b) => !isLocked(b));
+    if (loose.length)
+      findings.push(`${loose.length} worktree(s) next to the main tree — git worktree remove`);
+    const held = new Set(wts.filter(isLocked).map(branchOf));
     const branches = git("branch", "--format=%(refname:short)")
       .split("\n")
-      .filter((b) => b && b !== "main");
+      .filter((b) => b && b !== "main" && !held.has(b));
     if (branches.length)
       findings.push(`local branches next to main: ${branches.join(", ")} — delete the merged ones`);
     const ahead = git("rev-list", "origin/main..main", "--count");
