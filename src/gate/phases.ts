@@ -12,7 +12,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { truncateLine } from "../logs.js";
+import { decolor, truncateLine } from "../logs.js";
 import { EXIT, type ExitCode } from "../output.js";
 import { classifyFailures, verdict, type ReportedFailure } from "./saturation.js";
 
@@ -104,7 +104,7 @@ const HEADER_FILE = /(\S+\.(?:m|c)?[jt]sx?)\b/;
 export function failingFiles(output: string): string[] {
   const files = new Set<string>();
   for (const raw of output.split("\n")) {
-    const line = raw.trim();
+    const line = decolor(raw).trim();
     if (!FAILURE_HEADER.test(line)) continue;
     const match = HEADER_FILE.exec(line);
     if (match?.[1] !== undefined) files.add(match[1]);
@@ -248,7 +248,7 @@ function isFailureCause(line: string): boolean {
 export function failureMessages(output: string): string[] {
   return output
     .split("\n")
-    .map((line) => line.trim())
+    .map((line) => decolor(line).trim())
     .filter(isFailureCause);
 }
 
@@ -263,6 +263,25 @@ export function failureMessages(output: string): string[] {
  * triage at a test.
  */
 const REPORTED_FAILURE = /^(?:FAIL(?:ED)?\b|\d+\)\s)/;
+
+/**
+ * The runner's TOTALS, but only where they count failures: `Test Files 1 failed`,
+ * `Tests  5 failed | 538 passed`, `Snapshots  1 failed`.
+ *
+ * A verdict too (spec §7.1, `SST-DESIGN-016` rev 4 — `#17`), and the last one
+ * left when a runner reports no per-test list: the reporter aborted, the list
+ * scrolled out of a truncated log, or the failures are unhandled errors. The
+ * note "no runner verdict in the output" may only be written when the decolored
+ * output carries none of these forms — a note that DENIES a verdict it merely
+ * failed to read misleads the triage more expensively than no note at all.
+ *
+ * Same shape as `RUNNER_NOISE` — a short capitalised label, the column gutter,
+ * then a number — narrowed to a failure count. `Errors  1 error` and every
+ * `… passed` row stay outside: a total that counts no failure is not a verdict
+ * about one, and the unhandled-error run whose totals read `1 passed` must keep
+ * reporting no failing test.
+ */
+const RUNNER_VERDICT = /^[A-Z][A-Za-z ]{0,14}\s{2,}\d+\s+fail(?:ed|ing)\b/;
 
 /** The frame a runner draws behind a list entry: `1) login.spec.js › … ─────`. */
 const TRAILING_FRAME = /\s*([^\w\s\x20-\x7E])\1{2,}\s*$/u;
@@ -285,8 +304,10 @@ const TRAILING_FRAME = /\s*([^\w\s\x20-\x7E])\1{2,}\s*$/u;
  * name, the first cause under it carries the assertion.
  */
 export function reportedFailure(output: string): string | undefined {
-  const lines = output.split("\n").map((line) => line.trim());
-  const index = lines.findIndex((line) => REPORTED_FAILURE.test(line));
+  const lines = output.split("\n").map((line) => decolor(line).trim());
+  // The per-test list first, wherever the runner printed one — it names a test;
+  // the totals only answer for a run that listed none.
+  const index = lines.findIndex((line) => REPORTED_FAILURE.test(line) || RUNNER_VERDICT.test(line));
   if (index === -1) return undefined;
 
   const header = truncateLine((lines[index] as string).replace(TRAILING_FRAME, ""));

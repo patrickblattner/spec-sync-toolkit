@@ -490,3 +490,61 @@ describe("the failing test as the runner reported it (#10)", () => {
     );
   });
 });
+
+/**
+ * Colour is decoration, and a form must be read on the text under it (`#17`,
+ * spec §7.1 / `SST-DESIGN-016` rev 4).
+ *
+ * The measured incident (community-platform Q&A `#692`, foundation `#694`):
+ * vitest writes ` FAIL ` behind `ESC[41mESC[1m`, an escape prefix survives
+ * `trim()`, and the pattern anchored at `^` never fired. The gate then denied
+ * the verdict that was right there — a worker opened an audit ticket and ran an
+ * xhigh investigation on an unrelated `[error]` line while the real failures sat
+ * 600 lines further down, already fixed.
+ */
+describe("a coloured runner verdict is still a verdict (#17)", () => {
+  it("reads the FAIL entry out of genuinely coloured vitest output", () => {
+    const output = fixture("vitest-colored");
+    // Guards the fixture itself: decolored input would prove nothing here.
+    expect(output).toContain("\u001b[41m");
+    expect(reportedFailure(output)).toBe(
+      "FAIL  src/assert.test.ts > adds up\nAssertionError: expected 1 to be 2 // Object.is equality",
+    );
+  });
+
+  it("answers from the coloured totals when the runner listed no single test", () => {
+    const output = [
+      "\u001b[2m RUN \u001b[22m v2.1.9",
+      "\u001b[2m Test Files \u001b[22m \u001b[1m\u001b[31m1 failed\u001b[39m\u001b[22m\u001b[2m | \u001b[22m26 passed\u001b[2m (27)\u001b[22m",
+      "\u001b[2m      Tests \u001b[22m \u001b[1m\u001b[31m5 failed\u001b[39m\u001b[22m\u001b[2m | \u001b[22m538 passed\u001b[2m (543)\u001b[22m",
+    ].join("\n");
+    expect(reportedFailure(output)).toBe("Test Files  1 failed | 26 passed (27)");
+  });
+
+  it("totals that count no failure remain no verdict", () => {
+    // The unhandled-error run summarises `1 passed`: nothing failed, so the
+    // caller must keep being told the answer is a log line.
+    expect(reportedFailure(fixture("vitest-unhandled-error"))).toBeUndefined();
+    expect(
+      reportedFailure("Test Files  1 passed (1)\n      Tests  1 passed (1)\n"),
+    ).toBeUndefined();
+  });
+
+  it("the cause classification reads the decolored line as well", () => {
+    expect(
+      failureMessages(
+        "\u001b[31mAssertionError: expected 1 to be 2 // Object.is equality\u001b[39m",
+      ),
+    ).toEqual(["AssertionError: expected 1 to be 2 // Object.is equality"]);
+  });
+
+  it("failingFiles counts a coloured FAIL header", () => {
+    expect(
+      failingFiles("\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m src/assert.test.ts"),
+    ).toEqual(["src/assert.test.ts"]);
+  });
+
+  it("firstError answers without the escape codes", () => {
+    expect(firstError("\u001b[31mError: boom\u001b[39m")).toBe("Error: boom");
+  });
+});

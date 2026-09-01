@@ -418,6 +418,30 @@ describe("gate — logs never reach stdout (spec §3)", () => {
     expect(result.notes?.join("\n")).not.toContain("no failing test");
   });
 
+  // #17: the same run, but the runner coloured it — which is the normal case,
+  // because a phase writes to a pipe only in OUR capture and many suites force
+  // colour on. The note denied the verdict and sent an audit at the `[error]`
+  // line of a test that passed (community-platform Q&A #692).
+  it("does not deny a verdict just because the runner coloured it (#17)", async () => {
+    // `\033` in a printf FORMAT is the escape byte itself — the phase really
+    // writes colour, exactly as vitest does.
+    const root = makeRepo([
+      {
+        name: "unit",
+        cmd:
+          "printf '[error] general.public_base_url is not set\\n'; " +
+          "printf '\\033[41m\\033[1m FAIL \\033[22m\\033[49m src/webinarSync.test.ts > syncs the roster\\n'; " +
+          "printf '\\033[31mAssertionError: expected 0 to be 3\\033[39m\\n'; exit 1",
+      },
+    ]);
+    const result = await runGate(root);
+
+    expect(result.data?.firstError).toBe(
+      "FAIL  src/webinarSync.test.ts > syncs the roster\nAssertionError: expected 0 to be 3",
+    );
+    expect(result.notes?.join("\n")).not.toContain("no failing test");
+  });
+
   it("grows with the number of phases, never with the size of their output (spec §3)", async () => {
     /** Formatted lines of the response for `names`, each phase printing `chatter` lines. */
     const lines = async (names: string[], chatter: number): Promise<number> => {

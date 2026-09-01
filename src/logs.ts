@@ -181,6 +181,22 @@ export function truncateLine(line: string, max = 200): string {
 }
 
 /**
+ * Removes the colour a runner writes around its own words (ANSI SGR sequences).
+ *
+ * Every form recognition of the gate reads the DECOLORED line (spec §7.1,
+ * `SST-DESIGN-016` rev 4 — `#17`). vitest prints its verdict as
+ * `ESC[41mESC[1m FAIL `, and an escape prefix survives `trim()`: a pattern
+ * anchored at `^` then never fires on a coloured run, and the gate denied a
+ * verdict that was right there — the note sent a triage 600 lines past the real
+ * failure (community-platform Q&A `#692`, foundation `#694`). Colour is
+ * decoration; a form must be read on the text under it.
+ */
+export function decolor(text: string): string {
+  // eslint-disable-next-line no-control-regex -- an escape sequence IS a control character.
+  return text.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+/**
  * Reduces command output to the first relevant error for the response
  * (spec §3: at most 3 lines, truncated with `…`).
  *
@@ -195,7 +211,9 @@ export function truncateLine(line: string, max = 200): string {
  * best available answer — a failing command usually says why at the end.
  */
 export function firstError(output: string, maxLines = 3): string | undefined {
-  const lines = output.split("\n").map((line) => line.trimEnd());
+  const lines = decolor(output)
+    .split("\n")
+    .map((line) => line.trimEnd());
   const nonEmpty = lines.filter((line) => line.trim() !== "");
   if (nonEmpty.length === 0) return undefined;
 

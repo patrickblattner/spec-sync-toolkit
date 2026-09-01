@@ -1,0 +1,16 @@
+[2m RUN [22m [36mv2.1.9[39m [90m/repo[39m
+
+[32m \342\234\223[39m src/ok.test.ts [2m(1 test)[22m [90m3ms[39m
+[31m \342\235\257[39m src/assert.test.ts [2m(1 test | 1 failed)[22m [90m5ms[39m
+   [31m\303\227[39m adds up [90m2ms[39m
+[31m     \342\206\222 expected 1 to be 2 // Object.is equality[39m
+
+[2m\342\216\257\342\216\257\342\216\257\342\216\257\342\216\257\342\216\257\342\216\257[22m[41m[1m Failed Tests 1 [22m[49m[2m\342\216\257\342\216\257\342\216\257\342\216\257\342\216\257\342\216\257\342\216\257[22m
+
+[41m[1m FAIL [22m[49m [1msrc/assert.test.ts[22m [2m>[22m adds up
+[31mAssertionError: expected 1 to be 2 // Object.is equality[39m
+
+[2m Test Files [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m1 passed[39m[22m[90m (2)[39m
+[2m      Tests [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m1 passed[39m[22m[90m (2)[39m
+[2m   Start at [22m 17:50:50
+[2m   Duration [22m 429ms
