@@ -484,6 +484,12 @@ describe("gate --changed (spec §7.1, §5 `when`)", () => {
     git("commit", "-m", "base");
     git("checkout", "-b", "feature");
     write(root, "server/db.ts", "export const db = 1;\n");
+    // The branch carries a commit of its own, so `main` does not contain HEAD
+    // and answers as the base (`#15`). Left level with main, the base would be
+    // `HEAD^` — which this single-commit history does not have, and the gate
+    // then fails instead of skipping, as the norm requires.
+    git("add", "server/db.ts");
+    git("commit", "-m", "work");
     return root;
   }
 
@@ -548,5 +554,50 @@ describe("gate — the mutex serialises runs on the machine (spec §7.1)", () =>
     );
     expect(queued).toHaveLength(1);
     expect(existsSync(join(root, ".spec-sync", "gate.lock"))).toBe(false);
+  });
+});
+
+/**
+ * `--changed` at the command boundary (`#15`, spec §7.1 / `SST-DESIGN-016`
+ * rev 3): which base a skip was measured against, and where the flag has no say
+ * at all.
+ */
+describe("--changed: the base is named, and the nightly ignores the flag", () => {
+  /** `makeRepo` plus a git history: a branch whose commit main does not carry. */
+  function gitRepo(phases: GatePhase[], profile = "local"): string {
+    const root = makeRepo(phases, profile);
+    const run = (...args: string[]): void => {
+      execFileSync("git", args, { cwd: root, stdio: "ignore" });
+    };
+    run("init", "-b", "main");
+    run("config", "user.email", "gate@example.test");
+    run("config", "user.name", "gate");
+    run("add", "spec-sync.config.json");
+    run("commit", "-m", "base");
+    run("checkout", "-b", "feature");
+    write(root, "server/db.ts", "x\n");
+    run("add", "server/db.ts");
+    run("commit", "-m", "work");
+    return root;
+  }
+
+  it("names the base a skip was measured against — a skip nobody can check is a non-run", async () => {
+    const root = gitRepo([{ name: "e2e", cmd: "exit 0", when: ["client/**"] }]);
+    const result = await runGate(root, ["--profile", "local", "--changed"]);
+
+    expect(result.data?.phases).toEqual([{ name: "e2e", skipped: true }]);
+    expect(result.notes?.join("\n")).toContain("skipped: nothing in the diff against main");
+  });
+
+  // The nightly owes the full matrix (foundation PROC-REL-012), so the flag
+  // narrows nothing there — not even in a directory where resolving a base
+  // would have failed outright.
+  it("runs every phase in the nightly profile, --changed or not", async () => {
+    const root = makeRepo([{ name: "e2e", cmd: "exit 0", when: ["client/**"] }], "nightly");
+    const result = await runGate(root, ["--profile", "nightly", "--changed"]);
+
+    expect(result.ok).toBe(true);
+    expect(result.data?.phases).toMatchObject([{ name: "e2e", skipped: false, exit: 0 }]);
+    expect(result.notes?.join("\n")).toContain("--changed has no effect in the nightly profile");
   });
 });

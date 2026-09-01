@@ -33,7 +33,7 @@ import { appendEvent, ledgerPath, readLedger, LEDGER_FILE } from "../ledger.js";
 import { createLogDir, firstError, protectedLogDirs, writePhaseLog } from "../logs.js";
 import { phasesOfProfile, type GatePhase } from "../config.js";
 import { acquireGateLock } from "../gate/lock.js";
-import { changedFiles, phaseRuns, DIFF_BASE } from "../gate/changed.js";
+import { changeSet, phaseRuns, type ChangeSet } from "../gate/changed.js";
 import { MachineProbe, renderMeasurement } from "../gate/machine.js";
 import { phaseExit, reportedFailure, runPhase } from "../gate/phases.js";
 import { DEFAULT_ENVIRONMENT, type Environment, type WakeLockState } from "../gate/environment.js";
@@ -41,6 +41,9 @@ import type { Command, CommandContext, CommandResult } from "../cli.js";
 
 /** Log file carrying the measurement condition; underscored so no phase name collides. */
 const MEASUREMENT_LOG = "_measurement";
+
+/** The profile that owes the full matrix, so `--changed` narrows nothing in it. */
+const NIGHTLY_PROFILE = "nightly";
 
 /**
  * `reason` of an abort BEFORE the first phase — the machine-readable half of
@@ -156,7 +159,11 @@ export async function runGate(
   ctx: CommandContext,
   environment: Environment = DEFAULT_ENVIRONMENT,
 ): Promise<CommandResult> {
-  const { profile, changed, issue, run: runId } = parseGateArgs(ctx.args);
+  const { profile, changed: changedFlag, issue, run: runId } = parseGateArgs(ctx.args);
+  // The nightly is the net (foundation `PROC-REL-012`, spec §7.1 — `#15`): it
+  // owes the full matrix, so there is nothing for `--changed` to narrow there.
+  // Dropped here rather than in the parser, which reports back what was typed.
+  const changed = changedFlag && profile !== NIGHTLY_PROFILE;
   const config = ctx.config;
   if (config === undefined) {
     throw new ToolkitError("gate needs a config", EXIT.PRECONDITION, { field: "gate" });
@@ -190,9 +197,13 @@ export async function runGate(
     );
   }
 
+  if (changedFlag && !changed) {
+    notes.push(`--changed has no effect in the ${profile} profile — every phase runs`);
+  }
+
   // Read before queueing: an unusable `--changed` is a precondition the caller
   // must fix, and finding that out after a ten-minute wait helps nobody.
-  const diff = changed ? await changedFiles(ctx.repoRoot) : undefined;
+  const diff = changed ? await changeSet(ctx.repoRoot) : undefined;
 
   progress(`gate ${profile} — ${phases.length} phases${changed ? ", --changed" : ""}`);
   const lock = await acquireGateLock(ctx.repoRoot);
@@ -253,7 +264,7 @@ async function runPhases({
 }: {
   ctx: CommandContext;
   phases: readonly GatePhase[];
-  diff: string[] | undefined;
+  diff: ChangeSet | undefined;
   notes: string[];
   wakeLock: WakeLockState;
 }): Promise<CommandResult> {
@@ -268,10 +279,12 @@ async function runPhases({
   probe.begin();
 
   for (const phase of phases) {
-    if (diff !== undefined && !phaseRuns(phase.when, diff)) {
+    if (diff !== undefined && !phaseRuns(phase.when, diff.files)) {
       reports.push({ name: phase.name, skipped: true });
+      // The base belongs in the note: a skip is only checkable against the
+      // state it was measured from (spec §7.1 — `#15`).
       notes.push(
-        `phase ${phase.name} skipped: nothing in the diff against ${DIFF_BASE} matches ${(phase.when ?? []).join(", ")}`,
+        `phase ${phase.name} skipped: nothing in the diff against ${diff.base} matches ${(phase.when ?? []).join(", ")}`,
       );
       continue;
     }
