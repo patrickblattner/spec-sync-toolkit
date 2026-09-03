@@ -35,6 +35,8 @@ interface World {
   issueState: string;
   issueTitle: string;
   issueLabels: string[];
+  /** What `gh variable get GATE_MODE` prints; absent = the variable does not exist. */
+  gateMode?: string;
 }
 
 function world(over: Partial<World> = {}): World {
@@ -134,6 +136,11 @@ function fakeDeps(state: World): {
     if (args[1] === "edit") {
       state.issueLabels.push(args[4] ?? "");
       return "";
+    }
+    if (args[0] === "variable" && args[1] === "get") {
+      // `gh` answers a missing variable with an error, not with an empty line.
+      if (state.gateMode === undefined) throw new Error("variable not found: GATE_MODE");
+      return `${state.gateMode}\n`;
     }
     throw new Error(`unexpected gh call: ${args.join(" ")}`);
   };
@@ -305,6 +312,12 @@ describe("a violated precondition is exit 4 and changes nothing (§12 M3)", () =
       gate: true,
       check: "remote-configured",
     },
+    {
+      name: "remote mode — main moves only through pull requests",
+      state: { gateMode: "remote" },
+      gate: true,
+      check: "gate-mode-local",
+    },
   ];
 
   for (const testCase of cases) {
@@ -321,6 +334,22 @@ describe("a violated precondition is exit 4 and changes nothing (§12 M3)", () =
       expect(violated.map((check) => check.name)).toContain(testCase.check);
     });
   }
+
+  it("names the PR path when it refuses in remote mode", async () => {
+    const { deps, root } = fakeDeps(world({ gateMode: "remote" }));
+    recordGreenGate(root, 42);
+    const result = await runMerge(deps, options, NORM_DEFAULTS);
+    const violated = result.data.preconditions as { name: string; detail?: string }[];
+    expect(violated.map((check) => check.name)).toEqual(["gate-mode-local"]);
+    expect(violated[0]?.detail).toMatch(/pull requests.*gh pr merge/);
+  });
+
+  it("reads a missing GATE_MODE variable as local — gh's error never blocks a merge", async () => {
+    const { deps, root } = fakeDeps(world({ gateMode: undefined }));
+    recordGreenGate(root, 42);
+    const result = await runMerge(deps, { ...options, dryRun: true }, NORM_DEFAULTS);
+    expect(result.ok).toBe(true);
+  });
 
   it("refuses on a red gate, not only on a missing one", async () => {
     const { deps, root } = fakeDeps(world());

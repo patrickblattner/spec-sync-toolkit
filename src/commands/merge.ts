@@ -33,6 +33,7 @@ import { appendEvent, interruptedMerge, latestGate, readLedger } from "../ledger
 import type { LedgerEvent } from "../ledger.js";
 import { ghRunner, type GhRunner } from "./queue.js";
 import { loadNorms, type Norms } from "../norms.js";
+import { parseGateMode, type GateMode } from "../gate/environment.js";
 import type { Command, CommandContext } from "../cli.js";
 
 /** The branch `main` moves only through gate-verified squash merges (§Worker-Loop). */
@@ -167,6 +168,8 @@ interface Facts {
   issue: GhIssueView;
   gateOk: boolean;
   gateDetail: string;
+  /** `GATE_MODE` of the repo (PROC-DEV-044); `unknown` when `gh` cannot say. */
+  gateMode: GateMode;
 }
 
 async function gather(
@@ -186,6 +189,14 @@ async function gather(
 
   const gate = latestGate(events, options.issue, MERGE_GATE_PROFILE);
 
+  // Asked through the same `gh` the sequence uses. A missing variable is an
+  // error for `gh` and `unknown` here — the norm reads it as local, and an
+  // unreadable mode must never block a merge that was admissible yesterday.
+  const gateMode = await deps
+    .gh(["variable", "get", "GATE_MODE"])
+    .then(parseGateMode)
+    .catch((): GateMode => "unknown");
+
   return {
     currentBranch,
     isClean,
@@ -193,6 +204,7 @@ async function gather(
     remote,
     worktreePath,
     issue,
+    gateMode,
     gateOk: gate?.ok === true,
     // A precondition that does not say how to satisfy it costs the caller a
     // guess, and here the guess is expensive: the ledger is only written when a
@@ -236,6 +248,17 @@ async function findWorktree(deps: MergeDeps, branch: string): Promise<string | u
 export function preconditions(facts: Facts, options: MergeOptions, norms: Norms): Check[] {
   const labels = (facts.issue.labels ?? []).map((label) => label.name);
   return [
+    {
+      // In remote mode `main` moves only through pull requests (PROC-DEV-044,
+      // `SST-DESIGN-019` rev 3): the local sequence is not admissible, however
+      // green the local evidence. The detail names the way, as §7.4 demands.
+      name: "gate-mode-local",
+      ok: facts.gateMode !== "remote",
+      detail:
+        facts.gateMode === "remote"
+          ? `GATE_MODE=remote — ${MAIN_BRANCH} moves only through pull requests: push the branch, open a PR, wait for "pr-gate" and merge with gh pr merge <nr> --squash --delete-branch`
+          : undefined,
+    },
     {
       name: "gate-evidence-green",
       ok: facts.gateOk,

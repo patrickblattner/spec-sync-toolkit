@@ -96,10 +96,56 @@ export function holdWakeLock(): WakeLock {
   };
 }
 
+/**
+ * The repo's operating mode (`GATE_MODE`, foundation `PROC-DEV-044`): in
+ * `remote` the merge gate is the required check `pr-gate` on CI, not a local
+ * run. `unknown` is everything the two words do not cover, and it never blocks
+ * — the norm reads a missing variable as `local`.
+ */
+export type GateMode = "local" | "remote" | "unknown";
+
+/** Reads what `gh variable get GATE_MODE` prints; anything but the two known words is `unknown`. */
+export function parseGateMode(output: string | undefined): GateMode {
+  const value = output?.trim().toLowerCase();
+  if (value === "remote") return "remote";
+  if (value === "local") return "local";
+  return "unknown";
+}
+
+/**
+ * The repo variable, asked through `gh` from inside the repo. A missing
+ * variable is an error for `gh`, a missing `gh` an error for the spawn — both
+ * are `unknown` here, for the same reason `pmset` never blocks a run.
+ */
+export function readGateMode(repoRoot: string): GateMode {
+  const probe = spawnSync("gh", ["variable", "get", "GATE_MODE"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
+  if (probe.status !== 0 || typeof probe.stdout !== "string") return "unknown";
+  return parseGateMode(probe.stdout);
+}
+
+/**
+ * Whether this process runs inside the CI runner. There the gate IS the remote
+ * gate, so the remote-mode precondition is void. GitHub sets
+ * `GITHUB_ACTIONS=true` in every job.
+ */
+export function isCiRunner(): boolean {
+  return process.env.GITHUB_ACTIONS === "true";
+}
+
 /** What `gate` needs from the machine. Injected so tests do not read the real box. */
 export interface Environment {
   readPowerSource: () => PowerSource;
   holdWakeLock: () => WakeLock;
+  readGateMode: (repoRoot: string) => GateMode;
+  isCiRunner: () => boolean;
 }
 
-export const DEFAULT_ENVIRONMENT: Environment = { readPowerSource, holdWakeLock };
+export const DEFAULT_ENVIRONMENT: Environment = {
+  readPowerSource,
+  holdWakeLock,
+  readGateMode,
+  isCiRunner,
+};

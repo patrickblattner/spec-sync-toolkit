@@ -12,7 +12,7 @@ import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { runGate } from "../src/commands/gate.js";
 import { loadConfig, type GatePhase } from "../src/config.js";
-import { parsePowerSource, type Environment } from "../src/gate/environment.js";
+import { parseGateMode, parsePowerSource, type Environment } from "../src/gate/environment.js";
 import { EXIT, ToolkitError } from "../src/output.js";
 import type { CommandContext } from "../src/cli.js";
 
@@ -48,6 +48,8 @@ function environment(
   return {
     env: {
       readPowerSource: () => source,
+      readGateMode: () => "local",
+      isCiRunner: () => false,
       holdWakeLock: () => ({
         state: lock,
         release: () => {
@@ -157,5 +159,18 @@ describe("the wake lock over a run (§7.1)", () => {
 
     expect(result.ok).toBe(false);
     expect(released()).toBe(1);
+  });
+});
+
+describe("parseGateMode", () => {
+  it("reads the two known words, trimmed and case-insensitively", () => {
+    expect(parseGateMode("remote\n")).toBe("remote");
+    expect(parseGateMode("Local")).toBe("local");
+  });
+
+  it("is unknown for anything else — and unknown never blocks", () => {
+    expect(parseGateMode("")).toBe("unknown");
+    expect(parseGateMode(undefined)).toBe("unknown");
+    expect(parseGateMode("staging")).toBe("unknown");
   });
 });

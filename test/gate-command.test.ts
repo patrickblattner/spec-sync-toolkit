@@ -54,6 +54,8 @@ function context(root: string, args: string[]): CommandContext {
  */
 const onMains: Environment = {
   readPowerSource: () => "ac",
+  readGateMode: () => "local",
+  isCiRunner: () => false,
   holdWakeLock: () => ({ state: "unavailable", release: () => {} }),
 };
 
@@ -245,6 +247,8 @@ describe("gate records its run in the ledger (spec §8)", () => {
     const root = makeRepo([{ name: "unit", cmd: "true" }], "merge");
     const onBattery: Environment = {
       readPowerSource: () => "battery",
+      readGateMode: () => "local",
+      isCiRunner: () => false,
       holdWakeLock: () => ({ state: "unavailable", release: () => {} }),
     };
 
@@ -257,6 +261,52 @@ describe("gate records its run in the ledger (spec §8)", () => {
     expect((error as ToolkitError).reason).toBe("no-run");
     expect(readLedger(root).events).toEqual([]);
     expect(ticketMetrics(readLedger(root).events)).toEqual([]);
+  });
+
+  /**
+   * SST-DESIGN-013 rev 3: in remote mode the merge gate is the required check
+   * on CI, and a green local run of the same profile is exactly the evidence
+   * that tempts a local merge — so the tool refuses it, not the instruction.
+   */
+  it("refuses the merge profile locally in remote mode — exit 4, no event", async () => {
+    const root = makeRepo([{ name: "unit", cmd: "true" }], "merge");
+    const remote: Environment = { ...onMains, readGateMode: () => "remote" };
+
+    const error = await runGateWith(
+      context(root, ["--profile", "merge", "--issue", "42"]),
+      remote,
+    ).catch((e: unknown) => e);
+
+    expect((error as ToolkitError).exit).toBe(EXIT.PRECONDITION);
+    expect((error as ToolkitError).reason).toBe("remote-mode");
+    expect((error as ToolkitError).message).toMatch(/pr-gate/);
+    expect(readLedger(root).events).toEqual([]);
+  });
+
+  it("runs the merge profile inside the CI runner in remote mode — that run IS the gate", async () => {
+    const root = makeRepo([{ name: "unit", cmd: "true" }], "merge");
+    const ci: Environment = { ...onMains, readGateMode: () => "remote", isCiRunner: () => true };
+
+    const result = await runGateWith(context(root, ["--profile", "merge"]), ci);
+
+    expect(result.ok).toBe(true);
+  });
+
+  it("does not even ask for the mode outside the merge profile", async () => {
+    const root = makeRepo([{ name: "unit", cmd: "true" }]);
+    let asked = false;
+    const remote: Environment = {
+      ...onMains,
+      readGateMode: () => {
+        asked = true;
+        return "remote";
+      },
+    };
+
+    const result = await runGateWith(context(root, ["--profile", "local"]), remote);
+
+    expect(result.ok).toBe(true);
+    expect(asked).toBe(false);
   });
 
   it("counts an unprovable run that took place — it is a run, not a non-run", async () => {

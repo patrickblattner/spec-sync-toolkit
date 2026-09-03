@@ -57,6 +57,13 @@ the other case — it took place, it is recorded, and it counts. That limit bind
 incident, not per ticket**: once the cause of the load is found, fixed and recorded in the
 ticket, the next run is a _first_ run of that ticket.
 
+Remote mode (`GATE_MODE=remote`, the repo variable of `PROC-DEV-044`): `gate --profile merge`
+refuses to run locally — exit 4, `reason: "remote-mode"`, no ledger event — because there the
+merge gate is the required check `pr-gate` on CI, and `merge` refuses the local sequence with
+the precondition `gate-mode-local`. Both name the PR path. Inside the CI runner
+(`GITHUB_ACTIONS=true`) the check is void; a missing or unreadable variable never blocks
+(SST-DESIGN-013 rev 3, SST-DESIGN-019 rev 3).
+
 Everything project-specific lives in one file, `spec-sync.config.json`: gate phases and
 profiles, path globs for review lenses, label names, log retention, context budget.
 

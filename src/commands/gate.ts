@@ -37,6 +37,7 @@ import { changeSet, phaseRuns, type ChangeSet } from "../gate/changed.js";
 import { MachineProbe, renderMeasurement } from "../gate/machine.js";
 import { phaseExit, reportedFailure, runPhase } from "../gate/phases.js";
 import { DEFAULT_ENVIRONMENT, type Environment, type WakeLockState } from "../gate/environment.js";
+import { MAIN_BRANCH, MERGE_GATE_PROFILE } from "./merge.js";
 import type { Command, CommandContext, CommandResult } from "../cli.js";
 
 /** Log file carrying the measurement condition; underscored so no phase name collides. */
@@ -63,6 +64,13 @@ const NIGHTLY_PROFILE = "nightly";
  * them apart. `reason: "no-run"` is what a counting reader goes by.
  */
 const NO_RUN = "no-run";
+
+/**
+ * `reason` of the refusal to run the merge profile locally in remote mode
+ * (`SST-DESIGN-013` rev 3). Exit 4, not 2: there is nothing to repeat, the
+ * cause is the invocation itself.
+ */
+const REMOTE_MODE = "remote-mode";
 
 /**
  * An abort before the first phase. Exit 2 like every other unprovable outcome —
@@ -194,6 +202,28 @@ export async function runGate(
   ) {
     throw notGateCapable(
       `gate: not a gate-capable working tree — no node_modules in ${ctx.repoRoot}; a worktree does not inherit the main checkout's install, run \`npm install\` in THIS working tree and repeat`,
+    );
+  }
+
+  // The third exclusion, and the one with teeth: in remote mode (`GATE_MODE`,
+  // foundation PROC-DEV-044) the merge gate is the required check `pr-gate` on
+  // CI, and a green LOCAL run of the same profile is exactly the evidence that
+  // tempts a local merge. The first ticket after a consumer's switch to remote
+  // went that way although the loop instruction said to read the mode first —
+  // so the mode is read HERE, by the tool every merge passes through, not by
+  // the reader. Only the merge profile: a local-profile run is a developer's
+  // check in any mode. Inside the CI runner the check is void — that run IS
+  // the remote gate. Last of the preconditions because it is the only one
+  // that costs a network round trip.
+  if (
+    profile === MERGE_GATE_PROFILE &&
+    !environment.isCiRunner() &&
+    environment.readGateMode(ctx.repoRoot) === "remote"
+  ) {
+    throw new ToolkitError(
+      `gate: the ${profile} profile does not run locally while GATE_MODE=remote — the merge gate is the required check "pr-gate" on CI (PROC-DEV-044): push the ticket branch, open a PR against ${MAIN_BRANCH}, wait for it (gh pr checks <nr> --watch) and merge with gh pr merge <nr> --squash --delete-branch`,
+      EXIT.PRECONDITION,
+      { reason: REMOTE_MODE },
     );
   }
 
