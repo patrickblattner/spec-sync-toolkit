@@ -256,7 +256,7 @@ export function preconditions(facts: Facts, options: MergeOptions, norms: Norms)
       ok: facts.gateMode !== "remote",
       detail:
         facts.gateMode === "remote"
-          ? `GATE_MODE=remote — ${MAIN_BRANCH} moves only through pull requests: push the branch, open a PR, wait for "pr-gate" and merge with gh pr merge <nr> --squash --delete-branch`
+          ? `GATE_MODE=remote — ${MAIN_BRANCH} moves only through pull requests: push the branch, open a PR, poll "pr-gate" in the foreground (gh pr checks <nr>, no monitor) while the next disjoint ticket builds, and merge with gh pr merge <nr> --squash --delete-branch`
           : undefined,
     },
     {

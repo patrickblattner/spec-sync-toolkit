@@ -221,7 +221,7 @@ export async function runGate(
     environment.readGateMode(ctx.repoRoot) === "remote"
   ) {
     throw new ToolkitError(
-      `gate: the ${profile} profile does not run locally while GATE_MODE=remote — the merge gate is the required check "pr-gate" on CI (PROC-DEV-044): push the ticket branch, open a PR against ${MAIN_BRANCH}, wait for it (gh pr checks <nr> --watch) and merge with gh pr merge <nr> --squash --delete-branch`,
+      `gate: the ${profile} profile does not run locally while GATE_MODE=remote — the merge gate is the required check "pr-gate" on CI (PROC-DEV-044): push the ticket branch, open a PR against ${MAIN_BRANCH}, build the next disjoint ticket while it runs, poll it in the foreground (gh pr checks <nr>, every 90s, no monitor, no --watch, 75 min cap) and merge with gh pr merge <nr> --squash --delete-branch`,
       EXIT.PRECONDITION,
       { reason: REMOTE_MODE },
     );

@@ -60,7 +60,9 @@ ticket, the next run is a _first_ run of that ticket.
 Remote mode (`GATE_MODE=remote`, the repo variable of `PROC-DEV-044`): `gate --profile merge`
 refuses to run locally — exit 4, `reason: "remote-mode"`, no ledger event — because there the
 merge gate is the required check `pr-gate` on CI, and `merge` refuses the local sequence with
-the precondition `gate-mode-local`. Both name the PR path. Inside the CI runner
+the precondition `gate-mode-local`. Both name the PR path, and both name how to wait on it:
+poll `pr-gate` in the foreground while the next path-disjoint ticket builds, never with a
+background monitor and never with `--watch` (decision register #442). Inside the CI runner
 (`GITHUB_ACTIONS=true`) the check is void; a missing or unreadable variable never blocks
 (SST-DESIGN-013 rev 3, SST-DESIGN-019 rev 3).
 
