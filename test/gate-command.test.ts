@@ -78,22 +78,33 @@ function envelope(result: CommandResult): Response {
 
 describe("parseGateArgs", () => {
   it("reads the flags of spec §7.1", () => {
-    expect(parseGateArgs(["--profile", "merge"])).toEqual({ profile: "merge", changed: false });
+    expect(parseGateArgs(["--profile", "merge"])).toEqual({
+      profile: "merge",
+      changed: false,
+      preflight: false,
+    });
     expect(parseGateArgs(["--profile", "local", "--changed"])).toEqual({
       profile: "local",
       changed: true,
+      preflight: false,
     });
   });
 
   it("takes the profile attached or separate — both forms mean the same thing", () => {
-    expect(parseGateArgs(["--profile=merge"])).toEqual({ profile: "merge", changed: false });
+    expect(parseGateArgs(["--profile=merge"])).toEqual({
+      profile: "merge",
+      changed: false,
+      preflight: false,
+    });
     expect(parseGateArgs(["--profile=local", "--changed"])).toEqual({
       profile: "local",
       changed: true,
+      preflight: false,
     });
     expect(parseGateArgs(["--changed", "--profile=nightly"])).toEqual({
       profile: "nightly",
       changed: true,
+      preflight: false,
     });
   });
 
@@ -155,12 +166,14 @@ describe("parseGateArgs — the ledger flags (spec §8)", () => {
     expect(parseGateArgs(["--profile", "merge", "--issue", "42", "--run", "run-1"])).toEqual({
       profile: "merge",
       changed: false,
+      preflight: false,
       issue: 42,
       run: "run-1",
     });
     expect(parseGateArgs(["--profile=merge", "--issue=42", "--run=run-1"])).toEqual({
       profile: "merge",
       changed: false,
+      preflight: false,
       issue: 42,
       run: "run-1",
     });
@@ -171,6 +184,7 @@ describe("parseGateArgs — the ledger flags (spec §8)", () => {
     expect(parseGateArgs(["--profile", "local"])).toEqual({
       profile: "local",
       changed: false,
+      preflight: false,
       issue: undefined,
       run: undefined,
     });
@@ -649,5 +663,151 @@ describe("--changed: the base is named, and the nightly ignores the flag", () =>
     expect(result.ok).toBe(true);
     expect(result.data?.phases).toMatchObject([{ name: "e2e", skipped: false, exit: 0 }]);
     expect(result.notes?.join("\n")).toContain("--changed has no effect in the nightly profile");
+  });
+});
+
+/**
+ * `SST-DESIGN-013` rev 4: the merge profile's local shadow. It exists to find a
+ * red before the branch is pushed, so it runs in every mode — and it must never
+ * be mistakable for the gate, which is why it writes no ledger event and marks
+ * its response `preflight: true`.
+ */
+describe("gate --preflight (SST-DESIGN-013 rev 4)", () => {
+  /** A merge profile whose expensive phases carry the mark the pre-run demands. */
+  const marked: GatePhase[] = [
+    { name: "lint", cmd: "true" },
+    { name: "unit", cmd: "exit 1", imageOnly: "PROC-REL-030" },
+  ];
+
+  it("reads --preflight, and only on the merge profile", () => {
+    expect(parseGateArgs(["--profile", "merge", "--preflight"])).toEqual({
+      profile: "merge",
+      changed: false,
+      preflight: true,
+      issue: undefined,
+      run: undefined,
+    });
+
+    for (const profile of ["local", "nightly"]) {
+      const error = (() => {
+        try {
+          parseGateArgs(["--profile", profile, "--preflight"]);
+          return undefined;
+        } catch (e) {
+          return e;
+        }
+      })();
+      expect(error).toBeInstanceOf(ToolkitError);
+      expect((error as ToolkitError).exit).toBe(EXIT.PRECONDITION);
+      expect((error as ToolkitError).field).toBe("--preflight");
+    }
+  });
+
+  it("runs locally while GATE_MODE=remote — the one exception to the refusal", async () => {
+    const root = makeRepo(marked, "merge");
+    const remote: Environment = { ...onMains, readGateMode: () => "remote" };
+
+    const result = await runGateWith(context(root, ["--profile", "merge", "--preflight"]), remote);
+
+    expect(result.ok).toBe(true);
+    expect(result.data?.preflight).toBe(true);
+  });
+
+  it("skips an image-only phase and names the reason it was marked with", async () => {
+    const root = makeRepo(marked, "merge");
+
+    const result = await runGate(root, ["--profile", "merge", "--preflight"]);
+
+    expect(result.ok).toBe(true);
+    expect(result.data?.phases).toMatchObject([
+      { name: "lint", skipped: false, exit: 0 },
+      { name: "unit", skipped: true, reason: "image-only (PROC-REL-030)" },
+    ]);
+  });
+
+  it("runs preflightCmd in place of cmd where the config carries one", async () => {
+    const root = makeRepo(
+      [
+        { name: "hygiene", cmd: "exit 1", preflightCmd: "true" },
+        { name: "unit", cmd: "true", imageOnly: "needs a database" },
+      ],
+      "merge",
+    );
+
+    const result = await runGate(root, ["--profile", "merge", "--preflight"]);
+
+    expect(result.ok).toBe(true);
+    expect(result.data?.phases).toMatchObject([
+      { name: "hygiene", skipped: false, exit: 0 },
+      { name: "unit", skipped: true },
+    ]);
+  });
+
+  it("uses cmd unchanged in a plain gate run, preflightCmd or not", async () => {
+    const root = makeRepo([{ name: "hygiene", cmd: "exit 1", preflightCmd: "true" }], "merge");
+
+    const result = await runGate(root, ["--profile", "merge"]);
+
+    expect(result.ok).toBe(false);
+    expect(result.exit).toBe(EXIT.FAILED);
+    expect(result.data?.preflight).toBeUndefined();
+  });
+
+  /**
+   * The precondition with teeth: an unmarked expensive phase means the config
+   * was never read for a pre-run, and running it anyway boots a database on the
+   * developer's machine (`PROC-REL-030`).
+   */
+  it.each(["unit", "build", "e2e-smoke", "e2e-touched", "e2e-full"])(
+    "refuses to start when the merge profile carries an unmarked %s phase",
+    async (name) => {
+      const root = makeRepo(
+        [
+          { name: "lint", cmd: "true" },
+          { name, cmd: "true" },
+        ],
+        "merge",
+      );
+
+      const error = await runGateWith(
+        context(root, ["--profile", "merge", "--preflight"]),
+        onMains,
+      ).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(ToolkitError);
+      expect((error as ToolkitError).exit).toBe(EXIT.PRECONDITION);
+      expect((error as ToolkitError).reason).toBe("preflight-config");
+      expect((error as ToolkitError).message).toContain(name);
+      // Nothing was spawned and nothing was logged — the check sits ahead of both.
+      expect(existsSync(join(root, ".spec-sync", "logs"))).toBe(false);
+    },
+  );
+
+  it("writes no ledger event even with --issue — a pre-run is no gate evidence", async () => {
+    const root = makeRepo(marked, "merge");
+
+    const result = await runGate(root, ["--profile", "merge", "--preflight", "--issue", "42"]);
+
+    expect(result.ok).toBe(true);
+    expect(readLedger(root).events).toEqual([]);
+    expect(latestGate(readLedger(root).events, 42, "merge")).toBeUndefined();
+    expect(result.notes?.join("\n")).toContain("writes no ledger event");
+  });
+
+  it("answers a red pre-run with exit 1, like a gate run", async () => {
+    const root = makeRepo(
+      [
+        { name: "lint", cmd: "echo 'Error: boom'; exit 1" },
+        { name: "unit", cmd: "true", imageOnly: "PROC-REL-030" },
+      ],
+      "merge",
+    );
+
+    const result = await runGate(root, ["--profile", "merge", "--preflight", "--issue", "42"]);
+
+    expect(result.ok).toBe(false);
+    expect(result.exit).toBe(EXIT.FAILED);
+    expect(result.data?.preflight).toBe(true);
+    expect(readLedger(root).events).toEqual([]);
   });
 });

@@ -21,6 +21,18 @@ const phaseSchema = z.object({
   cmd: z.string().min(1),
   /** Restricts the phase to diffs matching at least one glob (picomatch). */
   when: z.array(z.string().min(1)).optional(),
+  /**
+   * Keeps the phase out of `gate --preflight` (`SST-DESIGN-013` rev 4). The
+   * string is the REASON, not a boolean: a phase judges only inside the gate
+   * image, or a norm forbids it on the developer machine (`PROC-REL-030`) — and
+   * the reader of a skipped pre-run has to be told which of the two it was.
+   */
+  imageOnly: z.string().min(1).optional(),
+  /**
+   * The build-free part of the phase, run by `--preflight` in place of `cmd`.
+   * Absent means the pre-run uses `cmd` as it stands.
+   */
+  preflightCmd: z.string().min(1).optional(),
 });
 
 const gateSchema = z.object({

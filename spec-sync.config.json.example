@@ -10,13 +10,23 @@
       { "name": "format", "cmd": "npm run format:check" },
       { "name": "lint", "cmd": "npm run lint" },
       { "name": "typecheck", "cmd": "npm run typecheck" },
-      { "name": "unit", "cmd": "npm test" },
+      { "name": "unit", "cmd": "npm test", "imageOnly": "PROC-REL-030" },
       {
         "name": "audits",
-        "cmd": "npm run audit:obligations:gate && npm run audit:icon-tooltip:gate"
+        "cmd": "npm run audit:obligations:gate && npm run audit:icon-tooltip:gate",
+        "preflightCmd": "npm run audit:obligations:gate"
       },
-      { "name": "e2e-touched", "cmd": "npm run test:e2e:feature", "when": ["client/**", "e2e/**"] },
-      { "name": "e2e-full", "cmd": "npm run test:e2e" }
+      {
+        "name": "e2e-touched",
+        "cmd": "npm run test:e2e:feature",
+        "when": ["client/**", "e2e/**"],
+        "imageOnly": "needs the browser and the seeded stack of the gate image"
+      },
+      {
+        "name": "e2e-full",
+        "cmd": "npm run test:e2e",
+        "imageOnly": "judges only in the gate image"
+      }
     ]
   },
   "lenses": {

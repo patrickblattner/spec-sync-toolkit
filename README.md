@@ -23,7 +23,7 @@ no attempt to be general. Outside that setup most of it will not make sense.
 ## Commands
 
 ```bash
-spec-sync gate --profile local|merge|nightly [--changed]
+spec-sync gate --profile local|merge|nightly [--changed] [--preflight]
 spec-sync queue [--check]
 spec-sync pack <issue>
 spec-sync merge <issue> --branch <name> [--dry-run]
@@ -65,6 +65,29 @@ poll `pr-gate` in the foreground while the next path-disjoint ticket builds, nev
 background monitor and never with `--watch` (decision register #442). Inside the CI runner
 (`GITHUB_ACTIONS=true`) the check is void; a missing or unreadable variable never blocks
 (SST-DESIGN-013 rev 3, SST-DESIGN-019 rev 3).
+
+Pre-run (`gate --profile merge --preflight`, SST-DESIGN-013 rev 4): the one call that runs
+the merge profile locally in **every** mode. It walks the profile in its order, runs each
+phase's `preflightCmd` where the config carries one and its `cmd` otherwise, and skips every
+phase marked `imageOnly` — listing it as `image-only (<reason>)`. It is **not** a gate: no
+ledger event, no evidence for `merge`, and the response carries `preflight: true` so a reader
+cannot mistake it for one. Exit codes as in a gate run (`0` clean, `1` a red phase, `2`
+unprovable); `--changed` combines, the gate lock is taken, battery and `node_modules`
+preconditions apply. Before the first spawn it refuses a merge profile whose `unit`, `build`,
+`e2e-smoke`, `e2e-touched` or `e2e-full` phase carries no `imageOnly` mark — exit 4,
+`reason: "preflight-config"` — so a pre-run never starts a database, a build or a browser by
+accident. `--preflight` on any other profile is exit 4 naming the flag.
+
+The two phase fields it reads, both optional:
+
+```jsonc
+{ "name": "unit", "cmd": "npm test", "imageOnly": "PROC-REL-030" },
+{ "name": "audits", "cmd": "npm run audit:gate", "preflightCmd": "npm run audit:gate -- --no-build" }
+```
+
+`imageOnly` is the **reason** the phase stays out of the pre-run (it judges only in the gate
+image, or a norm forbids it on the developer machine), never a boolean; `preflightCmd` is the
+build-free part of the phase.
 
 Everything project-specific lives in one file, `spec-sync.config.json`: gate phases and
 profiles, path globs for review lenses, label names, log retention, context budget.

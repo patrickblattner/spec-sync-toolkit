@@ -1,7 +1,7 @@
 /**
  * `gate` — run the phases of a profile, cheapest first (spec §7.1).
  *
- *   spec-sync gate --profile local|merge|nightly [--changed]
+ *   spec-sync gate --profile local|merge|nightly [--changed] [--preflight]
  *                 [--issue <nr>] [--run <id>]
  *
  * Three promises hold this command together:
@@ -24,6 +24,13 @@
  * demands per ticket — gate runs and retries — are counted from it. Without
  * `--issue` nothing is written, because a gate run without a ticket belongs to
  * no ticket and must not be counted against one.
+ *
+ * `--preflight` is the merge profile's local shadow (`SST-DESIGN-013` rev 4):
+ * the build-free phases of the same profile, in the same order, locally in
+ * every mode — the one exception to the remote-mode refusal. It is not a gate.
+ * It writes no ledger event, so nothing it produces can satisfy `merge`'s
+ * `gate-evidence-green`; what it buys is a red found before the branch is
+ * pushed instead of ten minutes into `pr-gate`.
  */
 
 import { existsSync } from "node:fs";
@@ -73,6 +80,24 @@ const NO_RUN = "no-run";
 const REMOTE_MODE = "remote-mode";
 
 /**
+ * `reason` of a pre-run whose merge profile is not shaped for one
+ * (`SST-DESIGN-013` rev 4): a phase that starts a database, a build or a
+ * browser carries no `imageOnly` mark, so the pre-run would run it.
+ */
+const PREFLIGHT_CONFIG = "preflight-config";
+
+/**
+ * Phases the pre-run must never start by accident. They are named rather than
+ * detected: what makes them expensive is not in the command line — `npm test`
+ * boots a database, `e2e-*` a browser, `build` a full compile — and a pre-run
+ * that costs as much as the gate has no reason to exist.
+ *
+ * Carrying an `imageOnly` mark is what releases a phase from the list: the
+ * mark says the config author saw it and kept it out of the pre-run.
+ */
+const PREFLIGHT_FORBIDDEN = ["unit", "build", "e2e-smoke", "e2e-touched", "e2e-full"];
+
+/**
  * An abort before the first phase. Exit 2 like every other unprovable outcome —
  * not green, blocks the merge — but marked as the non-run it is.
  */
@@ -83,6 +108,11 @@ function notGateCapable(message: string): ToolkitError {
 export interface GateArgs {
   profile: string;
   changed: boolean;
+  /**
+   * Pre-run of the merge profile: its build-free phases, locally, in every
+   * mode. Not a gate — no ledger entry, no evidence (`SST-DESIGN-013` rev 4).
+   */
+  preflight: boolean;
   /** Ticket this run belongs to. Absent means: record nothing. */
   issue?: number;
   /** Groups the event with the rest of a worker-loop run (`report --run <id>`). */
@@ -115,6 +145,7 @@ function readValue(flag: string, args: readonly string[], index: number): [strin
 export function parseGateArgs(args: readonly string[]): GateArgs {
   let profile: string | undefined;
   let changed = false;
+  let preflight = false;
   let issue: number | undefined;
   let run: string | undefined;
 
@@ -140,6 +171,8 @@ export function parseGateArgs(args: readonly string[]): GateArgs {
       i += consumed;
     } else if (token === "--changed") {
       changed = true;
+    } else if (token === "--preflight") {
+      preflight = true;
     } else {
       throw new ToolkitError(`gate: unexpected argument "${token}"`, EXIT.PRECONDITION, {
         field: token,
@@ -152,22 +185,53 @@ export function parseGateArgs(args: readonly string[]): GateArgs {
       field: "--profile",
     });
   }
-  return { profile, changed, issue, run };
+  // The pre-run exists for exactly one profile: it is the merge gate's local
+  // shadow. On any other profile there is nothing to shadow — `local` already
+  // runs locally in every mode — so the flag is a typo, and a typo ends the run
+  // rather than quietly meaning something else.
+  if (preflight && profile !== MERGE_GATE_PROFILE) {
+    throw new ToolkitError(
+      `--preflight runs the ${MERGE_GATE_PROFILE} profile, not "${profile}"`,
+      EXIT.PRECONDITION,
+      { field: "--preflight" },
+    );
+  }
+  return { profile, changed, preflight, issue, run };
 }
 
 /** One entry of the response's `phases[]` (spec §7.1). */
 interface PhaseReport {
   name: string;
   skipped: boolean;
+  /** Why a phase was skipped, where the skip is not the caller's own `--changed`. */
+  reason?: string;
   exit?: number;
   durationMs?: number;
+}
+
+/**
+ * The pre-run's config precondition (`SST-DESIGN-013` rev 4), checked before
+ * the first spawn: an expensive phase without an `imageOnly` mark means the
+ * config was never read for a pre-run, and running it anyway is how a
+ * "cheap local check" boots a database on the developer's machine.
+ */
+function assertPreflightConfig(phases: readonly GatePhase[]): void {
+  const unmarked = phases.find(
+    (phase) => PREFLIGHT_FORBIDDEN.includes(phase.name) && phase.imageOnly === undefined,
+  );
+  if (unmarked === undefined) return;
+  throw new ToolkitError(
+    `gate --preflight: phase "${unmarked.name}" carries no imageOnly reason — the pre-run must not start a database, a build or a browser; mark it in spec-sync.config.json or drop it from the ${MERGE_GATE_PROFILE} profile`,
+    EXIT.PRECONDITION,
+    { reason: PREFLIGHT_CONFIG },
+  );
 }
 
 export async function runGate(
   ctx: CommandContext,
   environment: Environment = DEFAULT_ENVIRONMENT,
 ): Promise<CommandResult> {
-  const { profile, changed: changedFlag, issue, run: runId } = parseGateArgs(ctx.args);
+  const { profile, changed: changedFlag, preflight, issue, run: runId } = parseGateArgs(ctx.args);
   // The nightly is the net (foundation `PROC-REL-012`, spec §7.1 — `#15`): it
   // owes the full matrix, so there is nothing for `--changed` to narrow there.
   // Dropped here rather than in the parser, which reports back what was typed.
@@ -178,6 +242,10 @@ export async function runGate(
   }
   const phases = phasesOfProfile(config, profile);
   const notes: string[] = [];
+
+  // Cheapest precondition of all — it reads the config and spawns nothing — so
+  // it goes first, ahead of the two that probe the box.
+  if (preflight) assertPreflightConfig(phases);
 
   // Before the lock, before the log directory, before anything is spawned: on
   // battery the box can sleep with the lid closed mid-suite, and a run that was
@@ -214,9 +282,13 @@ export async function runGate(
   // the reader. Only the merge profile: a local-profile run is a developer's
   // check in any mode. Inside the CI runner the check is void — that run IS
   // the remote gate. Last of the preconditions because it is the only one
-  // that costs a network round trip.
+  // that costs a network round trip. The one exception is the pre-run
+  // (`SST-DESIGN-013` rev 4): it runs locally in EVERY mode, because it is not
+  // the gate — it produces no evidence a local merge could stand on, only an
+  // early red before the branch is pushed.
   if (
     profile === MERGE_GATE_PROFILE &&
+    !preflight &&
     !environment.isCiRunner() &&
     environment.readGateMode(ctx.repoRoot) === "remote"
   ) {
@@ -235,7 +307,9 @@ export async function runGate(
   // must fix, and finding that out after a ten-minute wait helps nobody.
   const diff = changed ? await changeSet(ctx.repoRoot) : undefined;
 
-  progress(`gate ${profile} — ${phases.length} phases${changed ? ", --changed" : ""}`);
+  progress(
+    `gate ${profile}${preflight ? " --preflight" : ""} — ${phases.length} phases${changed ? ", --changed" : ""}`,
+  );
   const lock = await acquireGateLock(ctx.repoRoot);
   if (lock.queued) {
     notes.push(
@@ -255,13 +329,20 @@ export async function runGate(
   const wakeLock = environment.holdWakeLock();
   let result: CommandResult;
   try {
-    result = await runPhases({ ctx, phases, diff, notes, wakeLock: wakeLock.state });
+    result = await runPhases({ ctx, phases, diff, notes, preflight, wakeLock: wakeLock.state });
   } finally {
     wakeLock.release();
     lock.release();
   }
 
-  if (issue !== undefined) {
+  // A pre-run is not a gate run, so it writes no gate event — `merge` reads
+  // that event as `gate-evidence-green`, and a run that skipped the expensive
+  // phases must never be able to satisfy it. `--issue` is still accepted so the
+  // flag set of a gate call carries over unchanged; it just records nothing.
+  if (preflight && issue !== undefined) {
+    notes.push(`--preflight writes no ledger event — this is no gate evidence for #${issue}`);
+  }
+  if (issue !== undefined && !preflight) {
     // Where the evidence went, whenever that is not where the caller stands: in
     // a linked worktree the ledger is the main checkout's (see `ledgerPath`), and
     // a reader looking into `<worktree>/.spec-sync/` would find nothing there.
@@ -290,12 +371,14 @@ async function runPhases({
   phases,
   diff,
   notes,
+  preflight,
   wakeLock,
 }: {
   ctx: CommandContext;
   phases: readonly GatePhase[];
   diff: ChangeSet | undefined;
   notes: string[];
+  preflight: boolean;
   wakeLock: WakeLockState;
 }): Promise<CommandResult> {
   const logDir = createLogDir(ctx.repoRoot, {
@@ -309,6 +392,17 @@ async function runPhases({
   probe.begin();
 
   for (const phase of phases) {
+    // The hard exclusion goes ahead of the `--changed` one: a phase that only
+    // judges in the gate image stays out of the pre-run whatever the diff says.
+    if (preflight && phase.imageOnly !== undefined) {
+      reports.push({
+        name: phase.name,
+        skipped: true,
+        reason: `image-only (${phase.imageOnly})`,
+      });
+      continue;
+    }
+
     if (diff !== undefined && !phaseRuns(phase.when, diff.files)) {
       reports.push({ name: phase.name, skipped: true });
       // The base belongs in the note: a skip is only checkable against the
@@ -319,9 +413,12 @@ async function runPhases({
       continue;
     }
 
-    progress(`gate → ${phase.name}: ${phase.cmd}`);
+    // The build-free half of the phase where the config names one — that is
+    // what makes the pre-run cheap enough to be worth running before a push.
+    const cmd = (preflight ? phase.preflightCmd : undefined) ?? phase.cmd;
+    progress(`gate → ${phase.name}: ${cmd}`);
     const startedAt = Date.now();
-    const outcome = await runPhase(phase.cmd, ctx.repoRoot);
+    const outcome = await runPhase(cmd, ctx.repoRoot);
     const durationMs = Date.now() - startedAt;
     probe.sample();
 
@@ -339,8 +436,12 @@ async function runPhases({
   const condition = probe.end();
   writePhaseLog(ctx.repoRoot, logDir, MEASUREMENT_LOG, renderMeasurement(condition, wakeLock));
 
+  // The flag the reader goes by: a green pre-run is not a green gate, and
+  // nothing but this field distinguishes the two responses.
+  const mark = preflight ? { preflight: true } : {};
+
   if (failed === undefined) {
-    return { ok: true, exit: EXIT.OK, notes, logDir, data: { phases: reports } };
+    return { ok: true, exit: EXIT.OK, notes, logDir, data: { ...mark, phases: reports } };
   }
 
   const exit = phaseExit({
@@ -379,7 +480,7 @@ async function runPhases({
     exit,
     notes,
     logDir,
-    data: { phases: reports, firstError: named ?? firstError(failed.output) },
+    data: { ...mark, phases: reports, firstError: named ?? firstError(failed.output) },
   };
 }
 
