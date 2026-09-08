@@ -33,6 +33,8 @@ spec-sync doctor
 spec-sync budget [--session <id|path>] [--label <text>]
 spec-sync handover [--note <text>] [--reason <budget|done|red-2x|question-open|pause|unexpected>]
 spec-sync repin [--ids <a,b>] [--server <url>]
+spec-sync map extract [<repo-root>] [--out <dir>] [--meaning <file>] [--project <id>]
+spec-sync map check [<repo-root>] [--meaning <file>] [--project <id>]
 ```
 
 `--reason budget` is bound to the measurement: it is only written when the ledger's newest
@@ -91,6 +93,49 @@ build-free part of the phase.
 
 Everything project-specific lives in one file, `spec-sync.config.json`: gate phases and
 profiles, path globs for review lenses, label names, log retention, context budget.
+
+## Map (`map extract` · `map check`)
+
+The **model** of a repo's architecture: nodes and edges on three levels — landscape, one app
+opened, one process — derived from the checkout alone. Six extractors read the compose file,
+the modules root, the mode-switched adapters, the inbound routes, the SQL migrations and the
+n8n workflows. Deterministic, offline, zero LLM, no network and no spec server.
+
+What the code does not carry is the **meaning layer**, `docs/architecture/meaning.json` — the
+one file a human edits. It gives the project its id, label and modules root, maps the raw keys
+the extractors emit (`adapter:payment`, `route:POST /api/webhooks/stripe`,
+`n8n-host:api.heygen.com`) to stable node ids, and gives every external node its display facts:
+
+```jsonc
+{
+  "schema_version": 1,
+  "project": { "id": "cockpit", "label": "production-cockpit", "modulesRoot": "server/src/domain" },
+  "raw": { "adapter:payment": "stripe", "n8n-host:api.heygen.com": "heygen" },
+  "nodes": {
+    "stripe": { "label": "Stripe", "sublabel": "checkout · payouts", "type": "external" },
+  },
+}
+```
+
+`map extract` writes `model.json`, `processes/<id>.json`, `unmapped.json` and a copy of the
+meaning layer into `--out` (default `.spec-sync/map/`, which the consuming repo's `.gitignore`
+covers). It stays green with unmapped keys — the run reports them, it does not judge them.
+
+`map check` is the gate phase: same extraction, **writes nothing**, and answers exit 1 for
+every raw key without a mapping and every node without display facts, naming each one and the
+file to edit. As a phase in `spec-sync.config.json`:
+
+```jsonc
+{ "name": "map", "cmd": "npx spec-sync map check" }
+```
+
+Exit codes: `0` the meaning layer is complete (`check`) or the model was written (`extract`) ·
+`1` unmapped keys or nodes (`check` only) · `4` no meaning layer at the given path, no project
+id, an unknown subcommand or an unknown option.
+
+Both read a repo checkout: the positional `<repo-root>` (default: the repo the CLI runs in) and
+`--meaning` for a meaning layer that does not yet live in that repo. Model schema and the
+meaning layer in full: `docs/map-model-schema.md` in the spec repo (PROC-SPEC-002).
 
 ## Turn-End Hooks (`dist/hooks/`)
 

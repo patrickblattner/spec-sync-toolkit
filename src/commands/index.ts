@@ -23,6 +23,7 @@ import { handoverCommand } from "./handover.js";
 import { repinCommand } from "./repin.js";
 import { driftCommand } from "./drift.js";
 import { coverCommand } from "./cover.js";
+import { mapCommand } from "./map.js";
 
 export const ALL_COMMANDS: readonly Command[] = [
   gateCommand,
@@ -37,4 +38,5 @@ export const ALL_COMMANDS: readonly Command[] = [
   repinCommand,
   driftCommand,
   coverCommand,
+  mapCommand,
 ];
