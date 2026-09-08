@@ -111,7 +111,8 @@ export interface Meaning {
     sublabel?: string;
     modulesRoot?: string | null;
   };
-  raw?: Record<string, string>;
+  /** raw key -> node id; `null` marks a key that is deliberately not a node (e.g. a UI route the pattern caught). */
+  raw?: Record<string, string | null>;
   nodes?: Record<string, { label?: string; sublabel?: string; type?: string }>;
 }
 
@@ -586,10 +587,18 @@ export function extractModel({ repoRoot, project, meaning }: ExtractOptions): Ex
   const repo = path.resolve(repoRoot);
 
   const unmappedRaw = new Set<string>();
+  const ignoredRaw = new Set<string>();
   const resolve = (rawKey: string): string | null => {
     const id = meaning.raw?.[rawKey];
-    if (!id) unmappedRaw.add(rawKey);
-    return id || null;
+    if (id === undefined) {
+      unmappedRaw.add(rawKey);
+      return null;
+    }
+    if (id === null || id === "") {
+      ignoredRaw.add(rawKey);
+      return null;
+    }
+    return id;
   };
 
   const appId = meaning.project?.id || project;
@@ -821,6 +830,7 @@ export function extractModel({ repoRoot, project, meaning }: ExtractOptions): Ex
   };
 
   // Every node id that no extractor could name needs display facts (§4).
+  if (ignoredRaw.size) counts.ignored = ignoredRaw.size;
   const unmappedNodes = model.nodes
     .filter((n) => n.kind === "external" && !meaning.nodes?.[n.id])
     .map((n) => n.id);

@@ -264,6 +264,17 @@ describe("map check", () => {
     expect(result.data?.nodes).toBe(5);
   });
 
+  it("treats a raw key mapped to null as deliberately ignored, not unmapped", () => {
+    const root = repo({
+      ...complete,
+      raw: { "adapter:payment": "stripe", "route:POST /api/webhooks/stripe": null },
+    });
+    const result = runMap(ctxFor(root, ["check"]));
+    expect(result.ok).toBe(true);
+    expect(result.exit).toBe(EXIT.OK);
+    expect(result.data).toMatchObject({ unmapped: { raw: [], nodes: [] } });
+  });
+
   it("is red on an unmapped raw key and names the key and the file to edit", () => {
     const root = repo({ ...complete, raw: { "adapter:payment": "stripe" } });
     const result = runMap(ctxFor(root, ["check"]));
