@@ -77,10 +77,10 @@ export function runMap(ctx: CommandContext): CommandResult {
     );
   }
 
-  const project = valueOf(args, "--project") ?? meaning.project?.label ?? meaning.project?.id;
+  const project = valueOf(args, "--project") ?? meaning.project?.id;
   if (project === undefined || project === "") {
     throw new ToolkitError(
-      `no project id — ${meaningLabel} carries neither project.label (the spec project id) nor project.id, so --project is required`,
+      `no project id — ${meaningLabel} carries no project.id, so --project is required`,
       EXIT.PRECONDITION,
       { field: "--project" },
     );
