@@ -93,6 +93,7 @@ const config = {
     bug: "type: bug",
     hold: "owner-hold",
     started: "status: in-progress",
+    blocked: "blocked",
   },
 };
 

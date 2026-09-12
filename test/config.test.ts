@@ -49,6 +49,7 @@ describe("loadConfig (spec §5)", () => {
       bug: "type: bug",
       hold: "owner-hold",
       started: "status: in-progress",
+      blocked: "blocked",
     });
     expect(config.lenses).toEqual({});
   });

@@ -22,6 +22,7 @@ const config = {
     bug: "type: bug",
     hold: "owner-hold",
     started: "status: in-progress",
+    blocked: "blocked",
   },
   nightlyWorkflow: "nightly.yml",
 } as unknown as Config;
@@ -448,5 +449,140 @@ describe("option parsing", () => {
 
   it("rejects a stray positional argument too", () => {
     expect(() => parseQueueOptions(["all"])).toThrowError(/unknown option for queue/);
+  });
+});
+
+/**
+ * `SST-DESIGN-017` rev 4: a blocked ticket stays in the queue and is marked.
+ * Filtering would lose two things at once — the work itself, the moment a label
+ * goes stale, and the position a path-clearer inherits its rank at
+ * (`PROC-DEV-039`, sort level 0).
+ */
+describe("blocked tickets — marked at their position, never filtered", () => {
+  const blocked = (number: number, phase: string, comments: string[]): GhIssue =>
+    issue(number, ["spec-sync", "blocked"], phase, {
+      comments: [{ body: `Phase: ${phase} — weil` }, ...comments.map((body) => ({ body }))],
+    });
+
+  it("keeps the ticket at its sort position and marks it", () => {
+    const sweep = sweepIssues(
+      [
+        issue(4, ["spec-sync"], "M1"),
+        blocked(5, "M1", ["Bedingung: #4 liefert den Exporter — Ziel-Phase M2"]),
+        issue(6, ["spec-sync"], "M1"),
+      ],
+      config,
+      norms,
+    );
+
+    expect(sweep.queue.map((entry) => entry.issue)).toEqual([4, 5, 6]);
+    expect(sweep.queue[1]?.blocked).toBe(true);
+    expect(sweep.queue[1]?.position).toBe(2);
+    expect(sweep.queue[1]?.blockedComment).toContain("Bedingung: #4 liefert den Exporter");
+  });
+
+  it("does not shorten the queue, and leaves every other entry untouched", () => {
+    const issues = [issue(4, ["spec-sync"], "M1"), issue(5, ["spec-sync"], "M1")];
+    const before = sweepIssues(issues, config, norms);
+    const after = sweepIssues(
+      [issue(4, ["spec-sync", "blocked"], "M1"), issue(5, ["spec-sync"], "M1")],
+      config,
+      norms,
+    );
+
+    expect(after.queue).toHaveLength(before.queue.length);
+    expect(after.queue.map((entry) => entry.position)).toEqual(
+      before.queue.map((entry) => entry.position),
+    );
+    expect(after.queue[1]).toEqual(before.queue[1]);
+  });
+
+  it("takes the LAST documented condition — a deferral changes by a new comment", () => {
+    const sweep = sweepIssues(
+      [
+        blocked(5, "M1", [
+          "Bedingung: wartet auf #3 — Ziel-Phase M2",
+          "Condition: now waiting on #7 — target phase M3",
+        ]),
+      ],
+      config,
+      norms,
+    );
+    expect(sweep.queue[0]?.blockedComment).toContain("#7");
+  });
+
+  it("reads a condition written as prose, when it names a phase as well", () => {
+    const sweep = sweepIssues(
+      [blocked(5, "M1", ["Zurückgestellt, die condition ist #3; frühestens Phase M3."])],
+      config,
+      norms,
+    );
+    expect(sweep.queue[0]?.blockedComment).toContain("frühestens Phase M3");
+  });
+
+  it("reports an undocumented block as null rather than inventing a condition", () => {
+    const sweep = sweepIssues([blocked(5, "M1", ["Looks unrelated to me."])], config, norms);
+    expect(sweep.queue[0]?.blocked).toBe(true);
+    expect(sweep.queue[0]?.blockedComment).toBeNull();
+  });
+
+  it("leaves an unblocked entry without the two fields at all", () => {
+    const sweep = sweepIssues([issue(4, ["spec-sync"], "M1")], config, norms);
+    expect(sweep.queue[0]).not.toHaveProperty("blocked");
+    expect(sweep.queue[0]).not.toHaveProperty("blockedComment");
+  });
+
+  // The hold is the owner taking a ticket off the table; the block is a
+  // condition anyone may find fulfilled. Only the hold excludes.
+  it("leaves a ticket carrying both labels in `held` — the hold wins", () => {
+    const sweep = sweepIssues(
+      [issue(5, ["spec-sync", "blocked", "owner-hold"], "M1")],
+      config,
+      norms,
+    );
+    expect(sweep.held.map((ref) => ref.issue)).toEqual([5]);
+    expect(sweep.queue).toEqual([]);
+  });
+
+  it("names the count and the first buildable entry in the summary", async () => {
+    const { gh } = fakeGh({
+      issues: [
+        blocked(4, "M1", ["Bedingung: #9 zuerst — Ziel-Phase M2"]),
+        blocked(5, "M1", ["Bedingung: #9 zuerst — Ziel-Phase M2"]),
+        issue(6, ["spec-sync"], "M1"),
+      ],
+      runs: [{ conclusion: "success", createdAt: "2026-07-26T06:00:00.000Z" }],
+    });
+    const result = await runQueue(deps(gh), config, { check: false }, norms);
+
+    expect(result.notes.join("\n")).toContain("2 blocked ticket(s) carried at their position");
+    expect(result.notes.join("\n")).toContain("first buildable: #6");
+  });
+
+  it("says so when every queued ticket is blocked, rather than naming none", async () => {
+    const { gh } = fakeGh({
+      issues: [blocked(4, "M1", ["Bedingung: #9 zuerst — Ziel-Phase M2"])],
+      runs: [{ conclusion: "success", createdAt: "2026-07-26T06:00:00.000Z" }],
+    });
+    const result = await runQueue(deps(gh), config, { check: false }, norms);
+    expect(result.notes.join("\n")).toContain("every queued ticket is blocked");
+  });
+
+  it("counts an undocumented block in the summary, so it cannot pass unnoticed", async () => {
+    const { gh } = fakeGh({
+      issues: [blocked(4, "M1", []), issue(6, ["spec-sync"], "M1")],
+      runs: [{ conclusion: "success", createdAt: "2026-07-26T06:00:00.000Z" }],
+    });
+    const result = await runQueue(deps(gh), config, { check: false }, norms);
+    expect(result.notes.join("\n")).toContain("1 of them without a documented condition comment");
+  });
+
+  it("says nothing about blocked tickets when there are none", async () => {
+    const { gh } = fakeGh({
+      issues: [issue(6, ["spec-sync"], "M1")],
+      runs: [{ conclusion: "success", createdAt: "2026-07-26T06:00:00.000Z" }],
+    });
+    const result = await runQueue(deps(gh), config, { check: false }, norms);
+    expect(result.notes.join("\n")).not.toContain("blocked");
   });
 });

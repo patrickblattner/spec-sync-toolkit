@@ -46,6 +46,11 @@ const labelsSchema = z.object({
   bug: z.string().min(1).default("type: bug"),
   hold: z.string().min(1).default(NORM_DEFAULTS.hold),
   started: z.string().min(1).default(NORM_DEFAULTS.startedLabel),
+  // Not a norm default: the block label is named by `SST-DESIGN-017` rev 4, the
+  // toolkit's own spec, and no foundation norm defines it. Putting it in
+  // `NORM_DEFAULTS` would claim a pinned revision it was never transcribed from
+  // (SST-DESIGN-015).
+  blocked: z.string().min(1).default("blocked"),
 });
 
 const configSchema = z

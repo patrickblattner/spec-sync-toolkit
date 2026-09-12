@@ -10,7 +10,10 @@
  *   - the two nightly cases ("red without ticket", "not run for > 25 h despite
  *     new commits") are reported as `findings`, **not** turned into tickets;
  *   - tickets outside the sweep are listed so the mandatory closing line of the
- *     Zielabgleich can name them.
+ *     Zielabgleich can name them;
+ *   - a **blocked** ticket is marked at its sort position, never filtered out —
+ *     a stale label must not silently hide work, and the position itself is the
+ *     anchor a path-clearer inherits its rank at (`PROC-DEV-039`, level 0).
  *
  * `--check` answers in one line — open count and next number — from a **single**
  * `gh` call, so an empty tick costs one roundtrip.
@@ -57,6 +60,39 @@ export interface GhIssue {
   comments?: { body: string }[];
 }
 
+/**
+ * A comment documents a block when it carries a `Bedingung:`/`Condition:` line,
+ * or names a condition together with a target phase — the two halves
+ * `PROC-DEV-039` asks a deferral to write down.
+ */
+const CONDITION_LINE = /^\s*(?:Bedingung|Condition)\s*:/im;
+const CONDITION_WORD = /\b(?:Bedingung|condition)\b/i;
+const PHASE_WORD = /\bPhase\b/i;
+
+/**
+ * The last documented condition comment of a blocked ticket, verbatim, or `null`
+ * when the ticket carries none.
+ *
+ * Last wins, over the comment order `gh` returns — the same rule and the same
+ * assumption as `readPhasePin` right above: a deferral is changed by writing a
+ * new comment, not by editing an old one.
+ *
+ * `null` is reported, never filled in (`SST-DESIGN-017` rev 4). The command does
+ * not judge whether the condition still holds, and it must not invent one that
+ * was never written: an unexplained block is a finding for the reader, and
+ * substituting an unrelated comment would hide exactly that.
+ */
+export function readBlockedCondition(issue: GhIssue): string | null {
+  let documented: string | null = null;
+  for (const comment of issue.comments ?? []) {
+    const body = comment.body;
+    if (CONDITION_LINE.test(body) || (CONDITION_WORD.test(body) && PHASE_WORD.test(body))) {
+      documented = body.trim();
+    }
+  }
+  return documented;
+}
+
 export interface QueueEntry {
   issue: number;
   title: string;
@@ -68,6 +104,18 @@ export interface QueueEntry {
   phase: number;
   /** The pin verbatim, e.g. `M3` or `aktuell`. */
   pin: string;
+  /**
+   * Set when the ticket carries the block label. Absent otherwise — it marks,
+   * it never filters and never sorts: a blocked ticket keeps its position,
+   * because that position is the anchor a path-clearer inherits its rank at
+   * (`PROC-DEV-039`, sort level 0).
+   */
+  blocked?: true;
+  /**
+   * The last documented condition comment, or `null` when the block is
+   * undocumented. Present exactly when `blocked` is.
+   */
+  blockedComment?: string | null;
   /** 1-based position in the sorted queue. */
   position: number;
 }
@@ -171,7 +219,7 @@ function labelNames(issue: GhIssue): string[] {
  * the sorting rules are testable without touching a repo.
  */
 export function sweepIssues(issues: GhIssue[], config: Config, norms: Norms): Sweep {
-  const { audit, bug, build, started: startedLabel } = config.labels;
+  const { audit, bug, build, started: startedLabel, blocked: blockedLabel } = config.labels;
   const hold = norms.hold;
 
   const held: TicketRef[] = [];
@@ -184,12 +232,16 @@ export function sweepIssues(issues: GhIssue[], config: Config, norms: Norms): Sw
     started: boolean;
     pin: string;
     phase: number | typeof CURRENT_PHASE;
+    blocked: boolean;
   }[] = [];
 
   for (const issue of issues) {
     const labels = labelNames(issue);
 
-    // `owner-hold` beats everything — including `auto-audit` and `type: bug`.
+    // `owner-hold` beats everything — including `auto-audit`, `type: bug` and
+    // the block label. The two are different statements: a hold is the owner
+    // taking a ticket off the table, a block is a documented condition anyone
+    // may find fulfilled. Only the hold excludes.
     if (labels.includes(hold)) {
       held.push({ issue: issue.number, title: issue.title });
       continue;
@@ -240,6 +292,7 @@ export function sweepIssues(issues: GhIssue[], config: Config, norms: Norms): Sw
       started: labels.includes(startedLabel),
       pin,
       phase,
+      blocked: labels.includes(blockedLabel),
     });
   }
 
@@ -259,6 +312,12 @@ export function sweepIssues(issues: GhIssue[], config: Config, norms: Norms): Sw
       started: entry.started,
       phase: typeof entry.phase === "number" ? entry.phase : currentPhase,
       pin: entry.pin,
+      // The mark is an attribute, never a sort key and never a filter: the
+      // comparator below does not see it, and the queue is exactly as long with
+      // it as without.
+      ...(entry.blocked
+        ? { blocked: true as const, blockedComment: readBlockedCondition(entry.issue) }
+        : {}),
     }))
     // Tier 2 sits ABOVE the phase, not below it: a started ticket already passed
     // the phase gate when it was begun, so finishing it cannot violate the phase
@@ -432,6 +491,23 @@ export async function runQueue(
   }
   if (sweep.held.length > 0) {
     notes.push(`${sweep.held.length} ticket(s) on \`${norms.hold}\` — excluded from the work list`);
+  }
+
+  // Pass-through, not judgement: the count says how much of the queue carries a
+  // condition, and the first buildable entry says where a reader can start
+  // without having to check one. Whether a condition still holds is decided at
+  // pick-up, never here (`SST-DESIGN-017` rev 4).
+  const blocked = sweep.queue.filter((entry) => entry.blocked === true);
+  if (blocked.length > 0) {
+    const buildable = sweep.queue.find((entry) => entry.blocked !== true);
+    const undocumented = blocked.filter((entry) => entry.blockedComment === null).length;
+    notes.push(
+      `${blocked.length} blocked ticket(s) carried at their position, not filtered; ` +
+        `first buildable: ${buildable === undefined ? "none — every queued ticket is blocked" : `#${buildable.issue}`}` +
+        (undocumented === 0
+          ? ""
+          : ` — ${undocumented} of them without a documented condition comment`),
+    );
   }
 
   return {
