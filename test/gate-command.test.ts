@@ -13,6 +13,7 @@ import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parseGateArgs, runGate as runGateWith } from "../src/commands/gate.js";
 import type { Environment } from "../src/gate/environment.js";
+import type { CapacityProbe } from "../src/gate/saturation.js";
 import { loadConfig, type GatePhase } from "../src/config.js";
 import { latestGate, readLedger, ticketMetrics } from "../src/ledger.js";
 import { EXIT, ToolkitError, formatJson, type Response } from "../src/output.js";
@@ -47,6 +48,16 @@ function context(root: string, args: string[]): CommandContext {
 }
 
 /**
+ * A machine that scales with the cores it shows — the capacity probe's healthy
+ * population (4 cores/8 threads ≈ 3.5–4 with k=4). Stubbed in every test here
+ * for the same reason as the wake lock: the real probe burns a second of CPU per
+ * run, and none of these tests is about the box the suite happens to run on. The
+ * probe itself is tested in `gate-machine.test.ts`.
+ */
+const wholeMachine = (when: "before" | "after"): Promise<CapacityProbe> =>
+  Promise.resolve({ when, k: 4, factor: 3.8 });
+
+/**
  * A machine on mains power with no wake lock available — the environment every
  * test here wants, so that none of them depends on how the box running the
  * suite happens to be plugged in. The environment itself is tested in
@@ -57,6 +68,7 @@ const onMains: Environment = {
   readGateMode: () => "local",
   isCiRunner: () => false,
   holdWakeLock: () => ({ state: "unavailable", release: () => {} }),
+  measureCapacity: wholeMachine,
 };
 
 const runGate = (root: string, args: string[] = ["--profile", "local"]): Promise<CommandResult> =>
@@ -259,12 +271,7 @@ describe("gate records its run in the ledger (spec §8)", () => {
    */
   it("does not count an abort before the first phase — no event, no retry", async () => {
     const root = makeRepo([{ name: "unit", cmd: "true" }], "merge");
-    const onBattery: Environment = {
-      readPowerSource: () => "battery",
-      readGateMode: () => "local",
-      isCiRunner: () => false,
-      holdWakeLock: () => ({ state: "unavailable", release: () => {} }),
-    };
+    const onBattery: Environment = { ...onMains, readPowerSource: () => "battery" };
 
     const error = await runGateWith(
       context(root, ["--profile", "merge", "--issue", "42"]),
@@ -582,7 +589,9 @@ describe("gate --changed (spec §7.1, §5 `when`)", () => {
     expect(result.data?.phases).toEqual([
       { name: "e2e", skipped: false, exit: 0, durationMs: expect.any(Number) },
     ]);
-    expect(result.notes).toEqual([]);
+    // The capacity probe reports on every run (`SST-DESIGN-012` rev 3), so
+    // "nothing to say" means nothing BESIDES that line.
+    expect((result.notes ?? []).filter((note) => !note.startsWith("capacity probe"))).toEqual([]);
     expect(existsSync(join(root, "order.txt"))).toBe(true);
   });
 

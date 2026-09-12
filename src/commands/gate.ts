@@ -41,7 +41,12 @@ import { createLogDir, firstError, protectedLogDirs, writePhaseLog } from "../lo
 import { phasesOfProfile, type GatePhase } from "../config.js";
 import { acquireGateLock } from "../gate/lock.js";
 import { changeSet, phaseRuns, type ChangeSet } from "../gate/changed.js";
-import { MachineProbe, renderMeasurement } from "../gate/machine.js";
+import {
+  MachineProbe,
+  capacityNote,
+  renderMeasurement,
+  type CapacityMeasurer,
+} from "../gate/machine.js";
 import { phaseExit, reportedFailure, runPhase } from "../gate/phases.js";
 import { DEFAULT_ENVIRONMENT, type Environment, type WakeLockState } from "../gate/environment.js";
 import { MAIN_BRANCH, MERGE_GATE_PROFILE } from "./merge.js";
@@ -329,7 +334,15 @@ export async function runGate(
   const wakeLock = environment.holdWakeLock();
   let result: CommandResult;
   try {
-    result = await runPhases({ ctx, phases, diff, notes, preflight, wakeLock: wakeLock.state });
+    result = await runPhases({
+      ctx,
+      phases,
+      diff,
+      notes,
+      preflight,
+      wakeLock: wakeLock.state,
+      measureCapacity: environment.measureCapacity,
+    });
   } finally {
     wakeLock.release();
     lock.release();
@@ -373,6 +386,7 @@ async function runPhases({
   notes,
   preflight,
   wakeLock,
+  measureCapacity,
 }: {
   ctx: CommandContext;
   phases: readonly GatePhase[];
@@ -380,6 +394,7 @@ async function runPhases({
   notes: string[];
   preflight: boolean;
   wakeLock: WakeLockState;
+  measureCapacity: CapacityMeasurer;
 }): Promise<CommandResult> {
   const logDir = createLogDir(ctx.repoRoot, {
     retention: ctx.config?.logRetention,
@@ -388,8 +403,12 @@ async function runPhases({
   const reports: PhaseReport[] = [];
   let failed: { name: string; output: string; signal: NodeJS.Signals | null } | undefined;
 
-  const probe = new MachineProbe();
+  const probe = new MachineProbe({ measureCapacity });
   probe.begin();
+  // Immediately before the first phase — after the baseline load, which has to
+  // be sampled while nothing of ours is running yet, and before any phase, whose
+  // workers the probe would otherwise displace (`SST-DESIGN-012` rev 3).
+  await probe.probeCapacity("before");
 
   for (const phase of phases) {
     // The hard exclusion goes ahead of the `--changed` one: a phase that only
@@ -433,8 +452,15 @@ async function runPhases({
     }
   }
 
+  // And immediately after the last phase — including after a red one, where the
+  // question "was this machine whole?" is the one the reader actually has.
+  await probe.probeCapacity("after");
+
   const condition = probe.end();
   writePhaseLog(ctx.repoRoot, logDir, MEASUREMENT_LOG, renderMeasurement(condition, wakeLock));
+  // Carried whether or not it decided anything: a reader has to be able to tell
+  // a machine that measured whole from one that was never probed.
+  notes.push(capacityNote(condition.capacity));
 
   // The flag the reader goes by: a green pre-run is not a green gate, and
   // nothing but this field distinguishes the two responses.

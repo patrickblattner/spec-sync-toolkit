@@ -16,6 +16,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  CAPACITY_SCALING_FRACTION,
   FOREIGN_SATURATION_FRACTION,
   MIN_HOG_WINDOW_S,
   SATURATED_LOAD_PER_CORE,
@@ -32,6 +33,7 @@ import {
   parseUptime,
   shortComm,
   verdict,
+  type CapacityProbe,
   type CpuSample,
 } from "../src/gate/saturation.js";
 
@@ -618,5 +620,86 @@ describe("assessSaturation — starvation", () => {
   it("sits between the measured populations: over suspended, under healthy", () => {
     expect(STARVED_OWN_CORES).toBeGreaterThan(0.08 * 2); // 3x over the suspended run
     expect(STARVED_OWN_CORES).toBeLessThan(0.5 / 1.5); // 2x under the healthy runs
+  });
+});
+
+/**
+ * The fourth signal (`SST-DESIGN-012` rev 3). The case it exists for is the one
+ * the other three cannot see: the runner incident of 2026-09-11, where a
+ * Proxmox `cpulimit` of 0.8 gave an 8-core guest about one effective core. Steal
+ * time: none. Baseline: quiet. Foreign processes: none. The guest saw eight
+ * cores and had one.
+ */
+describe("assessSaturation — capacity probe", () => {
+  const quiet = { load1: 2, load5: 2, load15: 2 };
+  const healthy = (when: "before" | "after"): CapacityProbe => ({ when, k: 4, factor: 3.8 });
+  const capped = (when: "before" | "after"): CapacityProbe => ({ when, k: 4, factor: 0.9 });
+
+  it("carries the verdict on the incident's population — 0.9 of k=4 is a host cap", () => {
+    const { saturated, reasons, starvedOnly } = assessSaturation({
+      baseline: quiet,
+      ncpu: 8,
+      hogs: [],
+      capacity: [capped("before"), capped("after")],
+    });
+    expect(saturated).toBe(true);
+    // Bearing, not supporting: it stands alone, exactly like the baseline.
+    expect(starvedOnly).toBe(false);
+    expect(reasons[0]).toMatch(/fewer than half the cores it shows/);
+    expect(reasons[0]).toMatch(/0\.90 with k=4/);
+  });
+
+  it("leaves a whole machine alone — 3.8 of k=4 is the healthy population", () => {
+    const result = assessSaturation({
+      baseline: quiet,
+      ncpu: 8,
+      hogs: [],
+      capacity: [healthy("before"), healthy("after")],
+    });
+    expect(result.saturated).toBe(false);
+    expect(result.reasons).toEqual([]);
+  });
+
+  it("fires on a cap that only appears mid-run, and names which probe saw it", () => {
+    const { saturated, reasons } = assessSaturation({
+      baseline: quiet,
+      ncpu: 8,
+      hogs: [],
+      capacity: [healthy("before"), capped("after")],
+    });
+    expect(saturated).toBe(true);
+    expect(reasons).toHaveLength(1);
+    expect(reasons[0]).toContain("after the phases");
+  });
+
+  it("stays silent when the probe did not run, rather than reading null as a cap", () => {
+    // A load of 2 is quiet on 8 cores and FULL on 2, so the small box needs its
+    // own baseline — otherwise the baseline signal fires and this would pass for
+    // the wrong reason.
+    const result = assessSaturation({
+      baseline: { load1: 0.4, load5: 0.4, load15: 0.4 },
+      ncpu: 2,
+      hogs: [],
+      capacity: [
+        { when: "before", k: 2, factor: null, skipped: "2 cores is below the 4" },
+        { when: "after", k: 2, factor: null, skipped: "2 cores is below the 4" },
+      ],
+    });
+    expect(result.saturated).toBe(false);
+    expect(result.reasons).toEqual([]);
+  });
+
+  it("sits between the measured populations: over the capped box, under the healthy one", () => {
+    const floor = 4 * CAPACITY_SCALING_FRACTION;
+    expect(floor).toBeGreaterThan(0.9); // the host cap of the incident
+    expect(floor).toBeLessThan(3.5); // the low end of a healthy 4c/8t machine
+  });
+
+  // The guardrail the norm restates for this signal: whatever the machine did,
+  // a content failure is a defect and a green stays green.
+  it("never devalues a green and never excuses a content failure", () => {
+    expect(verdict({ contentFailures: 1, saturated: true })).toBe(1);
+    expect(verdict({ saturated: true })).toBe(0);
+    expect(verdict({ timeoutFailures: 1, saturated: true, failingFiles: 1 })).toBe(1);
   });
 });

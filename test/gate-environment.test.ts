@@ -50,6 +50,9 @@ function environment(
       readPowerSource: () => source,
       readGateMode: () => "local",
       isCiRunner: () => false,
+      // Stubbed like the wake lock: these tests are about power and locks, not
+      // about the cores of the box the suite happens to run on.
+      measureCapacity: (when) => Promise.resolve({ when, k: 4, factor: 3.8 }),
       holdWakeLock: () => ({
         state: lock,
         release: () => {

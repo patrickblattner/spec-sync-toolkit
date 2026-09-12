@@ -122,6 +122,48 @@ export const SCATTERED_MIN_FILES = 2;
 /** Below this many cores the reasoning above does not hold (a 2-core CI container legitimately runs under one core of parallelism). */
 export const STARVATION_MIN_NCPU = 4;
 
+// ---- CAPACITY (the fourth signal) -----------------------------------------
+// The three signals above all measure INSIDE THE GUEST, and all three are blind
+// to the same thing: a neighbour guest on the same host, and a cap the host puts
+// on this guest. An LXC reports no steal time, the baseline stays quiet, no
+// foreign process shows up — and a red produced by a box delivering one
+// effective core out of eight visible ones lands as class 1 on an innocent
+// ticket. That happened (2026-09-11, `cpulimit 0.8` read as 80 % of the host
+// instead of 0.8 CORES).
+//
+// So the fourth signal measures THE MACHINE rather than its guest: the same
+// fixed CPU-bound work, once with one worker and once with k = min(ncpu, 4), and
+// the ratio of the two throughputs. A machine that owns its cores scales with
+// them; one behind a cap does not, whatever its process table says.
+//
+// The measured populations:
+//   healthy machine, 4 cores / 8 threads : factor ≈ 3.5–4 with k = 4
+//   the host cap of the incident
+//   (8 cores visible, ~1 effective)      : factor ≈ 0.9 with k = 4
+// k/2 sits in the middle of that gap and means something defensible: below it
+// the machine delivers fewer than half the cores it shows. Like the baseline,
+// this is LOAD-BEARING — unlike `ownCores` it cannot be confused with waiting on
+// I/O, because the probe does nothing but compute.
+export const CAPACITY_SCALING_FRACTION = 0.5;
+
+/**
+ * Where in the run a probe was taken. Never DURING: there the probe's own
+ * workers would displace the run's, and the number would measure the gate
+ * rather than the machine (`SST-DESIGN-012` rev 3 §Mechanik).
+ */
+export type CapacityWhen = "before" | "after";
+
+/** One capacity probe: the same fixed work with one worker and with `k` of them. */
+export interface CapacityProbe {
+  when: CapacityWhen;
+  /** Workers in the parallel leg: `k = min(ncpu, 4)`. */
+  k: number;
+  /** Parallel throughput ÷ single throughput, or `null` when the probe did not run. */
+  factor: number | null;
+  /** Why it did not run. Set exactly when `factor` is `null`, never otherwise. */
+  skipped?: string;
+}
+
 // ---- LOAD -----------------------------------------------------------------
 
 /**
@@ -315,8 +357,9 @@ export function shortComm(comm: string | null | undefined): string {
 }
 
 /**
- * The verdict on the machine, from three INDEPENDENT signals, because they
- * catch different things:
+ * The verdict on the machine, from four INDEPENDENT signals, because they
+ * catch different things — three measure inside the guest, the fourth measures
+ * the machine:
  *   • baseline — the load averages sampled BEFORE we spawn anything, so they
  *     are purely foreign. Catches "the box was already busy". During the run
  *     this measure is useless: our own workers legitimately drive the load up,
@@ -325,10 +368,13 @@ export function shortComm(comm: string | null | undefined): string {
  *     actually happened: the box was quiet at the start and an installation
  *     began mid-run.
  *   • ownCores — whether WE got to compute at all.
+ *   • capacity — whether the machine delivers the cores it shows. The only one
+ *     of the four that sees a neighbour guest or a host cap; the other three are
+ *     blind to both (see `CAPACITY_SCALING_FRACTION`).
  *
- * The first two are **load-bearing**: each is independent evidence that the box
- * was busy. `ownCores` is only **supporting**, and that distinction is the whole
- * point of this function.
+ * Baseline, hogs and capacity are **load-bearing**: each is independent evidence
+ * that the box could not give the run what it showed. `ownCores` is only
+ * **supporting**, and that distinction is the whole point of this function.
  *
  * Low own-CPU has two causes that CPU numbers cannot tell apart: we were pushed
  * aside, or we sat waiting on I/O. A merge profile full of E2E lanes, database
@@ -352,12 +398,15 @@ export function assessSaturation({
   hogs = [],
   ownCores,
   wallSeconds = 0,
+  capacity = [],
 }: {
   baseline: LoadAverages | null;
   ncpu: number;
   hogs?: readonly ForeignShare[];
   ownCores?: number;
   wallSeconds?: number;
+  /** The probes taken before the first and after the last phase; empty when none was taken. */
+  capacity?: readonly CapacityProbe[];
 }): { saturated: boolean; reasons: string[]; starvedOnly: boolean } {
   /** Independent evidence the box was busy. Any one of these carries the verdict. */
   const bearing: string[] = [];
@@ -403,6 +452,22 @@ export function assessSaturation({
         `(${((foreignCores / ncpu) * 100).toFixed(0)} % of the box, threshold ` +
         `${(FOREIGN_SATURATION_FRACTION * 100).toFixed(0)} %)${named === "" ? "" : ` — above all ${named}`}`,
     );
+  }
+
+  // Each probe speaks for itself: a cap that was there before the phases and one
+  // that appeared during them are different findings, and collapsing them would
+  // cost the reader the half of the run the machine was whole.
+  for (const probe of capacity) {
+    if (probe.factor === null || !(probe.k > 0)) continue;
+    const floor = probe.k * CAPACITY_SCALING_FRACTION;
+    if (probe.factor < floor) {
+      bearing.push(
+        `the machine delivers fewer than half the cores it shows: the capacity probe ` +
+          `${probe.when} the phases scaled ${probe.factor.toFixed(2)} with k=${probe.k} parallel ` +
+          `workers (< ${floor.toFixed(2)}) — a neighbour guest or a host cap, which neither the ` +
+          `load average nor the process table can see`,
+      );
+    }
   }
 
   // `reasons` still carries everything observed — the log must show the

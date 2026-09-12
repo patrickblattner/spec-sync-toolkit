@@ -19,6 +19,7 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { measureCapacity, type CapacityMeasurer } from "./machine.js";
 
 /** Where the machine draws its power, as far as we can tell. */
 export type PowerSource = "ac" | "battery" | "unknown";
@@ -141,6 +142,12 @@ export interface Environment {
   holdWakeLock: () => WakeLock;
   readGateMode: (repoRoot: string) => GateMode;
   isCiRunner: () => boolean;
+  /**
+   * The capacity probe of `SST-DESIGN-012` rev 3. It sits here for the same
+   * reason the wake lock does — it is a fact about the machine, and it is the
+   * one probe that costs real CPU, so a test must be able to replace it.
+   */
+  measureCapacity: CapacityMeasurer;
 }
 
 export const DEFAULT_ENVIRONMENT: Environment = {
@@ -148,4 +155,5 @@ export const DEFAULT_ENVIRONMENT: Environment = {
   holdWakeLock,
   readGateMode,
   isCiRunner,
+  measureCapacity,
 };
