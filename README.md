@@ -35,7 +35,20 @@ spec-sync handover [--note <text>] [--reason <budget|done|red-2x|question-open|p
 spec-sync repin [--ids <a,b>] [--server <url>]
 spec-sync map extract [<repo-root>] [--out <dir>] [--meaning <file>] [--project <id>]
 spec-sync map check [<repo-root>] [--meaning <file>] [--project <id>]
+spec-sync measure set <file> <pointer> <value> --register <n> [--server <url>]
+spec-sync measure remove <file> <pointer> --register <n> [--server <url>]
 ```
+
+`measure` changes a file a gate step measures against — size limits, coverage stock, hygiene
+ratchet — and binds the change to a register decision (SST-DESIGN-002, PROC-DEV-047). The file
+must be listed under `measureFiles` in `spec-sync.config.json`, every JSON pointer must resolve,
+and decision `<n>` must be readable from the spec server (`GET /api/decisions/<n>`; server as
+for `repin`); otherwise exit 4 and nothing is written. `--set <pointer>=<value>` and
+`--remove <pointer>` add further changes to the same call, which applies as a whole or not at
+all. `<value>` is JSON when it parses, a plain string otherwise; a removal from an array of
+strings may name the string itself (`/entries/ad-catalog-filter-help`). Each call appends one
+line to `.spec-sync/measure-changes.jsonl` — committed like `drift-coverage.jsonl`, so the
+consuming repo re-includes it in its `.gitignore`. It never commits and never touches the gate.
 
 `--reason budget` is bound to the measurement: it is only written when the ledger's newest
 `context` level reaches at least 75 % of the configured context budget —

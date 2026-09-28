@@ -75,6 +75,12 @@ const configSchema = z
      * not a thing, and a negative budget has no reach to report.
      */
     contextBudget: z.number().int().positive().default(DEFAULT_CONTEXT_BUDGET),
+    /**
+     * Repo-relative files a gate step measures against — size limits, coverage
+     * stock, hygiene ratchet. Only these may be changed by `measure`
+     * (SST-DESIGN-002).
+     */
+    measureFiles: z.array(z.string().min(1)).default([]),
   })
   .superRefine((config, ctx) => {
     // A profile may only name phases that exist — otherwise `gate --profile x`
