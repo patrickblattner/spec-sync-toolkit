@@ -36,6 +36,7 @@
     "vitest": "^2.0.0"
   },
   "dependencies": {
+    "jsonc-parser": "^3.3.1",
     "picomatch": "^4.0.4",
     "simple-git": "^3.36.0",
     "zod": "^4.4.3"

@@ -20,6 +20,15 @@
 
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
+import {
+  applyEdits,
+  findNodeAtLocation,
+  modify,
+  parseTree,
+  type Edit,
+  type Node,
+} from "jsonc-parser";
 import type { Command, CommandContext, CommandResult } from "../cli.js";
 import type { Config } from "../config.js";
 import { EXIT, ToolkitError } from "../output.js";
@@ -100,8 +109,17 @@ export async function runMeasure(ctx: CommandContext): Promise<CommandResult> {
     );
   }
 
+  // Minimal text edits, never a reserialisation: every byte outside the touched
+  // values stays as it was, so a formatter-shaped file does not turn into a diff.
+  const indent = /^[ \t]+/m.exec(text)?.[0] ?? "  ";
+  const formattingOptions = {
+    insertSpaces: !indent.startsWith("\t"),
+    tabSize: indent.startsWith("\t") ? 1 : indent.length,
+    eol: text.includes("\r\n") ? "\r\n" : "\n",
+  };
+  let next = text;
   const changes: Change[] = requested.map(({ op, pointer, value }) => {
-    const { parent, key } = locate(doc, pointer, op === "remove", file);
+    const { parent, key, path } = locate(doc, pointer, op === "remove", file);
     const from = (parent as Record<string | number, unknown>)[key];
     if (op === "set") {
       (parent as Record<string | number, unknown>)[key] = value;
@@ -110,9 +128,28 @@ export async function runMeasure(ctx: CommandContext): Promise<CommandResult> {
     } else {
       delete parent[key as string];
     }
+    // Formatting applies to a set value only: on a removal jsonc-parser reformats
+    // the whole line and would explode a one-line array.
+    const edits =
+      op === "set" ? modify(next, path, value, { formattingOptions }) : removal(next, path);
+    next = applyEdits(next, edits);
     // A later change may reach into the value set here — record it as it was set.
     return { op, pointer, from, to: op === "set" ? structuredClone(value) : null };
   });
+
+  let result: unknown;
+  try {
+    result = JSON.parse(next);
+  } catch {
+    // Falls through to the comparison below.
+  }
+  if (!isDeepStrictEqual(result, doc)) {
+    throw new ToolkitError(
+      `editing ${file} did not produce the expected JSON — nothing written`,
+      EXIT.PRECONDITION,
+      { field: "file" },
+    );
+  }
 
   const title = await fetchDecisionTitle(resolveServer(ctx.repoRoot, ctx.args), register);
 
@@ -120,10 +157,7 @@ export async function runMeasure(ctx: CommandContext): Promise<CommandResult> {
   if (ctx.flags.dryRun) {
     notes.push(`dry run: ${file} and ${MEASURE_LEDGER} were not written`);
   } else {
-    // Keep the file's own indentation and trailing newline, so the diff shows the change only.
-    const indent = /^[ \t]+/m.exec(text)?.[0] ?? "";
-    const newline = text.endsWith("\n") ? "\n" : "";
-    writeFileSync(path, `${JSON.stringify(doc, null, indent)}${newline}`, "utf8");
+    writeFileSync(path, next, "utf8");
     const ledger = join(ctx.repoRoot, MEASURE_LEDGER);
     mkdirSync(dirname(ledger), { recursive: true });
     const receipt = { ts: new Date().toISOString(), file, register: Number(register), changes };
@@ -201,8 +235,8 @@ function parseValue(raw: string): unknown {
 }
 
 /**
- * Resolves a JSON pointer (RFC 6901) to the container holding its target and
- * the key inside it. `byString` lets the last token of a removal name an array
+ * Resolves a JSON pointer (RFC 6901) to the container holding its target, the
+ * key inside it and the resolved path from the root. `byString` lets the last token of a removal name an array
  * element by its string value (`/entries/ad-catalog-filter-help`); an index
  * always wins over a string that looks like one.
  */
@@ -211,7 +245,7 @@ function locate(
   pointer: string,
   byString: boolean,
   file: string,
-): { parent: Container; key: string | number } {
+): { parent: Container; key: string | number; path: (string | number)[] } {
   const unresolved = new ToolkitError(
     `pointer ${pointer} does not resolve in ${file} — nothing written`,
     EXIT.PRECONDITION,
@@ -224,6 +258,7 @@ function locate(
     .split("/")
     .map((token) => token.replace(/~1/g, "/").replace(/~0/g, "~"));
   let node = doc;
+  const path: (string | number)[] = [];
   for (const [index, token] of tokens.entries()) {
     const last = index === tokens.length - 1;
     let key: string | number | undefined;
@@ -234,10 +269,43 @@ function locate(
       key = token;
     }
     if (key === undefined) throw unresolved;
-    if (last) return { parent: node as Container, key };
+    path.push(key);
+    if (last) return { parent: node as Container, key, path };
     node = (node as Record<string | number, unknown>)[key];
   }
   throw unresolved;
+}
+
+/**
+ * The text edit removing the element at `path` — an array element or an object
+ * property — together with exactly one separating comma. Not `modify`:
+ * jsonc-parser 3.3.1 cuts the last array element short (`["a", "b""]`) and
+ * eats the whitespace before a first property (`{"y": 2 }`).
+ */
+function removal(text: string, path: (string | number)[]): Edit[] {
+  const value = findNodeAtLocation(parseTree(text) as Node, path) as Node;
+  const target = value.parent?.type === "property" ? value.parent : value;
+  const container = target.parent as Node;
+  const siblings = container.children as Node[];
+  const index = siblings.indexOf(target);
+  const end = (node: Node): number => node.offset + node.length;
+
+  let offset: number;
+  let until: number;
+  if (siblings.length === 1) {
+    // The only element: the container becomes empty, `[]` / `{}`.
+    offset = container.offset + 1;
+    until = end(container) - 1;
+  } else if (index < siblings.length - 1) {
+    // Up to the next element: takes the following comma and the whitespace before it.
+    offset = target.offset;
+    until = (siblings[index + 1] as Node).offset;
+  } else {
+    // The last element: from the end of its predecessor, taking the preceding comma.
+    offset = end(siblings[index - 1] as Node);
+    until = end(target);
+  }
+  return [{ offset, length: until - offset, content: "" }];
 }
 
 /**

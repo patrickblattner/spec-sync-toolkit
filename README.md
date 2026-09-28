@@ -46,7 +46,8 @@ and decision `<n>` must be readable from the spec server (`GET /api/decisions/<n
 for `repin`); otherwise exit 4 and nothing is written. `--set <pointer>=<value>` and
 `--remove <pointer>` add further changes to the same call, which applies as a whole or not at
 all. `<value>` is JSON when it parses, a plain string otherwise; a removal from an array of
-strings may name the string itself (`/entries/ad-catalog-filter-help`). Each call appends one
+strings may name the string itself (`/entries/ad-catalog-filter-help`). The file is changed by
+text edits of the touched values only, every other byte stays. Each call appends one
 line to `.spec-sync/measure-changes.jsonl` — committed like `drift-coverage.jsonl`, so the
 consuming repo re-includes it in its `.gitignore`. It never commits and never touches the gate.
 

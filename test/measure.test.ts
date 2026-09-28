@@ -199,3 +199,52 @@ describe("measure (SST-DESIGN-002)", () => {
     expect(existsSync(join(root, MEASURE_LEDGER))).toBe(false);
   });
 });
+
+describe("measure writes text edits, not a reserialisation", () => {
+  // Prettier shape: a short array on one line, a long one expanded.
+  const SHAPED = `{\n  "path": ["a", "b", "c"],\n  "limits": { "x": 1, "y": 2 },\n  "list": [\n    "p",\n    "q",\n    "r"\n  ]\n}\n`;
+
+  async function edit(args: string[]): Promise<string> {
+    vi.stubGlobal("fetch", fakeFetch());
+    const root = repo();
+    writeFileSync(join(root, MEASURE_FILE), SHAPED);
+    await runMeasure(ctxFor(root, [...args, "--register", "1073"]));
+    return read(root);
+  }
+
+  it("changes only the set value", async () => {
+    expect(await edit(["set", MEASURE_FILE, "/limits/x", "2"])).toBe(
+      SHAPED.replace('"x": 1', '"x": 2'),
+    );
+  });
+
+  it("changes only the removed element", async () => {
+    expect(await edit(["remove", MEASURE_FILE, "/list/q"])).toBe(SHAPED.replace('    "q",\n', ""));
+    expect(await edit(["remove", MEASURE_FILE, "/limits/x"])).toBe(SHAPED.replace('"x": 1, ', ""));
+    expect(await edit(["remove", MEASURE_FILE, "/path"])).toBe(
+      SHAPED.replace('"path": ["a", "b", "c"],\n  ', ""),
+    );
+    expect(await edit(["remove", MEASURE_FILE, "/list"])).toBe(
+      SHAPED.replace(',\n  "list": [\n    "p",\n    "q",\n    "r"\n  ]', ""),
+    );
+  });
+
+  it.each([
+    ["/path/a", '["b", "c"]'],
+    ["/path/b", '["a", "c"]'],
+    ["/path/c", '["a", "b"]'],
+  ])("removes %s from a one-line array without a dangling comma", async (pointer, expected) => {
+    expect(await edit(["remove", MEASURE_FILE, pointer])).toBe(
+      SHAPED.replace('["a", "b", "c"]', expected),
+    );
+  });
+
+  it.each([
+    ["/list/p", '[\n    "q",\n    "r"\n  ]'],
+    ["/list/r", '[\n    "p",\n    "q"\n  ]'],
+  ])("removes %s from a multi-line array without a dangling comma", async (pointer, expected) => {
+    expect(await edit(["remove", MEASURE_FILE, pointer])).toBe(
+      SHAPED.replace('[\n    "p",\n    "q",\n    "r"\n  ]', expected),
+    );
+  });
+});
