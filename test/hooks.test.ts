@@ -619,6 +619,21 @@ describe("decideArchitectStop", () => {
     expect(d.reason).not.toContain("- State:");
   });
 
+  it("after the owner's /handover release the budget stage still fires, the announcement only once", () => {
+    // Announcement already made, owner released (#1186/#1187): ownerEngaged false ⇒ budget.
+    expect(
+      decideArchitectStop({ ...base, contextTokens: 200_000, ownerAnnounced: true }),
+    ).toMatchObject({ action: "block", stage: "budget" });
+    expect(
+      decideArchitectStop({
+        ...base,
+        contextTokens: 200_000,
+        ownerAnnounced: true,
+        ownerEngaged: true,
+      }),
+    ).toMatchObject({ action: "allow", stage: "clean" });
+  });
+
   it("pause flag and a fresh handover beat the budget stage; no block without a measurement", () => {
     expect(decideArchitectStop({ ...base, contextTokens: 300_000, paused: true })).toMatchObject({
       action: "allow",
@@ -736,6 +751,37 @@ describe("ownerEngaged", () => {
         }),
       );
       expect(ownerEngaged(cwd, "s1")).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.WORKER_HARNESS_STATE_DIR;
+      else process.env.WORKER_HARNESS_STATE_DIR = prev;
+    }
+  });
+
+  it("the /handover release (last_release_at) ends the conversation until a newer owner prompt", () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "wh-state-"));
+    const cwd = "/Users/pbl/projects/specs-meta/projects/community-platform";
+    const dir = join(stateDir, "sessions", cwd.replace(/[^A-Za-z0-9]/g, "-"));
+    mkdirSync(dir, { recursive: true });
+    const write = (state: object) => writeFileSync(join(dir, "s1.json"), JSON.stringify(state));
+    const prev = process.env.WORKER_HARNESS_STATE_DIR;
+    process.env.WORKER_HARNESS_STATE_DIR = stateDir;
+    try {
+      write({
+        last_owner_prompt_at: "2026-10-02T09:00:00Z",
+        last_release_at: "2026-10-02T09:05:00Z",
+      });
+      expect(ownerEngaged(cwd, "s1")).toBe(false);
+      write({
+        last_owner_prompt_at: "2026-10-02T09:10:00Z",
+        last_release_at: "2026-10-02T09:05:00Z",
+      });
+      expect(ownerEngaged(cwd, "s1")).toBe(true);
+      // Unparsable release: today's behaviour.
+      write({ last_owner_prompt_at: "2026-10-02T09:00:00Z", last_release_at: "soon" });
+      expect(ownerEngaged(cwd, "s1")).toBe(true);
+      // A release without any owner prompt: still no conversation.
+      write({ last_release_at: "2026-10-02T09:05:00Z" });
+      expect(ownerEngaged(cwd, "s1")).toBe(false);
     } finally {
       if (prev === undefined) delete process.env.WORKER_HARNESS_STATE_DIR;
       else process.env.WORKER_HARNESS_STATE_DIR = prev;

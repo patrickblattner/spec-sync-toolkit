@@ -83,7 +83,9 @@ export function measureContextTokens(transcriptPath: unknown): number | null {
  * (bin/session-state.js: `<stateDir>/sessions/<slug(cwd)>/<session_id>.json`, field
  * `last_owner_prompt_at` — only real owner input, no wrappers). If the file or the field is
  * missing: no conversation known (false) — the block message then carries the announcement rule
- * as a hint.
+ * as a hint. The owner's `/handover` releases the session (register #1186/#1187): the hook records
+ * `last_release_at`, and the conversation counts only while the last owner prompt is newer. A
+ * release field that is missing or unparsable (or an unparsable owner prompt) changes nothing.
  */
 export function ownerEngaged(cwd: string, sessionId: string): boolean {
   try {
@@ -92,8 +94,14 @@ export function ownerEngaged(cwd: string, sessionId: string): boolean {
     const slug = cwd.replace(/[^A-Za-z0-9]/g, "-");
     const raw = readFileSync(join(stateDir, "sessions", slug, `${sessionId}.json`), "utf8");
     const parsed: unknown = JSON.parse(raw);
-    const at = (parsed as { last_owner_prompt_at?: unknown })?.last_owner_prompt_at;
-    return typeof at === "string" && at !== "";
+    const { last_owner_prompt_at: at, last_release_at: released } = (parsed ?? {}) as {
+      last_owner_prompt_at?: unknown;
+      last_release_at?: unknown;
+    };
+    if (typeof at !== "string" || at === "") return false;
+    const atMs = Date.parse(at);
+    const releasedMs = typeof released === "string" ? Date.parse(released) : NaN;
+    return !(Number.isFinite(atMs) && Number.isFinite(releasedMs) && atMs <= releasedMs);
   } catch {
     return false;
   }

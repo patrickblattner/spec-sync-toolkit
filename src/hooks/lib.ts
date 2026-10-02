@@ -294,7 +294,8 @@ export function decideSubagentStop({
  * measured number — the session does not know its window, the hook does. If an owner
  * conversation is running (owner input in this session), it is not the handover but the
  * announcement that is forced: the owner ends the conversation with `/handover` (PROC-DEV-020 (4),
- * register #204).
+ * register #204) — a pure release, no handover file (register #1186/#1187); the next turn end then
+ * hits the `budget` stage.
  */
 export const ARCHITECT_BUDGET_PERCENT = 75;
 
@@ -325,6 +326,7 @@ export function decideArchitectStop({
   contextTokens = null,
   budgetTokens = null,
   budgetAlreadyBlocked = false,
+  ownerAnnounced = false,
   ownerEngaged = false,
   measuredAt = new Date().toISOString(),
 }: {
@@ -335,6 +337,7 @@ export function decideArchitectStop({
   contextTokens?: number | null;
   budgetTokens?: number | null;
   budgetAlreadyBlocked?: boolean;
+  ownerAnnounced?: boolean;
   ownerEngaged?: boolean;
   measuredAt?: string;
 }): HookDecision {
@@ -372,6 +375,9 @@ export function decideArchitectStop({
     return { action: "allow", stage: "clean" };
 
   const stand = `Context at ${contextTokens} tokens (${Math.round(percent)} % of the budget ${budgetTokens}).`;
+  // The announcement has its own one-time marker: the owner's `/handover` releases the session
+  // (register #1186/#1187) and the next turn end must still reach the `budget` stage.
+  if (ownerEngaged && ownerAnnounced) return { action: "allow", stage: "clean" };
   if (ownerEngaged)
     return {
       action: "block",
