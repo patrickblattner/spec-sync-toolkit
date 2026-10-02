@@ -171,7 +171,7 @@ session. No workbench, no checker. The block dictates the handover with the meas
 forces the announcement "please /handover" instead of the handover. The owner's `/handover`
 is a pure release (field `last_release_at`, register #1186/#1187): it writes no handover, and
 the conversation counts again only with an owner prompt newer than the release — so the next
-turn end hits the `budget` stage. A freshly written
+turn end hits the `budget` stage. The claim also expires at `owner_claim_expires_at` (#1188). A freshly written
 `reason: budget` handover is verified against the harness's attestation contract
 (`- State: <n> Tokens (measured <ISO>)`, PROC-DEV-037): unreadable — e.g. a translated
 literal, incident 2026-08-29 — means another block that dictates the exact lines, capped at

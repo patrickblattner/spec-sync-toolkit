@@ -86,19 +86,28 @@ export function measureContextTokens(transcriptPath: unknown): number | null {
  * as a hint. The owner's `/handover` releases the session (register #1186/#1187): the hook records
  * `last_release_at`, and the conversation counts only while the last owner prompt is newer. A
  * release field that is missing or unparsable (or an unparsable owner prompt) changes nothing.
+ * The claim also expires at `owner_claim_expires_at` (written by the hook, register #1188);
+ * missing or unparsable, it changes nothing — the harness config is the only clock.
  */
-export function ownerEngaged(cwd: string, sessionId: string): boolean {
+export function ownerEngaged(cwd: string, sessionId: string, now = Date.now()): boolean {
   try {
     const stateDir =
       process.env.WORKER_HARNESS_STATE_DIR ?? join(homedir(), ".local", "state", "worker-harness");
     const slug = cwd.replace(/[^A-Za-z0-9]/g, "-");
     const raw = readFileSync(join(stateDir, "sessions", slug, `${sessionId}.json`), "utf8");
     const parsed: unknown = JSON.parse(raw);
-    const { last_owner_prompt_at: at, last_release_at: released } = (parsed ?? {}) as {
+    const {
+      last_owner_prompt_at: at,
+      last_release_at: released,
+      owner_claim_expires_at: expires,
+    } = (parsed ?? {}) as {
       last_owner_prompt_at?: unknown;
       last_release_at?: unknown;
+      owner_claim_expires_at?: unknown;
     };
     if (typeof at !== "string" || at === "") return false;
+    const expiresMs = typeof expires === "string" ? Date.parse(expires) : NaN;
+    if (Number.isFinite(expiresMs) && now >= expiresMs) return false;
     const atMs = Date.parse(at);
     const releasedMs = typeof released === "string" ? Date.parse(released) : NaN;
     return !(Number.isFinite(atMs) && Number.isFinite(releasedMs) && atMs <= releasedMs);

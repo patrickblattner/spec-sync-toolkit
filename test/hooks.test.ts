@@ -787,4 +787,58 @@ describe("ownerEngaged", () => {
       else process.env.WORKER_HARNESS_STATE_DIR = prev;
     }
   });
+
+  it("the owner claim expires at owner_claim_expires_at; missing or unparsable changes nothing", () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "wh-state-"));
+    const cwd = "/Users/pbl/projects/specs-meta/projects/community-platform";
+    const dir = join(stateDir, "sessions", cwd.replace(/[^A-Za-z0-9]/g, "-"));
+    mkdirSync(dir, { recursive: true });
+    const write = (state: object) => writeFileSync(join(dir, "s1.json"), JSON.stringify(state));
+    const prompt = "2026-10-02T09:00:00Z";
+    const expires = "2026-10-02T12:00:00Z";
+    const before = Date.parse("2026-10-02T11:59:59Z");
+    const after = Date.parse(expires);
+    const prev = process.env.WORKER_HARNESS_STATE_DIR;
+    process.env.WORKER_HARNESS_STATE_DIR = stateDir;
+    try {
+      write({ last_owner_prompt_at: prompt, owner_claim_expires_at: expires });
+      expect(ownerEngaged(cwd, "s1", before)).toBe(true);
+      expect(ownerEngaged(cwd, "s1", after)).toBe(false);
+      // Missing or unparsable expiry: today's behaviour, no own clock.
+      write({ last_owner_prompt_at: prompt });
+      expect(ownerEngaged(cwd, "s1", after + 86_400_000)).toBe(true);
+      write({ last_owner_prompt_at: prompt, owner_claim_expires_at: "later" });
+      expect(ownerEngaged(cwd, "s1", after + 86_400_000)).toBe(true);
+      // Release and expiry: either one ends the claim.
+      write({
+        last_owner_prompt_at: prompt,
+        last_release_at: "2026-10-02T09:05:00Z",
+        owner_claim_expires_at: expires,
+      });
+      expect(ownerEngaged(cwd, "s1", before)).toBe(false);
+      write({
+        last_owner_prompt_at: "2026-10-02T09:10:00Z",
+        last_release_at: "2026-10-02T09:05:00Z",
+        owner_claim_expires_at: expires,
+      });
+      expect(ownerEngaged(cwd, "s1", before)).toBe(true);
+      expect(ownerEngaged(cwd, "s1", after)).toBe(false);
+      // Expiry without any owner prompt: still no conversation.
+      write({ owner_claim_expires_at: expires });
+      expect(ownerEngaged(cwd, "s1", before)).toBe(false);
+
+      // The architect at budget: expired ⇒ budget, live ⇒ the announcement as today.
+      write({ last_owner_prompt_at: prompt, owner_claim_expires_at: expires });
+      const atBudget = { budgetTokens: 250_000, contextTokens: 200_000 };
+      expect(
+        decideArchitectStop({ ...atBudget, ownerEngaged: ownerEngaged(cwd, "s1", after) }),
+      ).toMatchObject({ action: "block", stage: "budget" });
+      expect(
+        decideArchitectStop({ ...atBudget, ownerEngaged: ownerEngaged(cwd, "s1", before) }),
+      ).toMatchObject({ action: "block", stage: "budget-owner" });
+    } finally {
+      if (prev === undefined) delete process.env.WORKER_HARNESS_STATE_DIR;
+      else process.env.WORKER_HARNESS_STATE_DIR = prev;
+    }
+  });
 });
