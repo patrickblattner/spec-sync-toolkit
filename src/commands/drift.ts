@@ -11,6 +11,9 @@
  * Hits ⇒ exit 1 (gate-usable); no hits ⇒ exit 0 with an empty list; server
  * unreachable ⇒ exit 2, never "no drift"; missing pin file ⇒ exit 4
  * (bootstrap runs `repin` first).
+ *
+ * Keys matching `pinExclude` (SST-DESIGN-025 rev 5) are never drift — neither
+ * on the server side nor as leftovers in an older pin file.
  */
 
 import type { Command, CommandContext, CommandResult } from "../cli.js";
@@ -18,7 +21,7 @@ import type { Config } from "../config.js";
 import { computeMoved, isCovered, readReceipts } from "../coverage.js";
 import { EXIT, ToolkitError } from "../output.js";
 import { checkFlags } from "../pack/args.js";
-import { PINS_FILE, readPinsFile } from "../pins.js";
+import { excludeMatcher, PINS_FILE, readPinsFile, withoutExcluded } from "../pins.js";
 import { fetchPins, resolveServer } from "./repin.js";
 
 export const driftCommand: Command = {
@@ -42,9 +45,10 @@ export async function runDrift(ctx: CommandContext): Promise<CommandResult> {
     );
   }
 
-  const fetched = await fetchPins(config.project, server);
+  const isExcluded = excludeMatcher(config.pinExclude);
+  const fetched = withoutExcluded(await fetchPins(config.project, server), isExcluded);
   const receipts = readReceipts(ctx.repoRoot);
-  const moved = computeMoved(pinned, fetched).map((entry) => ({
+  const moved = computeMoved(withoutExcluded(pinned, isExcluded), fetched).map((entry) => ({
     ...entry,
     covered: isCovered(entry, receipts),
   }));

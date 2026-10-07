@@ -81,6 +81,12 @@ const configSchema = z
      * (SST-DESIGN-002).
      */
     measureFiles: z.array(z.string().min(1)).default([]),
+    /**
+     * Spec-key patterns (`*` = any run of characters, anchored) that `repin`,
+     * `drift` and `cover` leave out — foundation areas the project declares as
+     * not applying to it (SST-DESIGN-025 rev 5). No default list.
+     */
+    pinExclude: z.array(z.string().min(1)).optional(),
   })
   .superRefine((config, ctx) => {
     // A profile may only name phases that exist — otherwise `gate --profile x`

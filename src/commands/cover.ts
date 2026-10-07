@@ -21,7 +21,7 @@ import {
 } from "../coverage.js";
 import { EXIT, ToolkitError } from "../output.js";
 import { checkFlags, positionals, valueFlag } from "../pack/args.js";
-import { PINS_FILE, readPinsFile } from "../pins.js";
+import { excludeMatcher, PINS_FILE, readPinsFile, withoutExcluded } from "../pins.js";
 import { fetchPins, resolveServer } from "./repin.js";
 
 export const coverCommand: Command = {
@@ -71,8 +71,12 @@ export async function runCover(ctx: CommandContext): Promise<CommandResult> {
   }
 
   const server = resolveServer(ctx.repoRoot, ctx.args);
-  const fetched = await fetchPins(config.project, server);
-  const movedByKey = new Map(computeMoved(pinned, fetched).map((entry) => [entry.key, entry]));
+  // Same view as `drift`: a `pinExclude` key never moved (SST-DESIGN-025 rev 5).
+  const isExcluded = excludeMatcher(config.pinExclude);
+  const fetched = withoutExcluded(await fetchPins(config.project, server), isExcluded);
+  const movedByKey = new Map(
+    computeMoved(withoutExcluded(pinned, isExcluded), fetched).map((entry) => [entry.key, entry]),
+  );
 
   const notMoved = keys.filter((key) => !movedByKey.has(key));
   if (notMoved.length > 0) {

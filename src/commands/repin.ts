@@ -15,13 +15,17 @@
  * existing pin file ⇒ exit 4.
  *
  * Server unreachable or handshake aborted ⇒ exit 2. The response carries
- * `pinsPath`, `mode` (`full`|`ids`) and `units` — counts and a path, never the
- * pin content itself.
+ * `pinsPath`, `mode` (`full`|`ids`), `units` and `excluded` — counts and a
+ * path, never the pin content itself.
+ *
+ * `pinExclude` (spec rev 5) drops matching keys from the fetched map before
+ * anything is compared or written; in `--ids` mode an excluded id is ignored.
+ * `excluded` counts the dropped keys (full: fetched keys; ids: named ids).
  *
  * Coverage gate (SST-ADR-011, spec rev 4): a moved key without a valid receipt
  * in the coverage ledger blocks the write — exit 4, `uncovered` names the keys,
  * the pin file stays untouched. Only the bootstrap full run (no existing pin
- * file) is exempt; there is no bypass flag.
+ * file) and keys dropped by `pinExclude` are exempt; there is no bypass flag.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -32,7 +36,14 @@ import { computeMoved, isCovered, readReceipts } from "../coverage.js";
 import { callSpecTool, parsePins } from "../norms.js";
 import { EXIT, ToolkitError } from "../output.js";
 import { checkFlags, valueFlag } from "../pack/args.js";
-import { PINS_FILE, readPinsFile, writePinsFile, type PinsMap } from "../pins.js";
+import {
+  excludeMatcher,
+  PINS_FILE,
+  readPinsFile,
+  withoutExcluded,
+  writePinsFile,
+  type PinsMap,
+} from "../pins.js";
 
 export const repinCommand: Command = {
   name: "repin",
@@ -55,7 +66,9 @@ export async function runRepin(ctx: CommandContext): Promise<CommandResult> {
     });
   }
 
-  const fetched = await fetchPins(config.project, server);
+  const isExcluded = excludeMatcher(config.pinExclude);
+  const rawFetched = await fetchPins(config.project, server);
+  const fetched = withoutExcluded(rawFetched, isExcluded);
 
   const notes: string[] = [];
   let pins: PinsMap;
@@ -68,10 +81,13 @@ export async function runRepin(ctx: CommandContext): Promise<CommandResult> {
           .split(",")
           .map((id) => id.trim())
           .filter((id) => id !== "");
+  const excluded =
+    mode === "full" ? rawFetched.size - fetched.size : wanted.filter(isExcluded).length;
 
-  // Coverage gate (SST-ADR-011): bootstrap (no pin file) is the one exemption.
+  // Coverage gate (SST-ADR-011): bootstrap (no pin file) and keys that leave
+  // only because of `pinExclude` are the exemptions.
   if (existing !== undefined) {
-    const moved = computeMoved(existing, fetched);
+    const moved = computeMoved(withoutExcluded(existing, isExcluded), fetched);
     // --ids cannot remove entries, so removed keys (`to: null`) never change there.
     const relevant =
       mode === "full" ? moved : moved.filter((m) => wanted.includes(m.key) && m.to !== null);
@@ -98,6 +114,10 @@ export async function runRepin(ctx: CommandContext): Promise<CommandResult> {
     pins = { ...(existing as PinsMap) };
     let updated = 0;
     for (const id of wanted) {
+      if (isExcluded(id)) {
+        notes.push(`${id}: matches pinExclude — ignored`);
+        continue;
+      }
       const rev = fetched.get(id);
       if (rev === undefined) {
         notes.push(`${id}: not in the current spec_pins response — left as is`);
@@ -116,7 +136,7 @@ export async function runRepin(ctx: CommandContext): Promise<CommandResult> {
     writePinsFile(ctx.repoRoot, pins);
   }
 
-  return { ok: true, notes, data: { pinsPath, mode, units } };
+  return { ok: true, notes, data: { pinsPath, mode, units, excluded } };
 }
 
 /**

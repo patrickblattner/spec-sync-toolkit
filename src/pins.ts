@@ -45,3 +45,33 @@ export function writePinsFile(repoRoot: string, pins: PinsMap): void {
   writeFileSync(tmp, `${JSON.stringify(sorted, null, 2)}\n`, "utf8");
   renameSync(tmp, path);
 }
+
+/**
+ * The `pinExclude` matcher (SST-DESIGN-025 rev 5): `*` matches any run of
+ * characters, everything else literally, anchored to the whole key — `GL-UI-*`
+ * matches `GL-UI-026`, `GL-020` only itself. No patterns ⇒ nothing is excluded.
+ */
+export function excludeMatcher(patterns: readonly string[] = []): (key: string) => boolean {
+  if (patterns.length === 0) return () => false;
+  const regexes = patterns.map(
+    (pattern) =>
+      new RegExp(
+        `^${pattern
+          .split("*")
+          .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+          .join(".*")}$`,
+      ),
+  );
+  return (key) => regexes.some((regex) => regex.test(key));
+}
+
+/** The pin map without the keys `isExcluded` names. */
+export function withoutExcluded<T extends Map<string, number> | PinsMap>(
+  pins: T,
+  isExcluded: (key: string) => boolean,
+): T {
+  if (pins instanceof Map) {
+    return new Map([...pins].filter(([key]) => !isExcluded(key))) as T;
+  }
+  return Object.fromEntries(Object.entries(pins).filter(([key]) => !isExcluded(key))) as T;
+}

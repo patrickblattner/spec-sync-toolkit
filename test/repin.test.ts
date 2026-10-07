@@ -184,3 +184,101 @@ describe("repin coverage gate (SST-ADR-011, spec rev 4)", () => {
     });
   });
 });
+
+/** Server state with a UI area the project declares as not applying. */
+const uiPayload = {
+  jsonrpc: "2.0",
+  id: 2,
+  result: {
+    content: [{ type: "text", text: "PROC-DEV-031=2\nGL-UI-026=6\nGL-UI-030=1\nGL-020=3\n" }],
+  },
+};
+
+function uiFetch(): typeof globalThis.fetch {
+  let calls = 0;
+  return (() => {
+    calls += 1;
+    const body = calls === 3 ? `data: ${JSON.stringify(uiPayload)}\n\n` : "";
+    return Promise.resolve(
+      new Response(body, { status: 200, headers: { "mcp-session-id": "s-1" } }),
+    );
+  }) as unknown as typeof globalThis.fetch;
+}
+
+describe("repin pinExclude (SST-DESIGN-025 rev 5)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const ctxWith = (repo: string, pinExclude?: string[], args: string[] = []): CommandContext => ({
+    flags: { human: false, dryRun: false },
+    args,
+    repoRoot: repo,
+    config: { project: "production-cockpit", pinExclude } as Config,
+  });
+  const pinsOf = (repo: string): unknown =>
+    JSON.parse(readFileSync(join(repo, "spec-pins.json"), "utf8"));
+
+  it("without pinExclude writes every key and reports excluded 0", async () => {
+    vi.stubGlobal("fetch", uiFetch());
+    const repo = repoWithMcpJson("http://localhost:8787/mcp");
+
+    const result = await runRepin(ctxWith(repo));
+    expect(result.data).toMatchObject({ mode: "full", units: 4, excluded: 0 });
+    expect(pinsOf(repo)).toEqual({
+      "PROC-DEV-031": 2,
+      "GL-UI-026": 6,
+      "GL-UI-030": 1,
+      "GL-020": 3,
+    });
+  });
+
+  it("drops matching keys before writing and counts them", async () => {
+    vi.stubGlobal("fetch", uiFetch());
+    const repo = repoWithMcpJson("http://localhost:8787/mcp");
+
+    const result = await runRepin(ctxWith(repo, ["GL-UI-*", "GL-020"]));
+    expect(result.ok).toBe(true);
+    expect(result.data).toMatchObject({ mode: "full", units: 1, excluded: 3 });
+    expect(pinsOf(repo)).toEqual({ "PROC-DEV-031": 2 });
+  });
+
+  it("keys leaving the pin file only because of the list need no receipt", async () => {
+    vi.stubGlobal("fetch", uiFetch());
+    const repo = repoWithMcpJson("http://localhost:8787/mcp");
+    // Old pin file still carries the UI area (one key even at an older rev,
+    // one no longer on the server); only PROC-DEV-031 is unmoved.
+    writeFileSync(
+      join(repo, "spec-pins.json"),
+      JSON.stringify({ "PROC-DEV-031": 2, "GL-UI-026": 5, "GL-UI-099": 1, "GL-020": 3 }),
+    );
+
+    const result = await runRepin(ctxWith(repo, ["GL-UI-*", "GL-020"]));
+    expect(result.ok).toBe(true);
+    expect(result.data).toMatchObject({ excluded: 3 });
+    expect(pinsOf(repo)).toEqual({ "PROC-DEV-031": 2 });
+  });
+
+  it("still gates the keys the list does not cover", async () => {
+    vi.stubGlobal("fetch", uiFetch());
+    const repo = repoWithMcpJson("http://localhost:8787/mcp");
+    const before = JSON.stringify({ "PROC-DEV-031": 1, "GL-UI-026": 6 });
+    writeFileSync(join(repo, "spec-pins.json"), before);
+
+    const result = await runRepin(ctxWith(repo, ["GL-UI-*"]));
+    expect(result).toMatchObject({ ok: false, exit: EXIT.PRECONDITION });
+    expect(result.data).toMatchObject({ uncovered: ["GL-020", "PROC-DEV-031"] });
+    expect(readFileSync(join(repo, "spec-pins.json"), "utf8")).toBe(before);
+  });
+
+  it("--ids ignores an excluded id, counts it, and leaves the file as is", async () => {
+    vi.stubGlobal("fetch", uiFetch());
+    const repo = repoWithMcpJson("http://localhost:8787/mcp");
+    writeFileSync(join(repo, "spec-pins.json"), JSON.stringify({ "PROC-DEV-031": 2 }));
+
+    const result = await runRepin(ctxWith(repo, ["GL-UI-*"], ["--ids", "GL-UI-026,PROC-DEV-031"]));
+    expect(result.ok).toBe(true);
+    expect(result.data).toMatchObject({ mode: "ids", units: 1, excluded: 1 });
+    expect(pinsOf(repo)).toEqual({ "PROC-DEV-031": 2 });
+  });
+});

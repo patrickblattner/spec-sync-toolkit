@@ -72,6 +72,15 @@ describe("loadConfig (spec §5)", () => {
     expect(loadConfig(repoWith({ ...valid, contextBudget: 500_000 })).contextBudget).toBe(500_000);
   });
 
+  it("leaves pinExclude unset when the config does not name it — no default list", () => {
+    expect(loadConfig(repoWith(valid)).pinExclude).toBeUndefined();
+  });
+
+  it("takes a pinExclude the config does name", () => {
+    const config = loadConfig(repoWith({ ...valid, pinExclude: ["GL-UI-*", "GL-020"] }));
+    expect(config.pinExclude).toEqual(["GL-UI-*", "GL-020"]);
+  });
+
   it("reads a config from an explicit --config path", () => {
     const root = repoWith(valid, "other.json");
     expect(loadConfig(root, "other.json").project).toBe("community-platform");
@@ -115,6 +124,18 @@ describe("invalid config → exit 4 naming the field (spec §5)", () => {
     const error = expectPrecondition(() => loadConfig(repoWith(broken)));
     expect(error.field).toBe("gate.phases[1].cmd");
     expect(error.message).toContain("gate.phases[1].cmd");
+  });
+
+  it("names an empty pinExclude pattern", () => {
+    const error = expectPrecondition(() => loadConfig(repoWith({ ...valid, pinExclude: [""] })));
+    expect(error.field).toBe("pinExclude[0]");
+  });
+
+  it("rejects a pinExclude that is not a list", () => {
+    const error = expectPrecondition(() =>
+      loadConfig(repoWith({ ...valid, pinExclude: "GL-UI-*" })),
+    );
+    expect(error.field).toBe("pinExclude");
   });
 
   it("names a wrong type", () => {

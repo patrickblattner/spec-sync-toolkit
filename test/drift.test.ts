@@ -36,11 +36,11 @@ function repo(pins?: Record<string, number>): string {
   return root;
 }
 
-const ctxFor = (root: string): CommandContext => ({
+const ctxFor = (root: string, pinExclude?: string[]): CommandContext => ({
   flags: { human: false, dryRun: false },
   args: [],
   repoRoot: root,
-  config: { project: "production-cockpit" } as Config,
+  config: { project: "production-cockpit", pinExclude } as Config,
 });
 
 afterEach(() => {
@@ -86,5 +86,23 @@ describe("drift (SST-DESIGN-028)", () => {
     await expect(runDrift(ctxFor(repo({ "PROC-DEV-031": 2 })))).rejects.toSatisfy(
       (error: unknown) => error instanceof ToolkitError && error.exit === EXIT.UNPROVABLE,
     );
+  });
+
+  it("an excluded key is never drift — server side or leftover in the pin file", async () => {
+    vi.stubGlobal("fetch", fakeFetch());
+    // Server has GL-CODE-010 (excluded, missing from the pin); the pin still
+    // carries GL-CODE-099 (excluded, gone from the server).
+    const root = repo({ "PROC-DEV-031": 2, "GL-CODE-099": 4 });
+
+    const result = await runDrift(ctxFor(root, ["GL-CODE-*"]));
+    expect(result).toMatchObject({ ok: true, exit: EXIT.OK });
+    expect(result.data).toMatchObject({ moved: [], counts: { moved: 0, covered: 0 } });
+  });
+
+  it("without pinExclude the same state is drift", async () => {
+    vi.stubGlobal("fetch", fakeFetch());
+    const result = await runDrift(ctxFor(repo({ "PROC-DEV-031": 2, "GL-CODE-099": 4 })));
+    expect(result).toMatchObject({ ok: false, exit: EXIT.FAILED });
+    expect(result.data).toMatchObject({ counts: { moved: 2 } });
   });
 });
