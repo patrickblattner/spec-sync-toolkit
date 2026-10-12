@@ -52,7 +52,7 @@ export interface PinnedNormSpec {
 export const PINNED_NORM_SPECS: readonly PinnedNormSpec[] = [
   { key: "PROC-DEV-039", rev: 2 }, // sort tiers (1)-(4) & pathfinder inheritance
   { key: "PROC-DEV-010", rev: 3 }, // ticket tracking & label taxonomy
-  { key: "PROC-DEV-047", rev: 5 }, // operating profile: autonomy, label semantics, owner-hold
+  { key: "PROC-DEV-047", rev: 6 }, // operating profile: autonomy, label semantics, owner-hold
   { key: "PROC-DEV-044", rev: 16 }, // ticket closure: merge model & cleanup
 ];
 
