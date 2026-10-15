@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -59,7 +59,7 @@ function world(over: Partial<World> = {}): World {
 }
 
 interface Call {
-  tool: "git" | "gh";
+  tool: "git" | "gh" | "npm";
   args: string[];
 }
 
@@ -145,8 +145,13 @@ function fakeDeps(state: World): {
     throw new Error(`unexpected gh call: ${args.join(" ")}`);
   };
 
+  const npm = async (args: string[], cwd: string): Promise<string> => {
+    calls.push({ tool: "npm", args: [...args, `@${cwd}`] });
+    return "";
+  };
+
   return {
-    deps: { git, gh, repoRoot: root, now: () => new Date("2026-07-26T12:00:00.000Z") },
+    deps: { git, gh, npm, repoRoot: root, now: () => new Date("2026-07-26T12:00:00.000Z") },
     git: gitCalls,
     gh: ghCalls,
     calls,
@@ -744,6 +749,121 @@ describe("a merge that died halfway is resumed, not refused (§7.4)", () => {
 
     expect(result.data.resumed).toBeUndefined();
     expect(result.exit).toBe(EXIT.OK);
+  });
+});
+
+/**
+ * PROC-DEV-061: `worktree:setup` leaves node_modules and linked stores
+ * read-only, so `git worktree remove` fails with "Permission denied" unless the
+ * repo's own `npm run worktree:unlock` ran first.
+ */
+describe("a read-only worktree is unlocked before it is removed (PROC-DEV-061)", () => {
+  /** A real directory as the ticket worktree, with or without the unlock script. */
+  function ticketWorktree(withScript: boolean): string {
+    const dir = mkdtempSync(join(tmpdir(), "spec-sync-wt-"));
+    const scripts: Record<string, string> = { test: "vitest run" };
+    if (withScript) scripts["worktree:unlock"] = "node scripts/unlock.mjs";
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "app", scripts }));
+    return dir;
+  }
+
+  const order = (calls: Call[]) =>
+    calls
+      .filter(
+        ({ tool, args }) =>
+          tool === "npm" || (tool === "git" && args[0] === "worktree" && args[1] === "remove"),
+      )
+      .map(({ tool, args }) => `${tool} ${args.join(" ")}`);
+
+  it("runs npm run worktree:unlock in the worktree right before the removal", async () => {
+    const path = ticketWorktree(true);
+    const state = world({
+      worktrees: [
+        { path: "/repo", branch: "main" },
+        { path, branch: "feat/csv" },
+      ],
+    });
+    const { deps, calls, root } = fakeDeps(state);
+    recordGreenGate(root, 42);
+
+    const result = await runMerge(deps, options, NORM_DEFAULTS);
+
+    expect(result.exit).toBe(EXIT.OK);
+    expect(order(calls)).toEqual([
+      `npm run worktree:unlock @${path}`,
+      `git worktree remove ${path}`,
+    ]);
+    const names = (result.data.steps as { name: string }[]).map((step) => step.name);
+    expect(names.indexOf("unlock-worktree")).toBe(names.indexOf("remove-worktree") - 1);
+  });
+
+  it("skips the unlock step without the script and still removes the worktree", async () => {
+    const path = ticketWorktree(false);
+    const state = world({
+      worktrees: [
+        { path: "/repo", branch: "main" },
+        { path, branch: "feat/csv" },
+      ],
+    });
+    const { deps, calls, root } = fakeDeps(state);
+    recordGreenGate(root, 42);
+
+    const result = await runMerge(deps, options, NORM_DEFAULTS);
+
+    expect(result.exit).toBe(EXIT.OK);
+    expect((result.data.steps as { name: string }[]).map((step) => step.name)).not.toContain(
+      "unlock-worktree",
+    );
+    expect(order(calls)).toEqual([`git worktree remove ${path}`]);
+  });
+
+  it("stops at a failed unlock and never attempts the removal", async () => {
+    const path = ticketWorktree(true);
+    const state = world({
+      worktrees: [
+        { path: "/repo", branch: "main" },
+        { path, branch: "feat/csv" },
+      ],
+    });
+    const { deps, calls, root } = fakeDeps(state);
+    recordGreenGate(root, 42);
+    const failing: MergeDeps = {
+      ...deps,
+      npm: async () => {
+        throw new ToolkitError("npm run worktree:unlock failed", EXIT.FAILED);
+      },
+    };
+
+    await expect(runMerge(failing, options, NORM_DEFAULTS)).rejects.toThrow("worktree:unlock");
+
+    expect(order(calls)).toEqual([]);
+    expect(state.worktrees.map((tree) => tree.path)).toContain(path);
+    expect(mutations(calls)).not.toContain("branch -D");
+  });
+
+  it("unlocks again on the resume path before the missing removal", async () => {
+    const path = ticketWorktree(true);
+    const state = world({
+      worktrees: [
+        { path: "/repo", branch: "main" },
+        { path, branch: "feat/csv" },
+      ],
+      headSubject: "add CSV export #42",
+      unpushed: "0",
+      issueState: "CLOSED",
+      issueLabels: ["spec-sync", DONE_LABEL],
+    });
+    const { deps, calls, root } = fakeDeps(state);
+    recordGreenGate(root, 42);
+    appendEvent(root, { type: "merge-started", issue: 42, branch: "feat/csv" });
+
+    const result = await runMerge(deps, options, NORM_DEFAULTS);
+
+    expect(result.exit).toBe(EXIT.OK);
+    expect(order(calls)).toEqual([
+      `npm run worktree:unlock @${path}`,
+      `git worktree remove ${path}`,
+    ]);
   });
 });
 

@@ -238,7 +238,9 @@ export function workbenchFindings(cwd: string): string[] {
       b.find((l) => l.startsWith("branch refs/heads/"))?.slice("branch refs/heads/".length);
     const loose = wts.slice(1).filter((b) => !isLocked(b));
     if (loose.length)
-      findings.push(`${loose.length} worktree(s) next to the main tree — git worktree remove`);
+      findings.push(
+        `${loose.length} worktree(s) next to the main tree — npm run worktree:unlock (if the repo has it), then git worktree remove`,
+      );
     const held = new Set(wts.filter(isLocked).map(branchOf));
     const branches = git("branch", "--format=%(refname:short)")
       .split("\n")

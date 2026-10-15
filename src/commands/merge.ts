@@ -7,8 +7,8 @@
  *
  *   preconditions → `git merge --squash` onto `main` → commit with the ticket
  *   reference → **exactly one push** → close the issue + status label → remove
- *   the worktree (**without** `--force`) + delete the branch → **re-query every
- *   postcondition**.
+ *   the worktree (`npm run worktree:unlock` first when the repo has it, **without**
+ *   `--force`) + delete the branch → **re-query every postcondition**.
  *
  * A violated precondition is exit 4 (fix the cause). A postcondition that fails
  * *after* execution is exit 1 (diagnose) — the difference matters, because the
@@ -27,6 +27,10 @@
  * `TaskStop` of sub-agents stays with the driver — the toolkit knows no agents.
  */
 
+import { execFile } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import { simpleGit } from "simple-git";
 import { EXIT, ToolkitError } from "../output.js";
 import { appendEvent, interruptedMerge, latestGate, readLedger } from "../ledger.js";
@@ -38,6 +42,8 @@ import type { Command, CommandContext } from "../cli.js";
 
 /** The branch `main` moves only through gate-verified squash merges (§Worker-Loop). */
 export const MAIN_BRANCH = "main";
+
+const execFileAsync = promisify(execFile);
 
 /**
  * The gate profile whose evidence gates a merge: §Worker-Loop merges only
@@ -68,6 +74,8 @@ export function staleStatusLabels(facts: Facts): string[] {
 export interface MergeDeps {
   git: (args: string[]) => Promise<string>;
   gh: GhRunner;
+  /** Runs `npm <args>` in `cwd` — only the worktree unlock uses it (PROC-DEV-061). */
+  npm: (args: string[], cwd: string) => Promise<string>;
   repoRoot: string;
   now: () => Date;
 }
@@ -165,6 +173,8 @@ interface Facts {
   branchExists: boolean;
   remote?: string;
   worktreePath?: string;
+  /** The worktree's `package.json` declares `scripts["worktree:unlock"]` (PROC-DEV-061). */
+  worktreeUnlock: boolean;
   issue: GhIssueView;
   gateOk: boolean;
   gateDetail: string;
@@ -203,6 +213,7 @@ async function gather(
     branchExists: branches !== "",
     remote,
     worktreePath,
+    worktreeUnlock: worktreePath !== undefined && hasUnlockScript(worktreePath),
     issue,
     gateMode,
     gateOk: gate?.ok === true,
@@ -217,6 +228,23 @@ async function gather(
           `run: spec-sync gate --profile ${MERGE_GATE_PROFILE} --issue ${options.issue}`
         : `gate at ${gate.at} was ${gate.ok === true ? "green" : "red"}`,
   };
+}
+
+/**
+ * Whether the worktree ships `npm run worktree:unlock` (PROC-DEV-061). A
+ * `worktree:setup` that made node_modules and linked stores read-only leaves
+ * `git worktree remove` failing with "Permission denied"; the repo's own
+ * idempotent script undoes that. No readable `package.json` means no script.
+ */
+function hasUnlockScript(worktreePath: string): boolean {
+  try {
+    const pkg = JSON.parse(readFileSync(join(worktreePath, "package.json"), "utf8")) as {
+      scripts?: Record<string, unknown>;
+    };
+    return typeof pkg.scripts?.["worktree:unlock"] === "string";
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -338,6 +366,14 @@ export function plan(facts: Facts, options: MergeOptions): MergeStep[] {
     { name: "close-issue", cmd: `gh issue close ${options.issue}` },
   ];
   if (facts.worktreePath !== undefined) {
+    // Never chmod, sudo or --force instead: without the script the step is
+    // left out, and a failing unlock stops the merge like any other step.
+    if (facts.worktreeUnlock) {
+      steps.push({
+        name: "unlock-worktree",
+        cmd: `(cd ${facts.worktreePath} && npm run worktree:unlock)`,
+      });
+    }
     steps.push({ name: "remove-worktree", cmd: `git worktree remove ${facts.worktreePath}` });
   }
   // `-d` would always refuse: a squash merge records no parent link, so git
@@ -373,6 +409,10 @@ async function runStep(
     case "close-issue":
       await deps.gh(["issue", "close", String(options.issue)]);
       return;
+    case "unlock-worktree":
+      if (facts.worktreePath !== undefined && facts.worktreeUnlock)
+        await deps.npm(["run", "worktree:unlock"], facts.worktreePath);
+      return;
     case "remove-worktree":
       if (facts.worktreePath !== undefined)
         await deps.git(["worktree", "remove", facts.worktreePath]);
@@ -405,7 +445,7 @@ const REPAIRS: Record<string, readonly string[]> = {
   "commit-on-main": ["squash-merge", "commit"],
   pushed: ["push"],
   "issue-closed": ["label-issue", "close-issue"],
-  "worktree-removed": ["remove-worktree"],
+  "worktree-removed": ["unlock-worktree", "remove-worktree"],
   "branch-deleted": ["delete-branch"],
 };
 
@@ -654,6 +694,20 @@ export function mergeDeps(ctx: CommandContext): MergeDeps {
   return {
     git: (args) => git.raw(args),
     gh: ghRunner(ctx.repoRoot),
+    npm: async (args, cwd) => {
+      try {
+        const { stdout } = await execFileAsync("npm", args, {
+          cwd,
+          maxBuffer: 32 * 1024 * 1024,
+        });
+        return stdout;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new ToolkitError(`npm ${args.join(" ")} failed in ${cwd}: ${message}`, EXIT.FAILED, {
+          cause: error,
+        });
+      }
+    },
     repoRoot: ctx.repoRoot,
     now: () => new Date(),
   };
