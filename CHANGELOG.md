@@ -10,8 +10,8 @@
   the `spec-sync-review` marker, nightly batch over `review/last..origin/main` with
   review-key dedupe and an `ls-remote`-checked marker move, one issue per release tag, and the
   `review-verdict` marker. Every engine failure (`unreachable`, `timeout`, `limit`,
-  `model-switch`, `unparsable`) is a skip with exit 0 and no fallback model.
-- Optional `review` block in `spec-sync.config.json`: `riskGlobs`, `models` {risk, size},
+  `model-switch`, `effort-mismatch`, `unparsable`) is a skip with exit 0 and no fallback model.
+- Optional `review` block in `spec-sync.config.json`: `riskGlobs`, `models` {risk, size}, `effort` {risk: high, size: medium},
   `size` {files, lines}, `textGlobs`, `modulesRoot`, `marker`, `label`, `securityLabel`,
   `timeoutMs`, `maxDiffBytes`.
 - Ledger event type `review`.

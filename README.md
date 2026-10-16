@@ -57,7 +57,7 @@ consuming repo re-includes it in its `.gitignore`. It never commits and never to
 
 `review` is the only way a repo calls Codex (SST-DESIGN-030, PROC-DEV-049): it triages the diff
 (risk areas → `models.risk`, large diff or new module → `models.size`, else no call), runs
-`codex exec --sandbox read-only -m <model>` with the prompt on stdin, and posts the strict result as
+`codex exec --sandbox read-only -m <model> -c model_reasoning_effort=<effort>` with the prompt on stdin, and posts the strict result as
 a PR comment (`pr`), as deduplicated issues (`batch`, over `review/last..origin/main`) or as one issue
 per tag (`tag`). Every engine failure is a skip with exit 0 — never another model. Exit 1 means a
 critical or high finding is open. Configuration lives in the optional `review` block of

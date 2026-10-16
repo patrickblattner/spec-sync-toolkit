@@ -1,7 +1,7 @@
 /**
  * The Codex engine call (SST-DESIGN-030 §Engine call, PROC-DEV-049).
  *
- *   codex exec --sandbox read-only -m <model> --ephemeral
+ *   codex exec --sandbox read-only -m <model> -c model_reasoning_effort=<effort> --ephemeral
  *              --output-schema <schema> -o <last.json> -C <root> -
  *
  * The prompt goes over stdin, never as an argument (a large diff would hit
@@ -18,10 +18,13 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { RESULT_SCHEMA } from "./prompt.js";
 
-export type FailureClass = "unreachable" | "timeout" | "limit" | "model-switch" | "unparsable";
+export type FailureClass =
+  "unreachable" | "timeout" | "limit" | "model-switch" | "effort-mismatch" | "unparsable";
 
 export interface EngineRequest {
   model: string;
+  /** Reasoning effort, passed as `-c model_reasoning_effort=<effort>` — never the user default. */
+  effort: string;
   prompt: string;
   /** Working root Codex reads (`-C`). */
   root: string;
@@ -45,13 +48,21 @@ const LIMIT_PATTERN =
 const SWITCH_PATTERN = /automatically switched to|switched (?:the )?model/i;
 
 /** The arguments of the one permitted invocation. */
-export function codexArgs(model: string, schemaFile: string, outFile: string, root: string) {
+export function codexArgs(
+  model: string,
+  effort: string,
+  schemaFile: string,
+  outFile: string,
+  root: string,
+) {
   return [
     "exec",
     "--sandbox",
     "read-only",
     "-m",
     model,
+    "-c",
+    `model_reasoning_effort=${effort}`,
     "--ephemeral",
     "--output-schema",
     schemaFile,
@@ -71,15 +82,19 @@ export function runCodex(request: EngineRequest): EngineResult {
   writeFileSync(join(request.logDir, `${name}-prompt.txt`), request.prompt, "utf8");
 
   const startedAt = Date.now();
-  const result = spawnSync("codex", codexArgs(request.model, schemaFile, outFile, request.root), {
-    cwd: request.root,
-    input: request.prompt,
-    encoding: "utf8",
-    timeout: request.timeoutMs,
-    killSignal: "SIGKILL",
-    maxBuffer: 64 * 1024 * 1024,
-    env: request.env ?? process.env,
-  });
+  const result = spawnSync(
+    "codex",
+    codexArgs(request.model, request.effort, schemaFile, outFile, request.root),
+    {
+      cwd: request.root,
+      input: request.prompt,
+      encoding: "utf8",
+      timeout: request.timeoutMs,
+      killSignal: "SIGKILL",
+      maxBuffer: 64 * 1024 * 1024,
+      env: request.env ?? process.env,
+    },
+  );
   const durationMs = Date.now() - startedAt;
   const stdout = result.stdout ?? "";
   const stderr = result.stderr ?? "";
@@ -110,6 +125,10 @@ export function runCodex(request: EngineRequest): EngineResult {
     return fail("model-switch", `asked for ${request.model}, codex ran ${reported}`);
   }
   if (SWITCH_PATTERN.test(own)) return fail("model-switch", firstMatchLine(own, SWITCH_PATTERN));
+  const effort = /^reasoning effort:\s*(\S+)\s*$/m.exec(own)?.[1];
+  if (effort !== undefined && effort !== request.effort) {
+    return fail("effort-mismatch", `asked for effort ${request.effort}, codex ran ${effort}`);
+  }
 
   let raw: string | undefined;
   try {

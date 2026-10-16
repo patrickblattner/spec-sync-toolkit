@@ -26,7 +26,7 @@ export interface NumstatEntry {
 const DOC_GLOBS = ["**/*.md"];
 
 export type TriageDecision =
-  | { triaged: true; model: string; trigger: string; areas: string[] }
+  | { triaged: true; model: string; effort: string; trigger: string; areas: string[] }
   | { triaged: false; trigger: "not-triaged"; areas: [] };
 
 /**
@@ -109,11 +109,23 @@ export function decide(
     review.riskGlobs,
   );
   if (areas.length > 0) {
-    return { triaged: true, model: review.models.risk, trigger: `risk:${areas.join(",")}`, areas };
+    return {
+      triaged: true,
+      model: review.models.risk,
+      effort: review.effort.risk,
+      trigger: `risk:${areas.join(",")}`,
+      areas,
+    };
   }
   const size = sizeOf(entries, review.textGlobs);
   if (size.files >= review.size.files || size.lines >= review.size.lines || isNewModule) {
-    return { triaged: true, model: review.models.size, trigger: "size", areas: [] };
+    return {
+      triaged: true,
+      model: review.models.size,
+      effort: review.effort.size,
+      trigger: "size",
+      areas: [],
+    };
   }
   return { triaged: false, trigger: "not-triaged", areas: [] };
 }
@@ -122,9 +134,14 @@ export function decide(
 export function decideAlways(
   files: readonly string[],
   review: ReviewConfig,
-): { model: string; trigger: string; areas: string[] } {
+): { model: string; effort: string; trigger: string; areas: string[] } {
   const areas = riskAreas(files, review.riskGlobs);
   return areas.length > 0
-    ? { model: review.models.risk, trigger: `risk:${areas.join(",")}`, areas }
-    : { model: review.models.size, trigger: "size", areas: [] };
+    ? {
+        model: review.models.risk,
+        effort: review.effort.risk,
+        trigger: `risk:${areas.join(",")}`,
+        areas,
+      }
+    : { model: review.models.size, effort: review.effort.size, trigger: "size", areas: [] };
 }

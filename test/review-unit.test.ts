@@ -53,6 +53,7 @@ describe("review config (SST-DESIGN-030 §Config)", () => {
   it("applies the defaults when the block is absent", () => {
     const review = reviewConfig();
     expect(review.models).toEqual({ risk: "gpt-6-astra", size: "gpt-5.6-sol" });
+    expect(review.effort).toEqual({ risk: "high", size: "medium" });
     expect(review.size).toEqual({ files: 15, lines: 600 });
     expect(review.marker).toBe("review/last");
     expect(review.label).toBe("review-codex");
@@ -144,6 +145,7 @@ describe("triage (acceptance 1)", () => {
   it("batch and tag always pick a model", () => {
     expect(decideAlways(["src/a.ts"], review)).toEqual({
       model: "gpt-5.6-sol",
+      effort: "medium",
       trigger: "size",
       areas: [],
     });
@@ -262,12 +264,14 @@ describe("prompt, schema, engine arguments", () => {
   });
 
   it("hard-codes the read-only sandbox, the model and stdin", () => {
-    expect(codexArgs("gpt-5.6-sol", "s.json", "o.json", "/r")).toEqual([
+    expect(codexArgs("gpt-5.6-sol", "medium", "s.json", "o.json", "/r")).toEqual([
       "exec",
       "--sandbox",
       "read-only",
       "-m",
       "gpt-5.6-sol",
+      "-c",
+      "model_reasoning_effort=medium",
       "--ephemeral",
       "--output-schema",
       "s.json",
@@ -287,6 +291,7 @@ describe("comment markers (acceptance 4)", () => {
       pr: 7,
       head: "abc",
       model: "gpt-6-astra",
+      effort: "high",
       trigger: "risk:auth",
       round: 1,
       range: "origin/main...HEAD",

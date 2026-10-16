@@ -35,6 +35,8 @@ interface CodexBehaviour {
   stderr?: string;
   /** Model the header claims; defaults to the requested one. */
   headerModel?: string;
+  /** Reasoning effort the header claims; defaults to the requested one. */
+  headerEffort?: string;
   sleepMs?: number;
   /** Do not write the output file. */
   noOutput?: boolean;
@@ -52,7 +54,8 @@ const behaviour = JSON.parse(readFileSync(join(dir, "behaviour.json"), "utf8"));
 const n = readdirSync(dir).filter((f) => f.startsWith("call-")).length;
 writeFileSync(join(dir, "call-" + n + ".json"), JSON.stringify({ args, input }));
 const model = args[args.indexOf("-m") + 1];
-process.stderr.write("OpenAI Codex (fake)\\n--------\\nmodel: " + (behaviour.headerModel ?? model) + "\\n--------\\nuser\\n" + input + "\\n");
+const effort = (args[args.indexOf("-c") + 1] ?? "").replace("model_reasoning_effort=", "");
+process.stderr.write("OpenAI Codex (fake)\\n--------\\nmodel: " + (behaviour.headerModel ?? model) + "\\nreasoning effort: " + (behaviour.headerEffort ?? effort) + "\\n--------\\nuser\\n" + input + "\\n");
 if (behaviour.stderr) process.stderr.write(behaviour.stderr + "\\n");
 if (behaviour.sleepMs) { const end = Date.now() + behaviour.sleepMs; while (Date.now() < end) {} }
 const answers = behaviour.answers ?? ['{"findings":[],"recheck":[]}'];
@@ -282,6 +285,7 @@ describe("review pr (acceptance 3, 4)", () => {
     const [call] = codex.calls();
     expect(codex.calls()).toHaveLength(1);
     expect(call?.args.slice(0, 5)).toEqual(["exec", "--sandbox", "read-only", "-m", "gpt-6-astra"]);
+    expect(call?.args.slice(5, 7)).toEqual(["-c", "model_reasoning_effort=high"]);
     expect(call?.args).toEqual(
       expect.arrayContaining(["--ephemeral", "--output-schema", "-o", "-C"]),
     );
@@ -335,6 +339,7 @@ describe("review pr (acceptance 3, 4)", () => {
       {},
     ],
     ["model-switch", { headerModel: "gpt-4-other" }, {}, {}],
+    ["effort-mismatch", { headerEffort: "xhigh" }, {}, {}],
     ["unparsable", { answers: ["Here are my findings: none"] }, {}, {}],
     ["unparsable", { exit: 1, noOutput: true, stderr: "boom" }, {}, {}],
   ])(
@@ -396,7 +401,8 @@ describe("review pr (acceptance 3, 4)", () => {
       tools: t,
       codexEnv: codex.env,
     });
-    expect(result.data).toMatchObject({ trigger: "size", model: "gpt-5.6-sol" });
+    expect(result.data).toMatchObject({ trigger: "size", model: "gpt-5.6-sol", effort: "medium" });
+    expect(codex.calls()[0]?.args).toContain("model_reasoning_effort=medium");
   });
 
   it("a new directory under modulesRoot triggers size; an existing one does not", async () => {
@@ -429,6 +435,7 @@ describe("review pr (acceptance 3, 4)", () => {
       pr: 12,
       head: "old",
       model: "gpt-6-astra",
+      effort: "high",
       trigger: "risk:auth",
       round: 1,
       range: "origin/main...HEAD",
@@ -450,6 +457,7 @@ describe("review pr (acceptance 3, 4)", () => {
 
     const [call] = codex.calls();
     expect(call?.args[call.args.indexOf("-m") + 1]).toBe("gpt-6-astra");
+    expect(call?.args).toContain("model_reasoning_effort=high");
     expect(call?.input).toContain("Mode: recheck");
     expect(call?.input).toContain('"id": "CX1"');
     expect(result.exit).toBe(EXIT.OK);
@@ -529,6 +537,7 @@ describe("review batch (acceptance 5)", () => {
     });
     const result = await runReview(context(r.root, ["batch"]), { tools: t, codexEnv: codex.env });
     expect(result.data).toMatchObject({ reviewedPrs: [1], included: 1 });
+    expect(result.data).toMatchObject({ model: "gpt-5.6-sol", effort: "medium" });
     const [call] = codex.calls();
     expect(call?.input).toContain("src/two.ts");
     expect(call?.input).not.toContain("src/one.ts");

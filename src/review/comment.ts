@@ -30,6 +30,8 @@ export interface ReviewMarker {
   pr: number;
   head: string;
   model: string;
+  /** Reasoning effort of the run; absent in markers written before it existed. */
+  effort?: string;
   trigger: string;
   round: number;
   findings: MarkerFinding[];
@@ -96,6 +98,7 @@ export interface ReviewCommentInput {
   pr: number;
   head: string;
   model: string;
+  effort: string;
   trigger: string;
   round: number;
   range: string;
@@ -125,6 +128,7 @@ export function renderReviewComment(input: ReviewCommentInput): string {
     pr: input.pr,
     head: input.head,
     model: input.model,
+    effort: input.effort,
     trigger: input.trigger,
     round: input.round,
     findings: markerFindings(input.findings),
@@ -147,6 +151,8 @@ export function renderReviewComment(input: ReviewCommentInput): string {
 
 export interface RecheckCommentInput {
   prior: ReviewMarker;
+  /** Effort the recheck ran with. */
+  effort: string;
   head: string;
   range: string;
   durationMs: number;
@@ -162,6 +168,7 @@ export function renderRecheckComment(input: RecheckCommentInput): string {
     pr: input.prior.pr,
     head: input.head,
     model: input.prior.model,
+    effort: input.effort,
     trigger: input.prior.trigger,
     round,
     findings: input.open,

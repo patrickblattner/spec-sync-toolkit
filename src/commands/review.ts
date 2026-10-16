@@ -143,6 +143,7 @@ async function runPr(run: Run, pos: string[]): Promise<CommandResult> {
   const base = { mode, pr, range, files: size.files, lines: size.lines };
 
   let model: string;
+  let effort: string;
   let trigger: string;
   let areas: string[];
   const prior = recheck
@@ -157,6 +158,9 @@ async function runPr(run: Run, pos: string[]): Promise<CommandResult> {
       );
     }
     ({ model, trigger } = prior);
+    // Markers written before `effort` existed: the effort of the model kind.
+    effort =
+      prior.effort ?? (model === review.models.risk ? review.effort.risk : review.effort.size);
     areas = [];
   } else {
     const decision = decide(entries, isNewModule(deps.tools, review, range), review);
@@ -171,14 +175,14 @@ async function runPr(run: Run, pos: string[]): Promise<CommandResult> {
         data: { ...base, outcome: "not-triaged", trigger: "not-triaged" },
       };
     }
-    ({ model, trigger, areas } = decision);
+    ({ model, effort, trigger, areas } = decision);
   }
 
   if (ctx.flags.dryRun) {
     return {
       ok: true,
       notes: ["dry run — no Codex call, no comment, no ledger event"],
-      data: { ...base, model, trigger, outcome: "dry-run" },
+      data: { ...base, model, effort, trigger, outcome: "dry-run" },
     };
   }
 
@@ -193,7 +197,7 @@ async function runPr(run: Run, pos: string[]): Promise<CommandResult> {
     DIFF: diff,
     PRIOR: prior === undefined ? "none" : JSON.stringify(prior.findings, null, 2),
   });
-  const answer = callEngine(run, logDir, model, prompt, "codex");
+  const answer = callEngine(run, logDir, model, effort, prompt, "codex");
 
   if (!answer.ok) {
     const notes = [`skipped — ${answer.class}: ${answer.detail}`];
@@ -211,6 +215,7 @@ async function runPr(run: Run, pos: string[]): Promise<CommandResult> {
       pr,
       mode,
       model,
+      effort,
       trigger,
       outcome: "skipped",
       class: answer.class,
@@ -221,7 +226,7 @@ async function runPr(run: Run, pos: string[]): Promise<CommandResult> {
       exit: EXIT.OK,
       notes,
       logDir,
-      data: { ...base, model, trigger, outcome: "skipped", class: answer.class },
+      data: { ...base, model, effort, trigger, outcome: "skipped", class: answer.class },
     };
   }
 
@@ -240,6 +245,7 @@ async function runPr(run: Run, pos: string[]): Promise<CommandResult> {
     }
     body = renderRecheckComment({
       prior,
+      effort,
       head,
       range,
       durationMs: answer.durationMs,
@@ -255,6 +261,7 @@ async function runPr(run: Run, pos: string[]): Promise<CommandResult> {
       pr,
       head,
       model,
+      effort,
       trigger,
       round: 1,
       range,
@@ -278,6 +285,7 @@ async function runPr(run: Run, pos: string[]): Promise<CommandResult> {
     pr,
     mode,
     model,
+    effort,
     trigger,
     outcome,
     counts,
@@ -289,7 +297,7 @@ async function runPr(run: Run, pos: string[]): Promise<CommandResult> {
     exit: blocking ? EXIT.FAILED : EXIT.OK,
     notes,
     logDir,
-    data: { ...base, model, trigger, outcome, counts, findings: listed, downgraded },
+    data: { ...base, model, effort, trigger, outcome, counts, findings: listed, downgraded },
   };
 }
 
@@ -426,8 +434,15 @@ async function runBatch(run: Run, pos: string[]): Promise<CommandResult> {
 
   const chunks = buildChunks(tools, from, to, included, included.length === commits.length, review);
   const files = [...new Set(chunks.flatMap((chunk) => chunk.files))];
-  const { model, trigger, areas } = decideAlways(files, review);
-  const plan = { ...base, included: included.length, chunks: chunks.length, model, trigger };
+  const { model, effort, trigger, areas } = decideAlways(files, review);
+  const plan = {
+    ...base,
+    included: included.length,
+    chunks: chunks.length,
+    model,
+    effort,
+    trigger,
+  };
 
   if (ctx.flags.dryRun) {
     return {
@@ -438,7 +453,7 @@ async function runBatch(run: Run, pos: string[]): Promise<CommandResult> {
   }
 
   const logDir = newLogDir(run);
-  const result = runChunks(run, logDir, "batch", chunks, model, areas);
+  const result = runChunks(run, logDir, "batch", chunks, model, effort, areas);
   const notes: string[] = [];
   if (result.skipped !== undefined) {
     notes.push(
@@ -494,6 +509,7 @@ async function runBatch(run: Run, pos: string[]): Promise<CommandResult> {
   ledger(run, {
     mode: "batch",
     model,
+    effort,
     trigger,
     outcome,
     class: result.skipped?.class,
@@ -597,6 +613,7 @@ function runChunks(
   mode: string,
   chunks: readonly Chunk[],
   model: string,
+  effort: string,
   areas: readonly string[],
 ): ChunkResult {
   const findings: Finding[] = [];
@@ -611,7 +628,7 @@ function runChunks(
       DIFF: chunk.diff,
       PRIOR: "none",
     });
-    const answer = callEngine(run, logDir, model, prompt, `codex-${index + 1}`);
+    const answer = callEngine(run, logDir, model, effort, prompt, `codex-${index + 1}`);
     if (!answer.ok) {
       return { findings, downgraded, skipped: { class: answer.class, detail: answer.detail } };
     }
@@ -681,8 +698,8 @@ async function runTag(run: Run, pos: string[]): Promise<CommandResult> {
   }
   const chunks = buildChunks(tools, from, to, commits, true, review);
   const files = [...new Set(chunks.flatMap((chunk) => chunk.files))];
-  const { model, trigger, areas } = decideAlways(files, review);
-  const plan = { ...base, files: files.length, chunks: chunks.length, model, trigger };
+  const { model, effort, trigger, areas } = decideAlways(files, review);
+  const plan = { ...base, files: files.length, chunks: chunks.length, model, effort, trigger };
 
   if (ctx.flags.dryRun) {
     return {
@@ -693,9 +710,16 @@ async function runTag(run: Run, pos: string[]): Promise<CommandResult> {
   }
 
   const logDir = newLogDir(run);
-  const result = runChunks(run, logDir, "tag", chunks, model, areas);
+  const result = runChunks(run, logDir, "tag", chunks, model, effort, areas);
   if (result.skipped !== undefined) {
-    ledger(run, { mode: "tag", model, trigger, outcome: "skipped", class: result.skipped.class });
+    ledger(run, {
+      mode: "tag",
+      model,
+      effort,
+      trigger,
+      outcome: "skipped",
+      class: result.skipped.class,
+    });
     return {
       ok: true,
       exit: EXIT.OK,
@@ -724,7 +748,7 @@ async function runTag(run: Run, pos: string[]): Promise<CommandResult> {
   const issue = createIssue(tools, run, logDir, title, body, labels, "tag");
 
   const outcome: Outcome = result.findings.length > 0 ? "findings" : "clean";
-  ledger(run, { mode: "tag", model, trigger, outcome, counts });
+  ledger(run, { mode: "tag", model, effort, trigger, outcome, counts });
   const blocking = result.findings.some(isBlocking);
   return {
     ok: !blocking,
@@ -814,11 +838,13 @@ function callEngine(
   run: Run,
   logDir: string,
   model: string,
+  effort: string,
   prompt: string,
   name: string,
 ): EngineAnswer {
   const result = runCodex({
     model,
+    effort,
     prompt,
     root: run.ctx.repoRoot,
     logDir: join(run.ctx.repoRoot, logDir),
@@ -842,6 +868,7 @@ interface ReviewEvent {
   pr?: number;
   mode: string;
   model?: string;
+  effort?: string;
   trigger: string;
   outcome: Outcome;
   class?: FailureClass;
