@@ -37,6 +37,9 @@ import { STATE_DIR } from "./logs.js";
  * `DECISION (ledger-tolerant-reader)` was written for: it is not in the table of
  * §8, and a reader built against that table has to skip it rather than call the
  * line malformed.
+ *
+ * `review` (SST-DESIGN-030) is one event per `spec-sync review` run: mode,
+ * model, trigger, outcome, failure class, counts, duration and `overrunMs`.
  */
 export const LEDGER_EVENT_TYPES = [
   "drift",
@@ -47,6 +50,7 @@ export const LEDGER_EVENT_TYPES = [
   "merge-completed",
   "blocked",
   "context",
+  "review",
 ] as const;
 
 export type LedgerEventType = (typeof LEDGER_EVENT_TYPES)[number];

@@ -14,10 +14,11 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import picomatch from "picomatch";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import type { Command, CommandContext, CommandResult } from "../cli.js";
-import { loadConfig, type Config } from "../config.js";
+import { CONFIG_FILENAME, LEGACY_REVIEW_KEYS, loadConfig, type Config } from "../config.js";
 import { readLedger } from "../ledger.js";
 import { createLogDir, protectedLogDirs, writePhaseLog } from "../logs.js";
 import { checkNormDrift, parsePins } from "../norms.js";
@@ -91,6 +92,7 @@ export async function runDoctor(ctx: CommandContext, deps: DoctorDeps): Promise<
   }
 
   checkLabels(ctx, deps.tools, add, notes);
+  checkReview(ctx, deps.tools, add);
   checkPins(ctx.repoRoot, add);
   await checkNormHash(deps.tools, add);
   checkPause(ctx.repoRoot, add);
@@ -277,6 +279,49 @@ function checkLabels(ctx: CommandContext, tools: Tools, add: Add, notes: string[
   for (const [key, label] of missing) add("labels", `${key} label "${label}" does not exist here`);
   if (missing.length === 0)
     notes.push(`${Object.keys(config.labels).length} configured labels exist`);
+}
+
+/**
+ * The `review` block (SST-DESIGN-030 §Config): legacy keys of the former
+ * per-repo review scripts are ignored by the schema, so they are reported here;
+ * and a risk glob that matches no tracked file guards nothing. A config that
+ * does not load is already a finding of `checkLabels`.
+ */
+function checkReview(ctx: CommandContext, tools: Tools, add: Add): void {
+  let raw: unknown;
+  let config: Config;
+  try {
+    const path = ctx.flags.config ?? CONFIG_FILENAME;
+    raw = JSON.parse(readFileSync(isAbsolute(path) ? path : join(ctx.repoRoot, path), "utf8"));
+    config = loadConfig(ctx.repoRoot, ctx.flags.config);
+  } catch {
+    return;
+  }
+
+  const block = (raw as { review?: unknown }).review;
+  if (block !== null && typeof block === "object" && !Array.isArray(block)) {
+    for (const key of LEGACY_REVIEW_KEYS) {
+      if (key in block) {
+        add("review-config", `review.${key} is a legacy key and is ignored — remove it`);
+      }
+    }
+  }
+
+  const areas = Object.entries(config.review.riskGlobs);
+  if (areas.length === 0) return;
+  const listed = tools.run("git", ["ls-files"]);
+  if (!listed.ok) {
+    add("review-globs", `git ls-files failed: ${failureLine(listed)}`);
+    return;
+  }
+  const files = listed.stdout.split("\n").filter((line) => line !== "");
+  for (const [area, globs] of areas) {
+    for (const glob of globs) {
+      if (!files.some((file) => picomatch.isMatch(file, glob))) {
+        add("review-globs", `riskGlobs.${area} "${glob}" matches no file`);
+      }
+    }
+  }
 }
 
 function checkPins(repoRoot: string, add: Add): void {

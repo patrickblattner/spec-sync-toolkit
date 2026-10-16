@@ -82,6 +82,8 @@ interface RepoOptions {
   omitConfig?: boolean;
   /** Ledger lines, written verbatim to `.spec-sync/ledger.jsonl`. */
   ledger?: unknown[];
+  /** The `review` block of the config (SST-DESIGN-030). */
+  review?: unknown;
 }
 
 const config = {
@@ -100,7 +102,10 @@ const config = {
 function fakeRepo(options: RepoOptions = {}): string {
   const root = mkdtempSync(join(tmpdir(), "spec-sync-doctor-"));
   if (options.omitConfig !== true) {
-    writeFileSync(join(root, "spec-sync.config.json"), JSON.stringify(config));
+    writeFileSync(
+      join(root, "spec-sync.config.json"),
+      JSON.stringify(options.review === undefined ? config : { ...config, review: options.review }),
+    );
   }
   if (options.pins !== null) {
     const content =
@@ -145,6 +150,8 @@ interface GitModel {
   /** Markers that `git grep` finds on `main`. */
   onMain?: string[];
   noMain?: boolean;
+  /** `git ls-files` output for the review-glob check. */
+  lsFiles?: string[];
 }
 
 function fakeTools(fakes: SpecFakes = {}): Tools {
@@ -157,6 +164,7 @@ function fakeTools(fakes: SpecFakes = {}): Tools {
       if (file === "git") {
         const [command] = args;
         if (command === "worktree") return ok(git.worktrees ?? "");
+        if (command === "ls-files") return ok((git.lsFiles ?? []).join("\n"));
         if (command === "rev-parse" && args[1] === "--path-format=absolute") {
           return git.commonDir === undefined ? fail() : ok(`${git.commonDir}\n`);
         }
@@ -772,5 +780,40 @@ describe("parseEffortTable", () => {
 
   it("finds no table in a document that has none", () => {
     expect(parseEffortTable("# Just prose\n\nNo table.\n")).toEqual([]);
+  });
+});
+
+describe("doctor — review block (SST-DESIGN-030 §Config)", () => {
+  it("reports legacy review keys and risk globs that match no file", async () => {
+    const root = fakeRepo({
+      review: {
+        cmd: "codex exec --sandbox read-only",
+        mark: "review/last",
+        riskGlobs: { auth: ["server/auth/**", "server/gone/**"] },
+      },
+    });
+    const result = await runDoctor(
+      context(root),
+      deps(fakeHome(), fakeTools({ git: { lsFiles: ["server/auth/login.ts", "README.md"] } })),
+    );
+    const findings = findingsOf(result.data);
+    expect(findings).toContain(
+      "review-config: review.cmd is a legacy key and is ignored — remove it",
+    );
+    expect(findings).toContain(
+      "review-config: review.mark is a legacy key and is ignored — remove it",
+    );
+    expect(findings).toContain('review-globs: riskGlobs.auth "server/gone/**" matches no file');
+    expect(findings.some((finding) => finding.includes("server/auth/**"))).toBe(false);
+    expect(result.exit).toBe(EXIT.FAILED);
+  });
+
+  it("is silent for a current review block", async () => {
+    const root = fakeRepo({ review: { riskGlobs: { auth: ["server/auth/**"] } } });
+    const result = await runDoctor(
+      context(root),
+      deps(fakeHome(), fakeTools({ git: { lsFiles: ["server/auth/login.ts"] } })),
+    );
+    expect(findingsOf(result.data)).toEqual([]);
   });
 });

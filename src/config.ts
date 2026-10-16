@@ -53,6 +53,48 @@ const labelsSchema = z.object({
   blocked: z.string().min(1).default("blocked"),
 });
 
+/**
+ * The `review` block (SST-DESIGN-030). Optional and non-strict: unknown keys
+ * are stripped, so the legacy keys of the per-repo review scripts (`engine`,
+ * `cmd`, `promptTemplate`, `batchLenses`, `uiLens`, `mark`) pass and are
+ * ignored — `doctor` reports them.
+ */
+const reviewSchema = z.object({
+  /** Risk areas: `{area: [glob]}` (picomatch). */
+  riskGlobs: z.record(z.string(), z.array(z.string().min(1))).default({}),
+  models: z
+    .object({
+      risk: z.string().min(1).default("gpt-6-astra"),
+      size: z.string().min(1).default("gpt-5.6-sol"),
+    })
+    .prefault({}),
+  size: z
+    .object({
+      files: z.number().int().positive().default(15),
+      lines: z.number().int().positive().default(600),
+    })
+    .prefault({}),
+  /** Text and translation files that do not count toward size, on top of `*.md`. */
+  textGlobs: z.array(z.string().min(1)).default([]),
+  /** Directory whose new subdirectories count as a new module. */
+  modulesRoot: z.string().min(1).optional(),
+  marker: z.string().min(1).default("review/last"),
+  label: z.string().min(1).default("review-codex"),
+  securityLabel: z.string().min(1).default("security"),
+  timeoutMs: z.number().int().positive().default(900000),
+  maxDiffBytes: z.number().int().positive().default(400000),
+});
+
+/** Keys of former per-repo review scripts — ignored, reported by `doctor`. */
+export const LEGACY_REVIEW_KEYS = [
+  "engine",
+  "cmd",
+  "promptTemplate",
+  "batchLenses",
+  "uiLens",
+  "mark",
+] as const;
+
 const configSchema = z
   .object({
     project: z.string().min(1),
@@ -87,6 +129,7 @@ const configSchema = z
      * not applying to it (SST-DESIGN-025 rev 5). No default list.
      */
     pinExclude: z.array(z.string().min(1)).optional(),
+    review: reviewSchema.prefault({}),
   })
   .superRefine((config, ctx) => {
     // A profile may only name phases that exist — otherwise `gate --profile x`
@@ -107,6 +150,7 @@ const configSchema = z
 
 export type Config = z.infer<typeof configSchema>;
 export type GatePhase = z.infer<typeof phaseSchema>;
+export type ReviewConfig = z.infer<typeof reviewSchema>;
 
 /**
  * Loads and validates the config. Every failure path — missing file, broken

@@ -25,6 +25,7 @@ import { driftCommand } from "./drift.js";
 import { coverCommand } from "./cover.js";
 import { mapCommand } from "./map.js";
 import { measureCommand } from "./measure.js";
+import { reviewCommand } from "./review.js";
 
 export const ALL_COMMANDS: readonly Command[] = [
   gateCommand,
@@ -41,4 +42,5 @@ export const ALL_COMMANDS: readonly Command[] = [
   coverCommand,
   mapCommand,
   measureCommand,
+  reviewCommand,
 ];

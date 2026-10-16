@@ -37,6 +37,10 @@ spec-sync map extract [<repo-root>] [--out <dir>] [--meaning <file>] [--project 
 spec-sync map check [<repo-root>] [--meaning <file>] [--project <id>]
 spec-sync measure set <file> <pointer> <value> --register <n> [--server <url>]
 spec-sync measure remove <file> <pointer> --register <n> [--server <url>]
+spec-sync review pr <n> [--issue <t>] [--recheck]
+spec-sync review batch [--dry-run]
+spec-sync review tag <from>..<to>
+spec-sync review verdict <pr|issue> <n> <id> (accepted (fixed|ticket <t>) | rejected "<reason>") [--source claude:<lens>]
 ```
 
 `measure` changes a file a gate step measures against — size limits, coverage stock, hygiene
@@ -50,6 +54,14 @@ strings may name the string itself (`/entries/ad-catalog-filter-help`). The file
 text edits of the touched values only, every other byte stays. Each call appends one
 line to `.spec-sync/measure-changes.jsonl` — committed like `drift-coverage.jsonl`, so the
 consuming repo re-includes it in its `.gitignore`. It never commits and never touches the gate.
+
+`review` is the only way a repo calls Codex (SST-DESIGN-030, PROC-DEV-049): it triages the diff
+(risk areas → `models.risk`, large diff or new module → `models.size`, else no call), runs
+`codex exec --sandbox read-only -m <model>` with the prompt on stdin, and posts the strict result as
+a PR comment (`pr`), as deduplicated issues (`batch`, over `review/last..origin/main`) or as one issue
+per tag (`tag`). Every engine failure is a skip with exit 0 — never another model. Exit 1 means a
+critical or high finding is open. Configuration lives in the optional `review` block of
+`spec-sync.config.json`.
 
 `--reason budget` is bound to the measurement: it is only written when the ledger's newest
 `context` level reaches at least 75 % of the configured context budget —
