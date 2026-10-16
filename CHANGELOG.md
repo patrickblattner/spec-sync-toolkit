@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.26.0
 
 ### Added
 
@@ -19,7 +19,7 @@
 
 ### Migration for the apps (production-cockpit, community-platform)
 
-1. Bump the pin: `npm install -D github:patrickblattner/spec-sync-toolkit#v<new>` (an explicit
+1. Bump the pin: `npm install -D github:patrickblattner/spec-sync-toolkit#v0.26.0` (an explicit
    install — a tag change in `package.json` alone does not refetch).
 2. Rewrite the `review` block of `spec-sync.config.json`: keep `riskGlobs` (and `marker`,
    `label`, `securityLabel`, `timeoutMs` if they differ from the defaults); delete `engine`,
