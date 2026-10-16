@@ -68,11 +68,12 @@ const reviewSchema = z.object({
       size: z.string().min(1).default("gpt-5.6-sol"),
     })
     .prefault({}),
-  /** Reasoning effort per model kind — overrides the user's Codex default on every call. */
+  /** Reasoning effort per model kind — overrides the user's Codex default on every call.
+   *  Capped at `high` (owner rule): `xhigh` and above are rejected. */
   effort: z
     .object({
-      risk: z.string().min(1).default("high"),
-      size: z.string().min(1).default("medium"),
+      risk: z.enum(["low", "medium", "high"]).default("high"),
+      size: z.enum(["low", "medium", "high"]).default("medium"),
     })
     .prefault({}),
   size: z

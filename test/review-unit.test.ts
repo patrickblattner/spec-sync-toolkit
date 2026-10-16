@@ -78,6 +78,14 @@ describe("review config (SST-DESIGN-030 §Config)", () => {
     expect(review.riskGlobs).toEqual({ auth: ["server/auth/**"] });
     expect("cmd" in review).toBe(false);
   });
+
+  it("rejects an effort above high (owner cap)", () => {
+    expect(() => reviewConfig({ effort: { risk: "xhigh" } })).toThrow();
+    expect(reviewConfig({ effort: { risk: "medium", size: "low" } }).effort).toEqual({
+      risk: "medium",
+      size: "low",
+    });
+  });
 });
 
 describe("triage (acceptance 1)", () => {
