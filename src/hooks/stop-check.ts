@@ -53,6 +53,7 @@ const decision = decideStop({
   claimsBoundary,
   findings: () => workbenchFindings(cwd),
   acceptance: () => askAcceptance({ kind: "stop", message, cwd }),
+  sessionId: input.session_id ? String(input.session_id) : null,
 });
 
 if (decision.action === "block") {

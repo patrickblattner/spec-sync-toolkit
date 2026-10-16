@@ -123,9 +123,19 @@ export interface UsageWindow {
   percent: number;
 }
 
-const HANDOVER_INSTRUCTION =
-  "Write `npx spec-sync handover --reason budget` NOW and end the turn afterwards. " +
-  "Start nothing else — the context is at budget.";
+/**
+ * The dictated handover names the hook's OWN session (PROC-DEV-037 rev 10): with parallel sessions
+ * in one repo slug the newest ledger measurement can be a foreign one, and only `--session` makes
+ * the handover measure the session that was blocked. Without a known id the bare command stays.
+ */
+export function handoverInstruction(sessionId: string | null = null): string {
+  const session = sessionId === null ? "" : ` --session ${sessionId}`;
+  return (
+    (sessionId === null ? "" : `This session: ${sessionId}. `) +
+    `Write \`npx spec-sync handover --reason budget${session}\` NOW and end the turn afterwards. ` +
+    "Start nothing else — the context is at budget."
+  );
+}
 
 /**
  * The valve chain of the stop hook, as one decision.
@@ -161,6 +171,7 @@ export function decideStop({
   claimsBoundary = false,
   findings = () => [],
   acceptance = () => null,
+  sessionId = null,
 }: {
   paused?: boolean;
   handoverAgeMin?: number | null;
@@ -171,6 +182,8 @@ export function decideStop({
   claimsBoundary?: boolean;
   findings?: () => string[];
   acceptance?: () => AcceptanceVerdict | null;
+  /** The hook input's `session_id`; named in the budget block. */
+  sessionId?: string | null;
 }): HookDecision {
   if (paused) return { action: "allow", stage: "pause" };
 
@@ -184,7 +197,7 @@ export function decideStop({
     return {
       action: "block",
       stage: "budget",
-      reason: `stop-check: context at ${Math.round(percent)} % of the budget. ${HANDOVER_INSTRUCTION}`,
+      reason: `stop-check: context at ${Math.round(percent)} % of the budget. ${handoverInstruction(sessionId)}`,
     };
 
   // Gate for EVERYTHING behind it: only one boundary claim is checked. An interim status, a

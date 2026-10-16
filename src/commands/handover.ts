@@ -1,7 +1,7 @@
 /**
  * `handover` — the bridge to the next session (spec §7.9).
  *
- * `spec-sync handover [--note <text>] [--reason <wert>]`
+ * `spec-sync handover [--note <text>] [--reason <wert>] [--session <id|path>]`
  *
  * Writes `.spec-sync-handover.md` into the repo root. Tiny, because the DoD
  * proves that all state lives outside it; the file is a **snapshot** and is
@@ -17,11 +17,19 @@
  */
 
 import { existsSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { simpleGit } from "simple-git";
 import type { Command, CommandContext, CommandResult } from "../cli.js";
 import type { Config } from "../config.js";
-import { contextIncrements, derive, latestContextEvent } from "../budget.js";
+import {
+  contextIncrements,
+  derive,
+  latestContextEvent,
+  readContext,
+  resolveTranscript,
+  sessionIdOf,
+} from "../budget.js";
 import { readLedger, type LedgerEvent } from "../ledger.js";
 import { loadNorms } from "../norms.js";
 import { EXIT, ToolkitError } from "../output.js";
@@ -63,6 +71,8 @@ export const BUDGET_REASON_MIN_PERCENT = 75;
 export interface HandoverOptions {
   note?: string;
   reason?: HandoverReason;
+  /** The session to measure — id or transcript path, as `budget --session` takes it. */
+  session?: string;
 }
 
 export interface HandoverDeps {
@@ -70,10 +80,14 @@ export interface HandoverDeps {
   /** `<short hash> <subject>` of `main`, or undefined when unreadable. */
   mainHead: () => Promise<string | undefined>;
   now: () => Date;
+  /** Home directory holding `.claude/projects` — a seam for tests. */
+  home: string;
+  /** The calling session's id when the client names it (`CLAUDE_CODE_SESSION_ID`). */
+  sessionId?: string;
 }
 
 export function parseHandoverOptions(args: string[]): HandoverOptions {
-  checkFlags(args, ["--note", "--reason"]);
+  checkFlags(args, ["--note", "--reason", "--session"]);
   const reason = valueFlag(args, "--reason");
   // Spec §7.9 asks for exit 1 on an unknown *value*, where `checkFlags` answers
   // an unknown *option* with exit 4. The distinction is the spec's, not ours.
@@ -84,7 +98,11 @@ export function parseHandoverOptions(args: string[]): HandoverOptions {
       { field: "--reason" },
     );
   }
-  return { note: valueFlag(args, "--note"), reason: reason as HandoverReason | undefined };
+  return {
+    note: valueFlag(args, "--note"),
+    reason: reason as HandoverReason | undefined,
+    session: valueFlag(args, "--session"),
+  };
 }
 
 /**
@@ -109,6 +127,72 @@ export function openMerges(events: LedgerEvent[]): { issue: number; at: string }
   return [...started.entries()]
     .map(([issue, at]) => ({ issue, at }))
     .sort((a, b) => a.issue - b.issue);
+}
+
+interface Measurement {
+  value: number;
+  at: string;
+  /** The session the value belongs to; absent for a ledger event written before rev 10. */
+  session?: string;
+}
+
+/**
+ * The context measurement the handover carries — always the writing session's
+ * own (PROC-DEV-037 rev 10). In this order:
+ *
+ * 1. `--session` names the session → its transcript is measured now, with the
+ *    same code as `budget --session`. Errors propagate: a named session that
+ *    cannot be read is the caller's mistake to see.
+ * 2. The client names the calling session → that transcript is measured now;
+ *    if it cannot be read, the newest ledger event **of that session** stands
+ *    in. A foreign session's event never does.
+ * 3. `--reason budget` with no session known → measured like `budget` does:
+ *    parallel fresh transcripts end in exit 3 ("name one with --session").
+ *    No transcript at all leaves the measurement missing, which refuses.
+ * 4. Any other reason with no session known → the newest ledger event, as
+ *    before; it attests nothing.
+ */
+function ownMeasurement(
+  repoRoot: string,
+  deps: HandoverDeps,
+  options: HandoverOptions,
+  events: LedgerEvent[],
+): Measurement | undefined {
+  const measure = (session: string | undefined): Measurement => {
+    const resolved = resolveTranscript(repoRoot, deps.home, session, deps.now().getTime());
+    return {
+      value: readContext(resolved.file).context,
+      at: deps.now().toISOString(),
+      session: sessionIdOf(resolved.file),
+    };
+  };
+  const fromLedger = (event: LedgerEvent | undefined): Measurement | undefined =>
+    event === undefined
+      ? undefined
+      : {
+          value: typeof event.context === "number" ? event.context : 0,
+          at: event.at,
+          ...(typeof event.session === "string" ? { session: event.session } : {}),
+        };
+  const unlessMissing = (
+    session: string | undefined,
+    fallback: () => Measurement | undefined,
+  ): Measurement | undefined => {
+    try {
+      return measure(session);
+    } catch (error) {
+      if (error instanceof ToolkitError && error.exit === EXIT.PRECONDITION) return fallback();
+      throw error;
+    }
+  };
+
+  if (options.session !== undefined) return measure(options.session);
+  if (deps.sessionId !== undefined) {
+    const own = deps.sessionId;
+    return unlessMissing(own, () => fromLedger(latestContextEvent(events, own)));
+  }
+  if (options.reason === "budget") return unlessMissing(undefined, () => undefined);
+  return fromLedger(latestContextEvent(events));
 }
 
 interface PinsState {
@@ -140,6 +224,7 @@ export function renderHandover(input: {
   context?: {
     value: number;
     at: string;
+    session?: string;
     p90PerTicket: number | null;
     forecastTickets: number | null;
   };
@@ -177,7 +262,9 @@ export function renderHandover(input: {
   if (input.context === undefined) {
     lines.push("no measurement — no `context` event in the ledger.");
   } else {
+    // The harness parses this line as the attestation — its shape is a contract.
     lines.push(`- State: ${input.context.value} Tokens (measured ${input.context.at})`);
+    lines.push(`- Session: ${input.context.session ?? "not named"}`);
     lines.push(
       `- growth per ticket (p90): ${input.context.p90PerTicket ?? "not computable (under 5 measurement points)"}`,
     );
@@ -244,7 +331,7 @@ export async function runHandover(
   options: HandoverOptions,
 ): Promise<CommandResult> {
   const events = readLedger(ctx.repoRoot).events;
-  const latest = latestContextEvent(events);
+  const measured = ownMeasurement(ctx.repoRoot, deps, options, events);
 
   let queueHead: { issue: number; title: string }[] = [];
   let needsPin = 0;
@@ -265,23 +352,18 @@ export async function runHandover(
   }
 
   const context =
-    latest === undefined
+    measured === undefined
       ? undefined
       : {
-          value: typeof latest.context === "number" ? latest.context : 0,
-          at: latest.at,
-          ...derive(
-            typeof latest.context === "number" ? latest.context : 0,
-            config.contextBudget,
-            contextIncrements(events),
-          ),
+          ...measured,
+          ...derive(measured.value, config.contextBudget, contextIncrements(events)),
         };
 
   if (options.reason === "budget") {
     const min = Math.round((config.contextBudget * BUDGET_REASON_MIN_PERCENT) / 100);
     if (context === undefined || context.value < min) {
       throw new ToolkitError(
-        `--reason budget refused — context measurement ${context?.value ?? "missing"} tokens < ${min} (${BUDGET_REASON_MIN_PERCENT} % of ${config.contextBudget}); alternatives: --reason question-open (with a question id in --note) or a handover without --reason (a queue that cannot be built is not a boundary, PROC-DEV-035).`,
+        `--reason budget refused — context measurement ${context?.value ?? "missing"} tokens < ${min} (${BUDGET_REASON_MIN_PERCENT} % of ${config.contextBudget})${context?.session === undefined ? "" : ` of session ${context.session}`}; a parallel session? name your own with --session <id>; alternatives: --reason question-open (with a question id in --note) or a handover without --reason (a queue that cannot be built is not a boundary, PROC-DEV-035).`,
         EXIT.FAILED,
         { field: "--reason" },
       );
@@ -339,7 +421,13 @@ export const handoverCommand: Command = {
     return runHandover(
       ctx,
       config,
-      { queue: queueDeps(ctx), mainHead: mainHeadReader(ctx.repoRoot), now: () => new Date() },
+      {
+        queue: queueDeps(ctx),
+        mainHead: mainHeadReader(ctx.repoRoot),
+        now: () => new Date(),
+        home: homedir(),
+        sessionId: process.env.CLAUDE_CODE_SESSION_ID || undefined,
+      },
       options,
     );
   },

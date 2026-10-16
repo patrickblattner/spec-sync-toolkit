@@ -31,7 +31,7 @@ spec-sync lenses [--base main]
 spec-sync report [--run <id>]
 spec-sync doctor
 spec-sync budget [--session <id|path>] [--label <text>]
-spec-sync handover [--note <text>] [--reason <budget|done|red-2x|question-open|pause|unexpected>]
+spec-sync handover [--note <text>] [--reason <budget|done|red-2x|question-open|pause|unexpected>] [--session <id|path>]
 spec-sync repin [--ids <a,b>] [--server <url>]
 spec-sync map extract [<repo-root>] [--out <dir>] [--meaning <file>] [--project <id>]
 spec-sync map check [<repo-root>] [--meaning <file>] [--project <id>]
@@ -63,9 +63,16 @@ per tag (`tag`). Every engine failure is a skip with exit 0 — never another mo
 critical or high finding is open. Configuration lives in the optional `review` block of
 `spec-sync.config.json`.
 
-`--reason budget` is bound to the measurement: it is only written when the ledger's newest
-`context` level reaches at least 75 % of the configured context budget —
+`--reason budget` is bound to the measurement: it is only written when the writing session's
+own context level reaches at least 75 % of the configured context budget —
 otherwise `handover` writes nothing and ends with exit 1 (SST-DESIGN-024 rev 3, PROC-DEV-037).
+The measurement is always the writing session's own (PROC-DEV-037 rev 10): `--session` measures
+that transcript freshly, like `budget --session`; without it the session the client names
+(`CLAUDE_CODE_SESSION_ID`) is measured, falling back to that session's newest ledger event;
+with no session known, parallel live transcripts end in exit 3 ("name one with --session"). A
+ledger event of a foreign session never attests. The stop hook's budget block names its own
+session and dictates `npx spec-sync handover --reason budget --session <id>`. `budget` records
+the session id on every `context` event, and the handover carries it as `- Session: <id>`.
 
 `stdout` carries exactly one JSON object (`--human` renders text instead). Full command
 output goes to `.spec-sync/logs/<timestamp>/<phase>.log`; the response carries only the exit

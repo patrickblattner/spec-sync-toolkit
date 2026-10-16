@@ -12,7 +12,13 @@
 
 import { homedir } from "node:os";
 import type { Command, CommandContext, CommandResult } from "../cli.js";
-import { derive, contextIncrements, readContext, resolveTranscript } from "../budget.js";
+import {
+  derive,
+  contextIncrements,
+  readContext,
+  resolveTranscript,
+  sessionIdOf,
+} from "../budget.js";
 import { appendEvent, readLedger } from "../ledger.js";
 import { EXIT, ToolkitError } from "../output.js";
 import { checkFlags, valueFlag } from "../pack/args.js";
@@ -48,9 +54,12 @@ export function runBudget(
 
   // Appended before the derived numbers are read back, so the measurement this
   // run reports is part of the history the next run computes from.
+  // The session id rides along so a handover never takes a foreign session's
+  // measurement for its own (PROC-DEV-037 rev 10).
   appendEvent(ctx.repoRoot, {
     type: "context",
     context,
+    session: sessionIdOf(resolved.file),
     ...(options.label === undefined ? {} : { label: options.label }),
   });
 

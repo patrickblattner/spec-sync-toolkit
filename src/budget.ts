@@ -286,9 +286,20 @@ export function derive(context: number, contextBudget: number, increments: numbe
   return { p90PerTicket: p90, forecastTickets: Math.floor((contextBudget - context) / p90) };
 }
 
-/** The newest `context` event, or `undefined` when the ledger holds none. */
-export function latestContextEvent(events: LedgerEvent[]): LedgerEvent | undefined {
+/**
+ * The newest `context` event, or `undefined` when the ledger holds none. With
+ * `session`, only that session's events count — a measurement of a foreign
+ * session never attests a handover (PROC-DEV-037 rev 10).
+ */
+export function latestContextEvent(
+  events: LedgerEvent[],
+  session?: string,
+): LedgerEvent | undefined {
   let latest: LedgerEvent | undefined;
-  for (const event of events) if (event.type === "context") latest = event;
+  for (const event of events) {
+    if (event.type !== "context") continue;
+    if (session !== undefined && event.session !== session) continue;
+    latest = event;
+  }
   return latest;
 }

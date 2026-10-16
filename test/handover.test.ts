@@ -1,4 +1,12 @@
-import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -13,6 +21,7 @@ import {
   writeAtomic,
   type HandoverDeps,
 } from "../src/commands/handover.js";
+import { projectSlug } from "../src/budget.js";
 import { appendEvent, type LedgerEvent } from "../src/ledger.js";
 import { EXIT, ToolkitError } from "../src/output.js";
 import type { CommandContext } from "../src/cli.js";
@@ -62,9 +71,35 @@ function deps(over: Partial<HandoverDeps> = {}): HandoverDeps {
     },
     mainHead: async () => "abc1234 chore: v0.6.0",
     now: () => new Date("2026-07-29T12:00:00Z"),
+    home: mkdtempSync(join(tmpdir(), "spec-sync-home-")),
     ...over,
   };
 }
+
+/** One assistant entry whose usage puts the context at `tokens`. */
+function transcriptAt(tokens: number): string {
+  return `${JSON.stringify({
+    type: "assistant",
+    message: { id: `msg-${tokens}`, usage: { input_tokens: tokens } },
+  })}\n`;
+}
+
+/**
+ * A `$HOME` whose transcript directory for `repoRoot` holds one live
+ * transcript per session id, each at the given context level.
+ */
+function homeWith(repoRoot: string, sessions: Record<string, number>): string {
+  const root = mkdtempSync(join(tmpdir(), "spec-sync-home-"));
+  const dir = join(root, ".claude", "projects", projectSlug(repoRoot));
+  mkdirSync(dir, { recursive: true });
+  for (const [id, tokens] of Object.entries(sessions)) {
+    writeFileSync(join(dir, `${id}.jsonl`), transcriptAt(tokens));
+  }
+  return root;
+}
+
+/** The handover's clock, lined up with the transcripts' real mtimes. */
+const LIVE = { now: () => new Date() };
 
 describe("the mandatory fields of §7.9", () => {
   it("names repo, time and the main HEAD with short hash and subject", () => {
@@ -272,8 +307,8 @@ describe("the handover command end to end", () => {
 describe("the machine-readable stop reason (spec §7.9, M6)", () => {
   it("writes `reason: budget` as the very first line", async () => {
     const root = repo();
-    appendEvent(root, { type: "context", context: 700_000 });
-    await runHandover(ctx(root), CONFIG, deps(), { reason: "budget" });
+    const home = homeWith(root, { own: 700_000 });
+    await runHandover(ctx(root), CONFIG, deps({ ...LIVE, home }), { reason: "budget" });
 
     const document = readFileSync(join(root, HANDOVER_FILE), "utf8");
     expect(document.split("\n")[0]).toBe("reason: budget");
@@ -306,9 +341,10 @@ describe("`--reason budget` bound to the measurement (SST-DESIGN-024 rev 3)", ()
   async function caught(
     root: string,
     options: Parameters<typeof runHandover>[3],
+    over: Partial<HandoverDeps> = {},
   ): Promise<ToolkitError> {
     try {
-      await runHandover(ctx(root), CONFIG, deps(), options);
+      await runHandover(ctx(root), CONFIG, deps(over), options);
     } catch (error) {
       if (error instanceof ToolkitError) return error;
       throw error;
@@ -318,9 +354,9 @@ describe("`--reason budget` bound to the measurement (SST-DESIGN-024 rev 3)", ()
 
   it("refuses below 75 % of the context budget with exit 1 and writes no file", async () => {
     const root = repo();
-    appendEvent(root, { type: "context", context: 599_999 }); // one under 75 % of 800_000
+    const home = homeWith(root, { own: 599_999 }); // one under 75 % of 800_000
 
-    const error = await caught(root, { reason: "budget" });
+    const error = await caught(root, { reason: "budget" }, { ...LIVE, home });
     expect(error.exit).toBe(EXIT.FAILED);
     expect(error.field).toBe("--reason");
     expect(error.message).toContain("599999");
@@ -341,9 +377,9 @@ describe("`--reason budget` bound to the measurement (SST-DESIGN-024 rev 3)", ()
 
   it("writes the file when the measurement reaches exactly 75 %", async () => {
     const root = repo();
-    appendEvent(root, { type: "context", context: 600_000 }); // exactly 75 % of 800_000
+    const home = homeWith(root, { own: 600_000 }); // exactly 75 % of 800_000
 
-    await runHandover(ctx(root), CONFIG, deps(), { reason: "budget" });
+    await runHandover(ctx(root), CONFIG, deps({ ...LIVE, home }), { reason: "budget" });
     expect(readFileSync(join(root, HANDOVER_FILE), "utf8").split("\n")[0]).toBe("reason: budget");
   });
 
@@ -361,5 +397,102 @@ describe("`--reason budget` bound to the measurement (SST-DESIGN-024 rev 3)", ()
     const result = await runHandover(ctx(root), CONFIG, deps(), {});
     expect(result.ok).toBe(true);
     expect(existsSync(join(root, HANDOVER_FILE))).toBe(true);
+  });
+});
+
+describe("the attesting measurement is the writing session's own (PROC-DEV-037 rev 10)", () => {
+  /** Two live sessions; the ledger's newest `context` event is the OTHER one's. */
+  function parallel(): { root: string; home: string } {
+    const root = repo();
+    const home = homeWith(root, { own: 808_000, other: 161_779 });
+    appendEvent(root, { type: "context", context: 808_000, session: "own" });
+    appendEvent(root, { type: "context", context: 161_779, session: "other" });
+    return { root, home };
+  }
+
+  async function caught(
+    root: string,
+    options: Parameters<typeof runHandover>[3],
+    over: Partial<HandoverDeps>,
+  ): Promise<ToolkitError> {
+    try {
+      await runHandover(ctx(root), CONFIG, deps(over), options);
+    } catch (error) {
+      if (error instanceof ToolkitError) return error;
+      throw error;
+    }
+    throw new Error("expected a ToolkitError, none was thrown");
+  }
+
+  it("accepts `--reason budget --session <own>` on its own fresh measurement", async () => {
+    const { root, home } = parallel();
+
+    await runHandover(ctx(root), CONFIG, deps({ ...LIVE, home }), {
+      reason: "budget",
+      session: "own",
+    });
+    const document = readFileSync(join(root, HANDOVER_FILE), "utf8");
+    expect(document.split("\n")[0]).toBe("reason: budget");
+    expect(document).toContain("- State: 808000 Tokens");
+    expect(document).toContain("- Session: own");
+  });
+
+  it("measures the session the client names, not the newest ledger event", async () => {
+    const { root, home } = parallel();
+
+    await runHandover(ctx(root), CONFIG, deps({ ...LIVE, home, sessionId: "own" }), {
+      reason: "budget",
+    });
+    expect(readFileSync(join(root, HANDOVER_FILE), "utf8")).toContain("- State: 808000 Tokens");
+  });
+
+  it("exits 3 naming both sessions when none is known and two are live", async () => {
+    const { root, home } = parallel();
+
+    const error = await caught(root, { reason: "budget" }, { ...LIVE, home });
+    expect(error.exit).toBe(EXIT.AMBIGUOUS);
+    expect(error.message).toContain("name one with --session");
+    expect(existsSync(join(root, HANDOVER_FILE))).toBe(false);
+  });
+
+  it("never lets a foreign session's ledger event attest", async () => {
+    const root = repo();
+    appendEvent(root, { type: "context", context: 790_000, session: "other" });
+
+    // The own transcript is not readable, the ledger holds only the other session's event.
+    const error = await caught(root, { reason: "budget" }, { sessionId: "own" });
+    expect(error.exit).toBe(EXIT.FAILED);
+    expect(error.message).toContain("missing");
+    expect(existsSync(join(root, HANDOVER_FILE))).toBe(false);
+  });
+
+  it("falls back to the own session's ledger event when its transcript is not readable", async () => {
+    const root = repo();
+    appendEvent(root, { type: "context", context: 700_000, session: "own" });
+    appendEvent(root, { type: "context", context: 100_000, session: "other" });
+
+    await runHandover(ctx(root), CONFIG, deps({ sessionId: "own" }), { reason: "budget" });
+    const document = readFileSync(join(root, HANDOVER_FILE), "utf8");
+    expect(document).toContain("- State: 700000 Tokens");
+    expect(document).toContain("- Session: own");
+  });
+
+  it("keeps the single-session case: the one live transcript is measured", async () => {
+    const root = repo();
+    const home = homeWith(root, { only: 650_000 });
+    const stale = join(home, ".claude", "projects", projectSlug(root), "old.jsonl");
+    writeFileSync(stale, transcriptAt(10_000));
+    const hourAgo = (Date.now() - 60 * 60 * 1000) / 1000;
+    utimesSync(stale, hourAgo, hourAgo);
+
+    await runHandover(ctx(root), CONFIG, deps({ ...LIVE, home }), { reason: "budget" });
+    const document = readFileSync(join(root, HANDOVER_FILE), "utf8");
+    expect(document.split("\n")[0]).toBe("reason: budget");
+    expect(document).toContain("- State: 650000 Tokens");
+    expect(document).toContain("- Session: only");
+  });
+
+  it("accepts `--session` on the command line", () => {
+    expect(parseHandoverOptions(["--reason", "budget", "--session", "abc"]).session).toBe("abc");
   });
 });

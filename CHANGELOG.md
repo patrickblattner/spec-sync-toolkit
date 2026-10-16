@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.26.1
+
+### Fixed
+
+- `handover --reason budget` no longer takes the newest ledger `context` event, which with two
+  sessions in one repo slug could be the other session's (Q&A #3647/#3648): the attesting
+  measurement is the writing session's own (PROC-DEV-037 rev 10). New option
+  `--session <id|path>` measures that transcript freshly with the code of `budget --session`;
+  without it the session named by `CLAUDE_CODE_SESSION_ID` is measured (fallback: its own newest
+  ledger event), and with no session known parallel live transcripts end in exit 3. A foreign
+  session's event never attests.
+- The stop hook's budget block names its own session id and dictates
+  `npx spec-sync handover --reason budget --session <id>`.
+
+### Changed
+
+- `budget` records `session` on every `context` ledger event; the handover's `## Context`
+  block carries `- Session: <id>` (the `- State:` line the harness parses is unchanged).
+
+### Migration for the apps
+
+Bump the pin: `npm install -D github:patrickblattner/spec-sync-toolkit#v0.26.1`.
+
 ## 0.26.0
 
 ### Added

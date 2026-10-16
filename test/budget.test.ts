@@ -322,6 +322,7 @@ describe("the budget command (spec §7.8)", () => {
     const recorded = readLedger(root).events.filter((event) => event.type === "context");
     expect(recorded).toHaveLength(1);
     expect(recorded[0]?.context).toBe(198_217);
+    expect(recorded[0]?.session).toBe("transcript-streaming");
   });
 
   it("stays exit 0 on a tight budget — tight is a finding, not a failure", () => {
