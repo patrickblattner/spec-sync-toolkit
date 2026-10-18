@@ -326,6 +326,13 @@ export function preconditions(facts: Facts, options: MergeOptions, norms: Norms)
         : undefined,
     },
     {
+      name: "no-status-deferred",
+      ok: !labels.includes(norms.deferred),
+      detail: labels.includes(norms.deferred)
+        ? `issue #${options.issue} carries "${norms.deferred}" — owner-deferred, only the owner removes it`
+        : undefined,
+    },
+    {
       name: "remote-configured",
       ok: facts.remote !== undefined,
       // The norm forbids piling up unpushed merges, so a merge without a push

@@ -14,6 +14,7 @@ describe("norm fallback (spec §6, transitional state)", () => {
     expect(NORM_DEFAULTS).toEqual({
       sortTiers: ["auto-audit", "type: bug", "started-first", "phase-asc", "issue-number-asc"],
       hold: "owner-hold",
+      deferred: "status: deferred",
       buildLabel: "spec-sync",
       startedLabel: "status: in-progress",
       mergeModel: "local-squash-single-push",

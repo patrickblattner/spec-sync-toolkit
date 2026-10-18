@@ -31,7 +31,7 @@ function repo(): string {
 }
 
 function emptySweep(over: Partial<Sweep> = {}): Sweep {
-  return { queue: [], needsPin: [], held: [], notSwept: [], labelDrift: [], ...over };
+  return { queue: [], needsPin: [], held: [], deferred: [], notSwept: [], labelDrift: [], ...over };
 }
 
 function deps(

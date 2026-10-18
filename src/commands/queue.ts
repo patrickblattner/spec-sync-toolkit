@@ -147,6 +147,8 @@ export interface Sweep {
   needsPin: NeedsPinEntry[];
   /** `owner-hold` tickets. Reported, never worked — the hold beats everything. */
   held: TicketRef[];
+  /** `status: deferred` tickets. Reported, never worked, never counted as outside the sweep. */
+  deferred: TicketRef[];
   /** Open tickets outside the sweep — the mandatory closing line names these. */
   notSwept: TicketRef[];
   labelDrift: Finding[];
@@ -221,8 +223,10 @@ function labelNames(issue: GhIssue): string[] {
 export function sweepIssues(issues: GhIssue[], config: Config, norms: Norms): Sweep {
   const { audit, bug, build, started: startedLabel, blocked: blockedLabel } = config.labels;
   const hold = norms.hold;
+  const deferredLabel = norms.deferred;
 
   const held: TicketRef[] = [];
+  const deferred: TicketRef[] = [];
   const notSwept: TicketRef[] = [];
   const needsPin: NeedsPinEntry[] = [];
   const labelDrift: Finding[] = [];
@@ -244,6 +248,15 @@ export function sweepIssues(issues: GhIssue[], config: Config, norms: Norms): Sw
     // may find fulfilled. Only the hold excludes.
     if (labels.includes(hold)) {
       held.push({ issue: issue.number, title: issue.title });
+      continue;
+    }
+
+    // The third state: `status: deferred` is the owner saying "planned, but not
+    // now". Like the hold it excludes outright (a deferred ticket may still carry
+    // `spec-sync`, `auto-audit` or `type: bug`), but it is neither an emergency
+    // brake nor an orphan — so it is not held and not `notSwept` either.
+    if (labels.includes(deferredLabel)) {
+      deferred.push({ issue: issue.number, title: issue.title });
       continue;
     }
 
@@ -332,7 +345,7 @@ export function sweepIssues(issues: GhIssue[], config: Config, norms: Norms): Sw
     )
     .map((entry, index) => ({ ...entry, position: index + 1 }));
 
-  return { queue, needsPin, held, notSwept, labelDrift };
+  return { queue, needsPin, held, deferred, notSwept, labelDrift };
 }
 
 /** One `gh` call: every open issue with the fields the sweep needs. */
@@ -492,6 +505,11 @@ export async function runQueue(
   if (sweep.held.length > 0) {
     notes.push(`${sweep.held.length} ticket(s) on \`${norms.hold}\` — excluded from the work list`);
   }
+  if (sweep.deferred.length > 0) {
+    notes.push(
+      `${sweep.deferred.length} ticket(s) on \`${norms.deferred}\` — owner-deferred, excluded from the work list`,
+    );
+  }
 
   // Pass-through, not judgement: the count says how much of the queue carries a
   // condition, and the first buildable entry says where a reader can start
@@ -517,6 +535,7 @@ export async function runQueue(
       queue: sweep.queue,
       needsPin: sweep.needsPin,
       held: sweep.held,
+      deferred: sweep.deferred,
       notSwept: sweep.notSwept,
       findings,
     },

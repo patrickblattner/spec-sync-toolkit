@@ -21,6 +21,7 @@ const config = {
     audit: "auto-audit",
     bug: "type: bug",
     hold: "owner-hold",
+    deferred: "status: deferred",
     started: "status: in-progress",
     blocked: "blocked",
   },
@@ -172,6 +173,41 @@ describe("sorting by the four tiers (§12 M3, foundation §Worker-Loop)", () => 
       norms,
     );
     expect(sweep.queue[0]?.issue).toBe(2);
+  });
+});
+
+describe("status: deferred never appears in the work list (PROC-DEV-010 rev 5)", () => {
+  it("excludes a deferred ticket, even one still carrying auto-audit or type: bug", () => {
+    const sweep = sweepIssues(
+      [
+        issue(1, ["spec-sync", "status: deferred"], "M1"),
+        issue(2, ["auto-audit", "status: deferred"], "M1"),
+        issue(3, ["type: bug", "status: deferred"], "M1"),
+        issue(4, ["spec-sync"], "M1"),
+      ],
+      config,
+      norms,
+    );
+    expect(sweep.queue.map((entry) => entry.issue)).toEqual([4]);
+    expect(sweep.deferred.map((ticket) => ticket.issue)).toEqual([1, 2, 3]);
+    expect(sweep.held).toEqual([]);
+  });
+
+  it("keeps a deferred ticket out of needsPin and notSwept", () => {
+    const sweep = sweepIssues(
+      [issue(1, ["status: deferred"]), issue(2, ["spec-sync"])],
+      config,
+      norms,
+    );
+    expect(sweep.needsPin.map((t) => t.issue)).toEqual([2]);
+    expect(sweep.notSwept).toEqual([]);
+    expect(sweep.deferred).toHaveLength(1);
+  });
+
+  it("lets owner-hold win when both labels are present", () => {
+    const sweep = sweepIssues([issue(1, ["owner-hold", "status: deferred"])], config, norms);
+    expect(sweep.held).toHaveLength(1);
+    expect(sweep.deferred).toEqual([]);
   });
 });
 

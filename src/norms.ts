@@ -20,6 +20,8 @@ import { ToolkitError, EXIT } from "./output.js";
 export interface Norms {
   sortTiers: string[];
   hold: string;
+  /** `status: deferred` — owner-deferred, planned but not to be built now (PROC-DEV-010 rev 5). */
+  deferred: string;
   buildLabel: string;
   /**
    * The mechanical marker for "started": a ticket with increments already merged
@@ -34,6 +36,7 @@ export interface Norms {
 export const NORM_DEFAULTS: Norms = {
   sortTiers: ["auto-audit", "type: bug", "started-first", "phase-asc", "issue-number-asc"],
   hold: "owner-hold",
+  deferred: "status: deferred",
   buildLabel: "spec-sync",
   startedLabel: "status: in-progress",
   mergeModel: "local-squash-single-push",
@@ -51,7 +54,7 @@ export interface PinnedNormSpec {
  */
 export const PINNED_NORM_SPECS: readonly PinnedNormSpec[] = [
   { key: "PROC-DEV-039", rev: 2 }, // sort tiers (1)-(4) & pathfinder inheritance
-  { key: "PROC-DEV-010", rev: 3 }, // ticket tracking & label taxonomy
+  { key: "PROC-DEV-010", rev: 5 }, // ticket tracking & label taxonomy
   { key: "PROC-DEV-047", rev: 6 }, // operating profile: autonomy, label semantics, owner-hold
   { key: "PROC-DEV-044", rev: 16 }, // ticket closure: merge model & cleanup
 ];

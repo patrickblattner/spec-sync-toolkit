@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.26.2
+
+### Added
+
+- New control label `status: deferred` (PROC-DEV-010 rev 5, owner register #1654): owner-deferred,
+  planned but not to be built now. `queue` excludes such a ticket before the sweep even when it
+  still carries `spec-sync`/`auto-audit`/`type: bug`, reports it in its own `deferred` list (and a
+  note), and never counts it as `notSwept`. `merge` refuses it with the new precondition
+  `no-status-deferred`. `owner-hold` stays the emergency brake and wins when both are set.
+
+### Changed
+
+- The `PROC-DEV-010` norm pin moves from rev 3 to rev 5.
+
 ## 0.26.1
 
 ### Fixed

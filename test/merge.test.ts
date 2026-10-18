@@ -312,6 +312,12 @@ describe("a violated precondition is exit 4 and changes nothing (§12 M3)", () =
       check: "no-owner-hold",
     },
     {
+      name: "a status: deferred label on the issue",
+      state: { issueLabels: ["spec-sync", "status: deferred"] },
+      gate: true,
+      check: "no-status-deferred",
+    },
+    {
       name: "no remote to push to",
       state: { remotes: [] },
       gate: true,
