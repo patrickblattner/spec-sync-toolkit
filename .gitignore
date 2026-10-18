@@ -15,3 +15,4 @@ coverage/
 .spec-sync-handover.md
 
 .DS_Store
+.playwright-mcp/
