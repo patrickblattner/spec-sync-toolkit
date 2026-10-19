@@ -175,8 +175,10 @@ describe("diffBase (#15)", () => {
     git(root, "add", "README.md");
     git(root, "commit", "-m", "base");
 
-    for (const call of [diffBase(root), changedFiles(root)]) {
-      const error = await call.catch((e: unknown) => e);
+    // Thunks, not promises: both calls started up front would leave the second
+    // rejection unhandled while the first is awaited (#25).
+    for (const call of [() => diffBase(root), () => changedFiles(root)]) {
+      const error = await call().catch((e: unknown) => e);
       expect(error).toBeInstanceOf(ToolkitError);
       expect((error as ToolkitError).exit).toBe(EXIT.PRECONDITION);
       expect((error as ToolkitError).field).toBe("--changed");
