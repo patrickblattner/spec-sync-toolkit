@@ -23,7 +23,15 @@ import {
 } from "../src/hooks/lib.js";
 import { askAcceptance, classify, parseVerdict } from "../src/hooks/acceptance.js";
 import type { LogEntry } from "../src/hooks/acceptance.js";
-import { measureContextPercent, ownerEngaged, workbenchFindings } from "../src/hooks/io.js";
+import {
+  agentTranscriptOf,
+  counterKeyOf,
+  measureContextPercent,
+  ownerEngaged,
+  readContextBudget,
+  workbenchFindings,
+} from "../src/hooks/io.js";
+import { DEFAULT_CONTEXT_BUDGET } from "../src/budget.js";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -505,6 +513,65 @@ describe("measureContextPercent — fail-open of the measurement", () => {
       `${JSON.stringify({ type: "assistant", message: { id: "a", usage: { input_tokens: 125000 } } })}\n`,
     );
     expect(measureContextPercent(file, 250000)).toBe(50);
+  });
+});
+
+// SST-DESIGN-023 rev 3: a repo without a valid `contextBudget` entry still has a budget — the
+// toolkit default the CLI config falls back to, not "no budget at all".
+describe("readContextBudget — falls back to the toolkit default", () => {
+  const repo = (config?: string) => {
+    const dir = mkdtempSync(join(tmpdir(), "stop-check-budget-"));
+    if (config !== undefined) writeFileSync(join(dir, "spec-sync.config.json"), config);
+    return dir;
+  };
+
+  it("the configured value when it is valid", () => {
+    expect(readContextBudget(repo(JSON.stringify({ contextBudget: 400000 })))).toBe(400000);
+  });
+
+  it("the default when the entry is missing, invalid, or the file is missing or broken", () => {
+    expect(DEFAULT_CONTEXT_BUDGET).toBe(250_000);
+    expect(readContextBudget(repo(JSON.stringify({})))).toBe(DEFAULT_CONTEXT_BUDGET);
+    expect(readContextBudget(repo(JSON.stringify({ contextBudget: -1 })))).toBe(
+      DEFAULT_CONTEXT_BUDGET,
+    );
+    expect(readContextBudget(repo(JSON.stringify({ contextBudget: "800000" })))).toBe(
+      DEFAULT_CONTEXT_BUDGET,
+    );
+    expect(readContextBudget(repo())).toBe(DEFAULT_CONTEXT_BUDGET);
+    expect(readContextBudget(repo("not json"))).toBe(DEFAULT_CONTEXT_BUDGET);
+  });
+});
+
+// SubagentStop: `transcript_path` is the PARENT session's transcript; the agent's own one is
+// `agent_transcript_path`. Measurement and counter key belong to the agent run.
+describe("SubagentStop — measures and keys the agent run", () => {
+  const parent = "/s/proj/0b8e-parent-session.jsonl";
+  const agent = "/s/proj/0b8e-parent-session/subagents/agent-a1b2.jsonl";
+
+  it("measures agent_transcript_path, the session transcript only when it is absent", () => {
+    expect(agentTranscriptOf({ transcript_path: parent, agent_transcript_path: agent })).toBe(
+      agent,
+    );
+    expect(agentTranscriptOf({ transcript_path: parent })).toBe(parent);
+  });
+
+  it("keys per agent run: agent transcript, else agent_id, else the session transcript", () => {
+    expect(
+      counterKeyOf({ transcript_path: parent, agent_transcript_path: agent, agent_id: "a1b2" }),
+    ).toBe("agent-a1b2");
+    expect(counterKeyOf({ transcript_path: parent, agent_id: "a1b2" })).toBe("a1b2");
+    expect(counterKeyOf({ transcript_path: parent })).toBe("0b8e-parent-session");
+    expect(counterKeyOf({ session_id: "s1" })).toBe("s1");
+  });
+
+  it("two agents of the same session get different keys", () => {
+    const a = counterKeyOf({ transcript_path: parent, agent_transcript_path: agent });
+    const b = counterKeyOf({
+      transcript_path: parent,
+      agent_transcript_path: "/s/proj/0b8e-parent-session/subagents/agent-c3d4.jsonl",
+    });
+    expect(a).not.toBe(b);
   });
 });
 

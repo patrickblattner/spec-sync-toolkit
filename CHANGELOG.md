@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.27.0
+
+### Changed
+
+- The default context budget drops from 800,000 to 250,000 tokens (SST-DESIGN-023 rev 3,
+  PROC-DEV-036 rev 10, owner register #1707). It applies to the CLI config and the hooks alike.
+
+### Fixed
+
+- The Stop, SubagentStop and architect stop hooks enforced no budget at all in repos whose
+  `spec-sync.config.json` has no valid `contextBudget` (or no such file): `readContextBudget` now
+  falls back to the toolkit default instead of returning null.
+- The SubagentStop hook measured the parent session's transcript (`transcript_path`). It now
+  measures the agent's own `agent_transcript_path` (falling back to `transcript_path` only when
+  absent), and its counter and budget marker are keyed per agent run (agent transcript, else
+  `agent_id`) instead of per parent session.
+
 ## 0.26.2
 
 ### Added

@@ -36,7 +36,7 @@ export const MIN_MEASUREMENTS = 5;
 export const MEASUREMENT_WINDOW = 20;
 
 /** Token level the reach is computed against when the config names none (spec §5). */
-export const DEFAULT_CONTEXT_BUDGET = 800_000;
+export const DEFAULT_CONTEXT_BUDGET = 250_000;
 
 /**
  * The transcript directory name of a repo: the absolute path with `/` and `.`

@@ -65,7 +65,7 @@ describe("loadConfig (spec §5)", () => {
 
   it("defaults contextBudget to 800000 when the config does not name it", () => {
     expect(loadConfig(repoWith(valid)).contextBudget).toBe(DEFAULT_CONTEXT_BUDGET);
-    expect(DEFAULT_CONTEXT_BUDGET).toBe(800_000);
+    expect(DEFAULT_CONTEXT_BUDGET).toBe(250_000);
   });
 
   it("takes a contextBudget the config does name", () => {

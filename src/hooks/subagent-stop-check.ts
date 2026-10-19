@@ -12,6 +12,7 @@
 import { decideSubagentStop } from "./lib.js";
 import { askAcceptance } from "./acceptance.js";
 import {
+  agentTranscriptOf,
   budgetAlreadyBlocked,
   bumpCount,
   clearCount,
@@ -35,7 +36,7 @@ const count = readCount(KIND, key);
 
 const decision = decideSubagentStop({
   paused: isPaused(cwd),
-  contextPercent: measureContextPercent(input.transcript_path, readContextBudget(cwd)),
+  contextPercent: measureContextPercent(agentTranscriptOf(input), readContextBudget(cwd)),
   budgetAlreadyBlocked: budgetAlreadyBlocked(KIND, key),
   blockCount: count,
   agentType,

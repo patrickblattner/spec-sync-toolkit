@@ -15,10 +15,20 @@ import { existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from "n
 import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
+import { DEFAULT_CONTEXT_BUDGET } from "../budget.js";
 import { contextFromTranscript, contextPercent, handoverAgeMinutes } from "./lib.js";
 import type { HookDecision, UsageWindow } from "./lib.js";
 
-export type HookInput = Record<string, unknown>;
+/**
+ * Hook input as Claude Code sends it. For SubagentStop, `transcript_path` is the PARENT
+ * session's transcript; the agent's own one arrives as `agent_transcript_path`, its run id as
+ * `agent_id` (Claude Code 2.1.304).
+ */
+export type HookInput = Record<string, unknown> & {
+  transcript_path?: unknown;
+  agent_transcript_path?: unknown;
+  agent_id?: unknown;
+};
 
 /** Hook input from stdin. Empty or broken means defaults — never an abort. */
 export function readHookInput(): HookInput {
@@ -57,14 +67,20 @@ export function readHandoverText(cwd: string): string | null {
   }
 }
 
-/** `contextBudget` from the repo configuration; null when there is none there. */
-export function readContextBudget(cwd: string): number | null {
+/**
+ * `contextBudget` from the repo configuration; the toolkit default (the same one the CLI config
+ * falls back to) when the entry or the file is missing or invalid — a repo without the entry is
+ * not a repo without a budget (SST-DESIGN-023 rev 3).
+ */
+export function readContextBudget(cwd: string): number {
   try {
     const parsed: unknown = JSON.parse(readFileSync(join(cwd, "spec-sync.config.json"), "utf8"));
     const budget = (parsed as { contextBudget?: unknown }).contextBudget;
-    return typeof budget === "number" && Number.isFinite(budget) && budget > 0 ? budget : null;
+    return typeof budget === "number" && Number.isFinite(budget) && budget > 0
+      ? budget
+      : DEFAULT_CONTEXT_BUDGET;
   } catch {
-    return null;
+    return DEFAULT_CONTEXT_BUDGET;
   }
 }
 
@@ -136,7 +152,16 @@ export function measureContextPercent(
 // the session_id, for an agent its own transcript — "per agent run" is exactly that.
 const state = (kind: string, key: string) => join(tmpdir(), `${kind}-${key || "unknown"}`);
 
+/** The transcript of the agent run: its own one, the session's only when the client sends none. */
+export function agentTranscriptOf(input: HookInput): unknown {
+  return input.agent_transcript_path || input.transcript_path;
+}
+
+/** Counter key of an agent run: agent transcript, else agent id, else the session's transcript. */
 export function counterKeyOf(input: HookInput): string {
+  if (input.agent_transcript_path)
+    return basename(String(input.agent_transcript_path)).replace(/\.jsonl$/u, "");
+  if (input.agent_id) return String(input.agent_id);
   if (input.transcript_path)
     return basename(String(input.transcript_path)).replace(/\.jsonl$/u, "");
   return String(input.session_id || "unknown");
