@@ -33,8 +33,8 @@
  * pushed instead of ten minutes into `pr-gate`.
  */
 
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, realpathSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { EXIT, ToolkitError, progress } from "../output.js";
 import { appendEvent, ledgerPath, readLedger, LEDGER_FILE } from "../ledger.js";
 import { createLogDir, firstError, protectedLogDirs, writePhaseLog } from "../logs.js";
@@ -101,6 +101,20 @@ const PREFLIGHT_CONFIG = "preflight-config";
  * mark says the config author saw it and kept it out of the pre-run.
  */
 const PREFLIGHT_FORBIDDEN = ["unit", "build", "e2e-smoke", "e2e-touched", "e2e-full"];
+
+/**
+ * The realpath of a path, or the path as spelled when the filesystem cannot
+ * resolve it. The ledger file need not exist yet, so a missing tail is resolved
+ * through its nearest existing parent.
+ */
+function realOrSpelled(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    const parent = dirname(path);
+    return parent === path ? path : join(realOrSpelled(parent), basename(path));
+  }
+}
 
 /**
  * An abort before the first phase. Exit 2 like every other unprovable outcome —
@@ -360,7 +374,9 @@ export async function runGate(
     // a linked worktree the ledger is the main checkout's (see `ledgerPath`), and
     // a reader looking into `<worktree>/.spec-sync/` would find nothing there.
     const evidence = ledgerPath(ctx.repoRoot);
-    if (evidence !== join(ctx.repoRoot, LEDGER_FILE)) {
+    // Compared by realpath: a symlinked spelling of the same checkout (macOS
+    // /var -> /private/var) is still the caller's own ledger.
+    if (realOrSpelled(evidence) !== realOrSpelled(join(ctx.repoRoot, LEDGER_FILE))) {
       notes.push(`gate evidence recorded in the main checkout's ledger: ${evidence}`);
     }
     // Every run that ran is recorded (SST-DESIGN-026): one without `--issue`

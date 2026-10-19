@@ -7,7 +7,14 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -246,6 +253,20 @@ describe("gate records its run in the ledger (spec §8)", () => {
       exit: EXIT.OK,
     });
     expect(typeof events[0]?.durationMs).toBe("number");
+  });
+
+  it("does not call a symlinked spelling of the same checkout another ledger (#26)", async () => {
+    const root = makeRepo([{ name: "unit", cmd: "true" }], "merge");
+    execFileSync("git", ["init", "-b", "main"], { cwd: root, stdio: "ignore" });
+    const link = `${root}-link`;
+    symlinkSync(root, link);
+
+    const result = await runGate(link, ["--profile", "merge", "--issue", "42"]);
+
+    expect(
+      (result.notes ?? []).filter((note) => note.startsWith("gate evidence recorded")),
+    ).toEqual([]);
+    expect(readLedger(root).events).toHaveLength(1);
   });
 
   it("writes the evidence merge reads as its precondition", async () => {
@@ -644,13 +665,7 @@ describe("gate --changed (spec §7.1, §5 `when`)", () => {
     ]);
     // The capacity probe reports on every run (`SST-DESIGN-012` rev 3), so
     // "nothing to say" means nothing BESIDES that line.
-    // Likewise the ledger-location note: every run is recorded now, and the
-    // temp repo's realpath differs from its spelling on macOS.
-    expect(
-      (result.notes ?? []).filter(
-        (note) => !note.startsWith("capacity probe") && !note.startsWith("gate evidence recorded"),
-      ),
-    ).toEqual([]);
+    expect((result.notes ?? []).filter((note) => !note.startsWith("capacity probe"))).toEqual([]);
     expect(existsSync(join(root, "order.txt"))).toBe(true);
   });
 
