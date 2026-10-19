@@ -31,6 +31,8 @@ interface World {
   remotes: string[];
   worktrees: { path: string; branch: string }[];
   headSubject: string;
+  /** Older subjects on main since the merge started (resume days later). */
+  landedSubjects?: string[];
   unpushed: string;
   issueState: string;
   issueTitle: string;
@@ -97,6 +99,9 @@ function fakeDeps(state: World): {
         .join("\n");
     }
     if (key === "log -1 --format=%s") return `${state.headSubject}\n`;
+    if (args[0] === "log" && args[1] === "main") {
+      return `${[state.headSubject, ...(state.landedSubjects ?? [])].join("\n")}\n`;
+    }
     if (args[0] === "rev-list") return `${state.unpushed}\n`;
 
     if (args[0] === "merge") return "";
@@ -731,6 +736,45 @@ describe("a merge that died halfway is resumed, not refused (§7.4)", () => {
     const failed = result.data.postconditions as { name: string; detail?: string }[];
     expect(failed[0]).toMatchObject({ name: "pushed" });
     expect(failed[0]?.detail).toMatch(/unreadable/);
+  });
+
+  it("recognizes a landed ticket after further commits on main (no squash, no commit)", async () => {
+    const { deps, root } = fakeDeps(
+      world({
+        headSubject: "unrelated later work #99",
+        landedSubjects: ["other follow-up", "add CSV export #42"],
+        unpushed: "0",
+        issueState: "CLOSED",
+        issueLabels: ["spec-sync", DONE_LABEL],
+      }),
+    );
+    recordGreenGate(root, 42);
+    recordInterruptedMerge(root, 42);
+
+    const result = await runMerge(deps, { ...options, dryRun: true }, NORM_DEFAULTS);
+
+    const names = (result.data.steps as { name: string }[]).map((step) => step.name);
+    expect(names).not.toContain("squash-merge");
+    expect(names).not.toContain("commit");
+  });
+
+  it("does not take #12 for a landed #125", async () => {
+    const { deps, root } = fakeDeps(
+      world({
+        headSubject: "add CSV export #125",
+        landedSubjects: ["add CSV export #125"],
+        unpushed: "0",
+        issueState: "CLOSED",
+      }),
+    );
+    recordGreenGate(root, 12);
+    appendEvent(root, { type: "merge-started", issue: 12, branch: "feat/csv" });
+
+    const result = await runMerge(deps, { ...options, issue: 12, dryRun: true }, NORM_DEFAULTS);
+
+    const names = (result.data.steps as { name: string }[]).map((step) => step.name);
+    expect(names).toContain("squash-merge");
+    expect(names).toContain("commit");
   });
 
   it("takes the normal path when the ledger shows a completed pair", async () => {

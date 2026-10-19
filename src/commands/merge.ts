@@ -466,6 +466,9 @@ export function remainingSteps(failed: Check[], steps: MergeStep[]): MergeStep[]
   return steps.filter((step) => wanted.has(step.name));
 }
 
+/** Safety margin before `merge-started` when searching main for the landed commit. */
+const COMMIT_SEARCH_MARGIN_MS = 60_000;
+
 /** Every postcondition, re-queried against the world after execution (§7.4). */
 export async function postconditions(
   deps: MergeDeps,
@@ -473,6 +476,23 @@ export async function postconditions(
   options: MergeOptions,
 ): Promise<Check[]> {
   const head = (await deps.git(["log", "-1", "--format=%s"])).trim();
+  const referencesIssue = (subject: string): boolean =>
+    new RegExp(`#${options.issue}(?!\\d)`).test(subject);
+  // A resume can run days later, after further commits on main: HEAD alone then
+  // misses the landed ticket. Search main since the ticket's latest
+  // `merge-started` (minus a safety margin for clock/second precision).
+  const started = readLedger(deps.repoRoot)
+    .events.filter((event) => event.issue === options.issue && event.type === "merge-started")
+    .at(-1);
+  const startedAt = started === undefined ? NaN : Date.parse(started.at);
+  let landed = referencesIssue(head);
+  if (!landed && !Number.isNaN(startedAt)) {
+    const since = new Date(startedAt - COMMIT_SEARCH_MARGIN_MS).toISOString();
+    const subjects = await deps
+      .git(["log", MAIN_BRANCH, `--since=${since}`, "--format=%s"])
+      .catch(() => "");
+    landed = subjects.split("\n").some(referencesIssue);
+  }
   const clean = (await deps.git(["status", "--porcelain"])).trim() === "";
   const branchGone = (await deps.git(["branch", "--list", options.branch])).trim() === "";
   const worktreeGone = (await findWorktree(deps, options.branch)) === undefined;
@@ -493,8 +513,12 @@ export async function postconditions(
   return [
     {
       name: "commit-on-main",
-      ok: head.includes(`#${options.issue}`),
-      detail: head.includes(`#${options.issue}`) ? undefined : `HEAD subject is "${head}"`,
+      ok: landed,
+      detail: landed
+        ? undefined
+        : `no commit referencing #${options.issue} on ${MAIN_BRANCH}${
+            Number.isNaN(startedAt) ? "" : ` since ${started?.at}`
+          } — HEAD subject is "${head}"`,
     },
     { name: "worktree-clean", ok: clean, detail: clean ? undefined : "working tree is dirty" },
     {
