@@ -92,6 +92,10 @@ the other case — it took place, it is recorded, and it counts. That limit bind
 incident, not per ticket**: once the cause of the load is found, fixed and recorded in the
 ticket, the next run is a _first_ run of that ticket.
 
+Every gate run that did run writes a `gate` ledger event (v0.28.0, SST-DESIGN-026) with `phases[]`
+(`name`, `exit`, `durationMs`, `skipped`) and, when red, `failedPhase`; without `--issue` it carries
+no `issue` and is no evidence for `merge`.
+
 Remote mode (`GATE_MODE=remote`, the repo variable of `PROC-DEV-044`): `gate --profile merge`
 refuses to run locally — exit 4, `reason: "remote-mode"`, no ledger event — because there the
 merge gate is the required check `pr-gate` on CI, and `merge` refuses the local sequence with
