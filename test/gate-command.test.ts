@@ -342,12 +342,65 @@ describe("gate records its run in the ledger (spec §8)", () => {
     expect(ticketMetrics(readLedger(root).events)[0]).toMatchObject({ gateRuns: 1, retries: 1 });
   });
 
-  it("writes nothing without --issue — a run without a ticket belongs to none", async () => {
-    const root = makeRepo([{ name: "unit", cmd: "true" }]);
-    await runGate(root, ["--profile", "local"]);
+  it("writes a gate event without issue when run without --issue — and merge cannot use it", async () => {
+    const root = makeRepo([{ name: "unit", cmd: "true" }], "merge");
+    await runGate(root, ["--profile", "merge"]);
 
-    expect(readLedger(root).events).toEqual([]);
-    expect(existsSync(join(root, ".spec-sync", "ledger.jsonl"))).toBe(false);
+    const events = readLedger(root).events;
+    expect(events).toHaveLength(1);
+    expect(events[0]?.type).toBe("gate");
+    expect("issue" in (events[0] ?? {})).toBe(false);
+    expect(latestGate(events, 42, "merge")).toBeUndefined();
+    expect(ticketMetrics(events)).toEqual([]);
+  });
+
+  it("carries phases[] and no failedPhase on a green run", async () => {
+    const root = makeRepo(
+      [
+        { name: "lint", cmd: "true" },
+        { name: "unit", cmd: "true" },
+      ],
+      "merge",
+    );
+    await runGate(root, ["--profile", "merge", "--issue", "42"]);
+
+    const event = latestGate(readLedger(root).events, 42, "merge");
+    const phases = event?.phases as { name: string; exit: number; skipped: boolean }[];
+    expect(phases.map((p) => [p.name, p.exit, p.skipped])).toEqual([
+      ["lint", 0, false],
+      ["unit", 0, false],
+    ]);
+    expect(typeof (phases[0] as { durationMs?: number }).durationMs).toBe("number");
+    expect("failedPhase" in (event ?? {})).toBe(false);
+  });
+
+  it("names the first red phase as failedPhase", async () => {
+    const root = makeRepo(
+      [
+        { name: "lint", cmd: "true" },
+        { name: "unit", cmd: "echo 'Error: boom'; exit 1" },
+        { name: "e2e", cmd: "true" },
+      ],
+      "merge",
+    );
+    await runGate(root, ["--profile", "merge", "--issue", "42"]);
+
+    const event = latestGate(readLedger(root).events, 42, "merge");
+    expect(event?.failedPhase).toBe("unit");
+    expect((event?.phases as { name: string }[]).map((p) => p.name)).toEqual(["lint", "unit"]);
+  });
+
+  it("reads an old gate line without phases without error", () => {
+    const root = makeRepo([{ name: "unit", cmd: "true" }], "merge");
+    write(
+      root,
+      ".spec-sync/ledger.jsonl",
+      `${JSON.stringify({ at: "2026-01-01T00:00:00.000Z", type: "gate", issue: 7, profile: "merge", ok: false, exit: 1, durationMs: 5 })}\n`,
+    );
+
+    const ledger = readLedger(root);
+    expect(latestGate(ledger.events, 7, "merge")?.ok).toBe(false);
+    expect(ticketMetrics(ledger.events)[0]).toMatchObject({ gateRuns: 1, retries: 1 });
   });
 });
 
@@ -591,7 +644,13 @@ describe("gate --changed (spec §7.1, §5 `when`)", () => {
     ]);
     // The capacity probe reports on every run (`SST-DESIGN-012` rev 3), so
     // "nothing to say" means nothing BESIDES that line.
-    expect((result.notes ?? []).filter((note) => !note.startsWith("capacity probe"))).toEqual([]);
+    // Likewise the ledger-location note: every run is recorded now, and the
+    // temp repo's realpath differs from its spelling on macOS.
+    expect(
+      (result.notes ?? []).filter(
+        (note) => !note.startsWith("capacity probe") && !note.startsWith("gate evidence recorded"),
+      ),
+    ).toEqual([]);
     expect(existsSync(join(root, "order.txt"))).toBe(true);
   });
 

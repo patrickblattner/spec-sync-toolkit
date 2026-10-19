@@ -355,7 +355,7 @@ export async function runGate(
   if (preflight && issue !== undefined) {
     notes.push(`--preflight writes no ledger event — this is no gate evidence for #${issue}`);
   }
-  if (issue !== undefined && !preflight) {
+  if (!preflight) {
     // Where the evidence went, whenever that is not where the caller stands: in
     // a linked worktree the ledger is the main checkout's (see `ledgerPath`), and
     // a reader looking into `<worktree>/.spec-sync/` would find nothing there.
@@ -363,14 +363,28 @@ export async function runGate(
     if (evidence !== join(ctx.repoRoot, LEDGER_FILE)) {
       notes.push(`gate evidence recorded in the main checkout's ledger: ${evidence}`);
     }
+    // Every run that ran is recorded (SST-DESIGN-026): one without `--issue`
+    // carries no `issue` and so never matches a ticket in `latestGate` — it is
+    // telemetry, not merge evidence.
+    const reports = (result.data as { phases?: PhaseReport[] } | undefined)?.phases ?? [];
+    const failedPhase = result.ok
+      ? undefined
+      : reports.find((p) => !p.skipped && p.exit !== 0)?.name;
     appendEvent(ctx.repoRoot, {
       type: "gate",
-      issue,
+      ...(issue !== undefined ? { issue } : {}),
       run: runId,
       profile,
       ok: result.ok,
       exit: result.exit ?? EXIT.OK,
       durationMs: Date.now() - startedAt,
+      phases: reports.map(({ name, exit, durationMs, skipped }) => ({
+        name,
+        exit,
+        durationMs,
+        skipped,
+      })),
+      ...(failedPhase !== undefined ? { failedPhase } : {}),
       // The only link from a run's logs back to its ticket — `protectedLogDirs`
       // reads it to keep the logs of an unfinished merge out of the pruning.
       logDir: result.logDir,
