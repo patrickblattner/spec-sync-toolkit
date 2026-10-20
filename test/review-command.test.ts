@@ -212,6 +212,7 @@ function tools(root: string, world: GhWorld): { tools: Tools; gh: GhLog } {
           return ok("https://example/comment\n");
         if (a === "issue" && b === "create")
           return ok(`https://example/issues/${100 + log.calls.length}\n`);
+        if (a === "issue" && b === "close") return ok("");
         throw new Error(`unexpected gh call: ${args.join(" ")}`);
       },
       spec: () => {
@@ -591,6 +592,53 @@ describe("review batch (acceptance 5)", () => {
     expect(result.exit).toBe(EXIT.FAILED);
   });
 
+  it("labels each finding issue with control, priority and backlog labels (acceptance 7)", async () => {
+    const r = batchRepo();
+    const codex = fakeCodex({
+      answers: [
+        answer([
+          { ...highFinding, severity: "critical" },
+          { ...highFinding, severity: "medium", area: "code", claim: "Medium one" },
+        ]),
+      ],
+    });
+    const { tools: t, gh } = tools(r.root, {});
+    await runReview(context(r.root, ["batch"]), { tools: t, codexEnv: codex.env });
+
+    const labels = gh.calls
+      .filter((c) => c[0] === "issue" && c[1] === "create")
+      .map((c) => c.flatMap((arg, i) => (c[i - 1] === "--label" ? [arg] : [])));
+    expect(labels).toEqual([
+      ["review-codex", "type: bug", "priority: critical", "status: backlog", "security"],
+      ["review-codex", "type: bug", "priority: medium", "status: backlog"],
+    ]);
+    for (const set of labels) {
+      expect(set).not.toContain("spec-sync");
+      expect(set).not.toContain("auto-audit");
+    }
+    for (const body of gh.bodies) {
+      const criteria = body.slice(body.indexOf("## Acceptance criteria"));
+      expect(criteria.split("\n").find((line) => line.startsWith("- [ ]"))).toMatch(
+        /^- \[ \] Premise check: confirm the finding on current `main`; otherwise close it via `spec-sync review verdict issue <n> CX\d rejected "<reason>"`/,
+      );
+    }
+  });
+
+  it("takes the bug label from the config", async () => {
+    const r = batchRepo();
+    const config = JSON.parse(readFileSync(join(r.root, "spec-sync.config.json"), "utf8"));
+    writeFileSync(
+      join(r.root, "spec-sync.config.json"),
+      JSON.stringify({ ...config, labels: { bug: "bug" } }),
+    );
+    const codex = fakeCodex({ answers: [answer([highFinding])] });
+    const { tools: t, gh } = tools(r.root, {});
+    await runReview(context(r.root, ["batch"]), { tools: t, codexEnv: codex.env });
+    const create = gh.calls.find((c) => c[0] === "issue" && c[1] === "create");
+    expect(create).toEqual(expect.arrayContaining(["--label", "bug"]));
+    expect(create).not.toContain("type: bug");
+  });
+
   it("--dry-run calls nothing and moves nothing", async () => {
     const r = batchRepo();
     const codex = fakeCodex({});
@@ -627,7 +675,14 @@ describe("review tag (acceptance 6)", () => {
       expect.arrayContaining(["--title", "Codex review v1.1.0", "--label", "review-codex"]),
     );
     expect(result.data).toMatchObject({ outcome: "clean" });
+    // Clean: "No findings", closed at creation, no control labels.
+    expect(first.gh.bodies[0]).toContain("No findings.");
+    expect(first.gh.bodies[0]).not.toContain("## Acceptance criteria");
+    expect(creates[0]).not.toContain("type: bug");
+    const url = result.data?.issue as string;
+    expect(first.gh.calls.filter((c) => c[1] === "close")).toEqual([["issue", "close", url]]);
 
+    // The closed issue stops the rerun: the lookup reads open and closed issues.
     const again = tools(r.root, { tagIssues: [{ number: 9, title: "Codex review v1.1.0" }] });
     const second = await runReview(context(r.root, ["tag", "v1.0.0..v1.1.0"]), {
       tools: again.tools,
@@ -636,6 +691,72 @@ describe("review tag (acceptance 6)", () => {
     expect(second.data).toMatchObject({ outcome: "already-reviewed", issue: 9 });
     expect(again.gh.calls.filter((c) => c[1] === "create")).toHaveLength(0);
     expect(codex.calls()).toHaveLength(1);
+    const lookup = again.gh.calls.find((c) => c[0] === "issue" && c[1] === "list");
+    expect(lookup).toEqual(expect.arrayContaining(["--state", "all"]));
+  });
+
+  it("an issue with findings stays open and carries the finding labels (acceptance 7)", async () => {
+    const r = repo();
+    sh(r.root, ["tag", "v1.0.0"]);
+    commit(r.root, { "src/b.ts": "b\n" }, "b");
+    sh(r.root, ["tag", "v1.1.0"]);
+    const codex = fakeCodex({
+      answers: [
+        answer([
+          { ...highFinding, severity: "medium", area: "code" },
+          { ...highFinding, severity: "high", claim: "Other" },
+          { ...highFinding, severity: "low", claim: "Minor" },
+        ]),
+      ],
+    });
+    const { tools: t, gh } = tools(r.root, {});
+    const result = await runReview(context(r.root, ["tag", "v1.0.0..v1.1.0"]), {
+      tools: t,
+      codexEnv: codex.env,
+    });
+    expect(result.data).toMatchObject({ outcome: "findings" });
+    const creates = gh.calls.filter((c) => c[1] === "create");
+    expect(creates).toHaveLength(1);
+    const labels = (creates[0] ?? []).flatMap((arg, i, c) => (c[i - 1] === "--label" ? [arg] : []));
+    expect(labels).toEqual([
+      "review-codex",
+      "type: bug",
+      "priority: high",
+      "status: backlog",
+      "security",
+    ]);
+    expect(gh.calls.filter((c) => c[1] === "close")).toHaveLength(0);
+    const body = gh.bodies[0] ?? "";
+    const criteria = body.slice(body.indexOf("## Acceptance criteria"));
+    expect(criteria.split("\n").find((line) => line.startsWith("- [ ]"))).toMatch(
+      /^- \[ \] Premise check: confirm the finding on current `main`/,
+    );
+  });
+
+  it("an issue with only low and taste findings is a record, closed at creation", async () => {
+    const r = repo();
+    sh(r.root, ["tag", "v1.0.0"]);
+    commit(r.root, { "src/b.ts": "b\n" }, "b");
+    sh(r.root, ["tag", "v1.1.0"]);
+    const codex = fakeCodex({
+      answers: [
+        answer([
+          { ...highFinding, severity: "low", claim: "Minor" },
+          { ...highFinding, severity: "taste", claim: "Prefer a map" },
+        ]),
+      ],
+    });
+    const { tools: t, gh } = tools(r.root, {});
+    const result = await runReview(context(r.root, ["tag", "v1.0.0..v1.1.0"]), {
+      tools: t,
+      codexEnv: codex.env,
+    });
+    const creates = gh.calls.filter((c) => c[1] === "create");
+    const labels = (creates[0] ?? []).flatMap((arg, i, c) => (c[i - 1] === "--label" ? [arg] : []));
+    expect(labels).toEqual(["review-codex"]);
+    expect(gh.bodies[0]).not.toContain("## Acceptance criteria");
+    const url = result.data?.issue as string;
+    expect(gh.calls.filter((c) => c[1] === "close")).toEqual([["issue", "close", url]]);
   });
 
   it("a bad range → exit 4", async () => {

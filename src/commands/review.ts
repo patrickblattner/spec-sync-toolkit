@@ -62,6 +62,10 @@ import { decide, decideAlways, newModule, parseNumstat, sizeOf } from "../review
 const VALUE_FLAGS = ["--issue", "--source"];
 const PR_BASE = "origin/main";
 const MAIN = "origin/main";
+/** Backlog state of a new finding issue (PROC-DEV-010 label taxonomy). */
+const BACKLOG_LABEL = "status: backlog";
+/** Ticketed severities, highest first — each maps to `priority: <severity>`. */
+const PRIORITIES = ["critical", "high", "medium"] as const;
 
 export interface ReviewDeps {
   tools: Tools;
@@ -489,8 +493,7 @@ async function runBatch(run: Run, pos: string[]): Promise<CommandResult> {
     duplicates = parts.duplicates.length;
     for (const finding of parts.fresh) {
       const body = renderBatchIssue(finding, { model, range, key: dedupeKey(finding) });
-      const labels =
-        finding.area === "security" ? [review.label, review.securityLabel] : [review.label];
+      const labels = findingLabels(run, [finding]);
       created.push(
         createIssue(tools, run, logDir, batchIssueTitle(finding), body, labels, finding.id),
       );
@@ -742,10 +745,13 @@ async function runTag(run: Run, pos: string[]): Promise<CommandResult> {
     findings: result.findings,
     downgraded: result.downgraded,
   });
-  const labels = result.findings.some((f) => f.area === "security")
-    ? [review.label, review.securityLabel]
-    : [review.label];
+  // Without a critical, high or medium finding the issue is only a record: it is
+  // opened and closed at once — the closed issue is what stops a rerun (the
+  // existence check reads state all).
+  const ticketed = result.findings.filter(isTicketed);
+  const labels = ticketed.length === 0 ? [review.label] : findingLabels(run, ticketed);
   const issue = createIssue(tools, run, logDir, title, body, labels, "tag");
+  if (ticketed.length === 0) gh(tools, ["issue", "close", issue], "gh");
 
   const outcome: Outcome = result.findings.length > 0 ? "findings" : "clean";
   ledger(run, { mode: "tag", model, effort, trigger, outcome, counts });
@@ -905,6 +911,24 @@ function postComment(
   writeFileSync(file, body, "utf8");
   const result = tools.run("gh", [target, "comment", String(number), "--body-file", file]);
   return result.ok ? undefined : failureLine(result);
+}
+
+/**
+ * Labels of an issue that carries findings (SST-DESIGN-030 rev 4): `review-codex`,
+ * the control label `type: bug` (PROC-DEV-010: no ticket without one),
+ * `priority:` of the highest ticketed severity, `status: backlog`, and the
+ * security label when a finding is of area security. Never `spec-sync` or
+ * `auto-audit`.
+ */
+function findingLabels(run: Run, findings: readonly Finding[]): string[] {
+  const priority = PRIORITIES.find((severity) => findings.some((f) => f.severity === severity));
+  return [
+    run.review.label,
+    run.config.labels.bug,
+    ...(priority === undefined ? [] : [`priority: ${priority}`]),
+    BACKLOG_LABEL,
+    ...(findings.some((f) => f.area === "security") ? [run.review.securityLabel] : []),
+  ];
 }
 
 /** Opens one issue via `--body-file`; returns what `gh` printed (the URL). */

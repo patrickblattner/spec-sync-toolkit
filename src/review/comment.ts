@@ -9,6 +9,7 @@
  */
 
 import type { FailureClass } from "./engine.js";
+import { isTicketed } from "./findings.js";
 import type { Area, Counts, Finding, RecheckEntry, Severity } from "./findings.js";
 
 export const REVIEW_MARKER = "spec-sync-review";
@@ -270,6 +271,7 @@ export function renderTagIssue(input: {
       `Evidence: ${f.evidence}`,
       "",
     ]),
+    ...(input.findings.some(isTicketed) ? acceptanceCriteria("<id>") : []),
     "Findings are premises, not truths — check each against the code and record `spec-sync review verdict`.",
     "",
   ].join("\n");
@@ -304,6 +306,7 @@ export function renderBatchIssue(
     "## Fix",
     finding.fix === "" ? "—" : finding.fix,
     "",
+    ...acceptanceCriteria(finding.id),
     "---",
     "",
     "Codex nightly batch review (`spec-sync review batch`). This is a premise, not a truth —",
@@ -312,4 +315,19 @@ export function renderBatchIssue(
     `<!-- review-key: ${context.key} -->`,
     "",
   ].join("\n");
+}
+
+/**
+ * The acceptance criteria of a batch or tag issue. The first one is always the
+ * premise check (SST-DESIGN-030 rev 4): a finding is confirmed on current
+ * `main` before anything is built, otherwise the issue closes it as rejected.
+ */
+function acceptanceCriteria(id: string): string[] {
+  return [
+    "## Acceptance criteria",
+    "",
+    `- [ ] Premise check: confirm the finding on current \`main\`; otherwise close it via \`spec-sync review verdict issue <n> ${id} rejected "<reason>"\`.`,
+    `- [ ] The confirmed finding is fixed on \`main\` and recorded via \`spec-sync review verdict issue <n> ${id} accepted fixed\`.`,
+    "",
+  ];
 }

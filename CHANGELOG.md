@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.30.0
+
+### Fixed
+
+- `review batch` and `review tag` issues with findings carry the labels of SST-DESIGN-030 rev 4:
+  `review-codex`, the control label `labels.bug` from the config (default `type: bug`), `priority:`
+  of the highest critical/high/medium finding, `status: backlog`, and `securityLabel` for an area
+  security finding; never `spec-sync` or `auto-audit`. Before, they carried only `review-codex` and
+  the worker loop never picked them up (PROC-DEV-010: no ticket without a control label).
+- The first acceptance criterion of every batch and tag issue body is the premise check: confirm the
+  finding on current `main`, otherwise close it via `spec-sync review verdict issue <n> <id> rejected
+"<reason>"`.
+- A `review tag` run without a critical, high or medium finding (clean, or only low/taste) is a record:
+  the issue carries only `review-codex`, no acceptance criteria, and closes at once; the closed issue
+  still stops a rerun (SST-DESIGN-030 rev 5).
+
+### Migration for the apps
+
+- `gh issue create` fails on a label the repo does not have. Create the labels once in every repo that
+  runs `review batch` or `review tag`: `priority: critical`, `priority: high`, `priority: medium`,
+  `status: backlog` (and `type: bug`, or the configured `labels.bug`, if missing), e.g.
+  `gh label create "status: backlog"`.
+- Open finding tickets that carry only `review-codex` get `type: bug` by hand, once.
+
 ## 0.29.0
 
 ### Added
