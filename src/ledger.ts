@@ -314,16 +314,22 @@ export function interruptedMerge(events: LedgerEvent[], issue: number): LedgerEv
  * `profile` narrows the search to one gate profile; the merge precondition uses
  * `merge`, because foundation.dev.process §Worker-Loop merges only "after
  * the complete local merge gate is green".
+ *
+ * `tree` adds a second way to qualify (SST-DESIGN-016 rev 5, "Beleg nach Baum"):
+ * a run whose recorded `tree` equals it is evidence for the ticket whether or not
+ * it carried `--issue`. Old lines and dirty-tree runs have no `tree` and never
+ * match on it.
  */
 export function latestGate(
   events: LedgerEvent[],
   issue: number,
   profile?: string,
+  tree?: string,
 ): LedgerEvent | undefined {
   const candidates = events.filter(
     (event) =>
       event.type === "gate" &&
-      event.issue === issue &&
+      (event.issue === issue || (tree !== undefined && event.tree === tree)) &&
       (profile === undefined || event.profile === profile),
   );
   if (candidates.length === 0) return undefined;

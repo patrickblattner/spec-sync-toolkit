@@ -39,6 +39,8 @@ interface World {
   issueLabels: string[];
   /** What `gh variable get GATE_MODE` prints; absent = the variable does not exist. */
   gateMode?: string;
+  /** Tree hash of the ticket branch head; absent = `rev-parse` cannot resolve it. */
+  branchTree?: string;
 }
 
 function world(over: Partial<World> = {}): World {
@@ -89,6 +91,10 @@ function fakeDeps(state: World): {
     const key = args.join(" ");
     if (key === "rev-parse --abbrev-ref HEAD") return `${state.currentBranch}\n`;
     if (key === "status --porcelain") return state.dirty ? " M src/a.ts\n" : "";
+    if (key === "rev-parse feat/csv^{tree}") {
+      if (state.branchTree === undefined) throw new Error("unknown revision");
+      return `${state.branchTree}\n`;
+    }
     if (key === "remote") return `${state.remotes.join("\n")}\n`;
     if (args[0] === "branch" && args[1] === "--list") {
       return state.branches.includes(args[2] ?? "") ? `  ${args[2]}\n` : "";
@@ -365,6 +371,57 @@ describe("a violated precondition is exit 4 and changes nothing (§12 M3)", () =
     recordGreenGate(root, 42);
     const result = await runMerge(deps, { ...options, dryRun: true }, NORM_DEFAULTS);
     expect(result.ok).toBe(true);
+  });
+
+  describe("evidence by tree (SST-DESIGN-016 rev 5)", () => {
+    const gateEvidence = async (
+      state: Partial<World>,
+      record: (root: string) => void,
+    ): Promise<boolean> => {
+      const { deps, root } = fakeDeps(world(state));
+      record(root);
+      const result = await runMerge(deps, { ...options, dryRun: true }, NORM_DEFAULTS);
+      const checks = result.data.preconditions as { name: string; ok?: boolean }[];
+      return !(
+        result.exit === EXIT.PRECONDITION && checks.some((c) => c.name === "gate-evidence-green")
+      );
+    };
+
+    it("accepts a green merge run without --issue when the branch head has the same tree", async () => {
+      expect(
+        await gateEvidence({ branchTree: "t1" }, (root) =>
+          appendEvent(root, { type: "gate", ok: true, profile: "merge", tree: "t1" }),
+        ),
+      ).toBe(true);
+    });
+
+    it("gives no evidence when the branch changed after the run (different tree)", async () => {
+      expect(
+        await gateEvidence({ branchTree: "t2" }, (root) =>
+          appendEvent(root, { type: "gate", ok: true, profile: "merge", tree: "t1" }),
+        ),
+      ).toBe(false);
+    });
+
+    it("gives no evidence for a dirty-tree run without --issue (no tree field)", async () => {
+      expect(
+        await gateEvidence({ branchTree: "t1" }, (root) =>
+          appendEvent(root, { type: "gate", ok: true, profile: "merge" }),
+        ),
+      ).toBe(false);
+    });
+
+    it("keeps the issue-based evidence valid, also without a resolvable tree", async () => {
+      expect(await gateEvidence({}, (root) => recordGreenGate(root, 42))).toBe(true);
+    });
+
+    it("requires the merge profile for tree evidence too", async () => {
+      expect(
+        await gateEvidence({ branchTree: "t1" }, (root) =>
+          appendEvent(root, { type: "gate", ok: true, profile: "local", tree: "t1" }),
+        ),
+      ).toBe(false);
+    });
   });
 
   it("refuses on a red gate, not only on a missing one", async () => {

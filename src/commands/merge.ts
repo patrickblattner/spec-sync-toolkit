@@ -197,7 +197,16 @@ async function gather(
     await deps.gh(["issue", "view", String(options.issue), "--json", "state,title,labels"]),
   ) as GhIssueView;
 
-  const gate = latestGate(events, options.issue, MERGE_GATE_PROFILE);
+  // The tree of the ticket branch head (not of the checkout `merge` runs in): a
+  // clean-tree run of the same tree is evidence with or without `--issue`.
+  const tree =
+    branches === ""
+      ? undefined
+      : await deps
+          .git(["rev-parse", `${options.branch}^{tree}`])
+          .then((out) => out.trim() || undefined)
+          .catch(() => undefined);
+  const gate = latestGate(events, options.issue, MERGE_GATE_PROFILE, tree);
 
   // Asked through the same `gh` the sequence uses. A missing variable is an
   // error for `gh` and `unknown` here — the norm reads it as local, and an
@@ -219,12 +228,13 @@ async function gather(
     gateOk: gate?.ok === true,
     // A precondition that does not say how to satisfy it costs the caller a
     // guess, and here the guess is expensive: the ledger is only written when a
-    // gate run is TOLD its ticket, so a green run without `--issue` leaves no
-    // evidence and the merge blocks on a gate that demonstrably passed
+    // gate run is TOLD its ticket or ran on a clean tree (`tree`, SST-DESIGN-016
+    // rev 5), so a dirty-tree run without `--issue` leaves no evidence and the
+    // merge blocks on a gate that demonstrably passed
     // (`production-cockpit#775` paid for one full re-run to find this out).
     gateDetail:
       gate === undefined
-        ? `no green "${MERGE_GATE_PROFILE}" gate recorded for #${options.issue} in the ledger — ` +
+        ? `no green "${MERGE_GATE_PROFILE}" gate recorded for #${options.issue} or for the tree of ${options.branch} in the ledger — ` +
           `run: spec-sync gate --profile ${MERGE_GATE_PROFILE} --issue ${options.issue}`
         : `gate at ${gate.at} was ${gate.ok === true ? "green" : "red"}`,
   };

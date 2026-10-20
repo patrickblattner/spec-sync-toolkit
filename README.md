@@ -93,8 +93,11 @@ incident, not per ticket**: once the cause of the load is found, fixed and recor
 ticket, the next run is a _first_ run of that ticket.
 
 Every gate run that did run writes a `gate` ledger event (v0.28.0, SST-DESIGN-026) with `phases[]`
-(`name`, `exit`, `durationMs`, `skipped`) and, when red, `failedPhase`; without `--issue` it carries
-no `issue` and is no evidence for `merge`.
+(`name`, `exit`, `durationMs`, `skipped`) and, when red, `failedPhase`. If the working tree was clean at the
+start and at the end of the run (v0.29.0, SST-DESIGN-016 rev 5 "Beleg nach Baum"), the event carries `tree`
+(`git rev-parse HEAD^{tree}`); `merge` accepts the latest green `merge`-profile run whose `tree` equals the
+tree of the ticket branch head, with or without `--issue`. A run on a dirty tree without `--issue` is no
+evidence; the `--issue`-based evidence stays valid as an alternative.
 
 Remote mode (`GATE_MODE=remote`, the repo variable of `PROC-DEV-044`): `gate --profile merge`
 refuses to run locally — exit 4, `reason: "remote-mode"`, no ledger event — because there the

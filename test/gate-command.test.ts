@@ -269,6 +269,63 @@ describe("gate records its run in the ledger (spec §8)", () => {
     expect(readLedger(root).events).toHaveLength(1);
   });
 
+  describe("tree of a clean run (SST-DESIGN-016 rev 5)", () => {
+    const git = (root: string, ...args: string[]): string =>
+      execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], {
+        cwd: root,
+        encoding: "utf8",
+      }).trim();
+    const cleanRepo = (): string => {
+      const root = makeRepo([{ name: "unit", cmd: "true" }], "merge");
+      write(root, ".gitignore", ".spec-sync/\nnode_modules/\n");
+      git(root, "init", "-b", "main");
+      git(root, "add", "-A");
+      git(root, "commit", "-m", "init");
+      return root;
+    };
+
+    it("records the HEAD tree without --issue when the tree is clean", async () => {
+      const root = cleanRepo();
+      await runGate(root, ["--profile", "merge"]);
+      const event = readLedger(root).events[0];
+      expect(event?.tree).toBe(git(root, "rev-parse", "HEAD^{tree}"));
+      expect(event?.issue).toBeUndefined();
+      expect(latestGate(readLedger(root).events, 42, "merge", event?.tree as string)?.ok).toBe(
+        true,
+      );
+    });
+
+    it("records no tree on a dirty tree, and such a run is no evidence without --issue", async () => {
+      const root = cleanRepo();
+      write(root, "dirty.txt", "x");
+      await runGate(root, ["--profile", "merge"]);
+      const events = readLedger(root).events;
+      expect(events[0]?.tree).toBeUndefined();
+      expect(
+        latestGate(events, 42, "merge", git(root, "rev-parse", "HEAD^{tree}")),
+      ).toBeUndefined();
+    });
+
+    it("keeps --issue evidence on a dirty tree", async () => {
+      const root = cleanRepo();
+      write(root, "dirty.txt", "x");
+      await runGate(root, ["--profile", "merge", "--issue", "42"]);
+      const events = readLedger(root).events;
+      expect(events[0]?.tree).toBeUndefined();
+      expect(latestGate(events, 42, "merge")?.ok).toBe(true);
+    });
+
+    it("records no tree when the tree turns dirty during the run", async () => {
+      const root = makeRepo([{ name: "unit", cmd: "touch made-by-phase.txt" }], "merge");
+      write(root, ".gitignore", ".spec-sync/\nnode_modules/\n");
+      git(root, "init", "-b", "main");
+      git(root, "add", "-A");
+      git(root, "commit", "-m", "init");
+      await runGate(root, ["--profile", "merge"]);
+      expect(readLedger(root).events[0]?.tree).toBeUndefined();
+    });
+  });
+
   it("writes the evidence merge reads as its precondition", async () => {
     const root = makeRepo([{ name: "unit", cmd: "true" }], "merge");
     await runGate(root, ["--profile", "merge", "--issue", "42"]);

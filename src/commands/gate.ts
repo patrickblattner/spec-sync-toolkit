@@ -34,6 +34,7 @@
  */
 
 import { existsSync, realpathSync } from "node:fs";
+import { simpleGit } from "simple-git";
 import { basename, dirname, join } from "node:path";
 import { EXIT, ToolkitError, progress } from "../output.js";
 import { appendEvent, ledgerPath, readLedger, LEDGER_FILE } from "../ledger.js";
@@ -343,6 +344,7 @@ export async function runGate(
   // gate run is the work, not the queue in front of it — the wait is already in
   // `notes` and belongs to another run's phases.
   const startedAt = Date.now();
+  const cleanAtStart = !preflight && (await headTreeIfClean(ctx.repoRoot)) !== undefined;
   // Prevention beats detection (§7.1 `DECISION (wake-lock-first)`): the phases
   // run under the lock from the start, and it lives exactly as long as they do.
   const wakeLock = environment.holdWakeLock();
@@ -380,15 +382,18 @@ export async function runGate(
       notes.push(`gate evidence recorded in the main checkout's ledger: ${evidence}`);
     }
     // Every run that ran is recorded (SST-DESIGN-026): one without `--issue`
-    // carries no `issue` and so never matches a ticket in `latestGate` — it is
-    // telemetry, not merge evidence.
+    // matches a ticket in `latestGate` only through `tree` (clean-tree runs).
     const reports = (result.data as { phases?: PhaseReport[] } | undefined)?.phases ?? [];
     const failedPhase = result.ok
       ? undefined
       : reports.find((p) => !p.skipped && p.exit !== 0)?.name;
+    // `tree` only when the working tree was clean at start AND end of the run:
+    // then HEAD's tree is exactly what the phases judged (SST-DESIGN-016 rev 5).
+    const tree = cleanAtStart ? await headTreeIfClean(ctx.repoRoot) : undefined;
     appendEvent(ctx.repoRoot, {
       type: "gate",
       ...(issue !== undefined ? { issue } : {}),
+      ...(tree !== undefined ? { tree } : {}),
       run: runId,
       profile,
       ok: result.ok,
@@ -407,6 +412,17 @@ export async function runGate(
     });
   }
   return result;
+}
+
+/** Tree hash of HEAD when the working tree is clean; undefined when dirty or not a git repo. */
+async function headTreeIfClean(repoRoot: string): Promise<string | undefined> {
+  try {
+    const git = simpleGit(repoRoot);
+    if ((await git.raw(["status", "--porcelain"])).trim() !== "") return undefined;
+    return (await git.raw(["rev-parse", "HEAD^{tree}"])).trim() || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 async function runPhases({
