@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.29.0
+
+### Added
+
+- Evidence by tree (SST-DESIGN-016 rev 5, SST-DESIGN-026 rev 7): a gate run whose working tree was
+  clean at start and end records `tree` (`git rev-parse HEAD^{tree}`) in its ledger event. `merge`
+  accepts the latest green `merge`-profile run whose `tree` equals the tree of the ticket branch head,
+  with or without `--issue`. A dirty-tree run without `--issue` is no evidence; `--issue` evidence stays
+  valid as an alternative.
+
+No config migration.
+
+## 0.28.2
+
+### Fixed
+
+- `merge`'s commit-on-main postcondition recognizes a landed ticket anywhere on main since
+  `merge-started`, with a digit-boundary match (`#12` no longer matches `#125`) (SST-DESIGN-019 rev 5).
+
+No config migration.
+
+## 0.28.1
+
+### Changed
+
+- The norm pin for PROC-DEV-047 moves to rev 7 (`status: deferred` rule).
+
+### Fixed
+
+- `gate` compares the ledger path by realpath: no spurious main-checkout note through a symlink.
+- `gate-changed` tests start the failing calls one at a time (no floating rejection).
+
+No config migration.
+
+## 0.28.0
+
+### Added
+
+- Every gate run that did run writes a `gate` ledger event (SST-DESIGN-026 rev 6) with `phases[]`
+  (`name`, `exit`, `durationMs`, `skipped`) and, when red, `failedPhase`. Without `--issue` it carries no
+  `issue` and is no evidence for `merge`.
+
+No config migration.
+
 ## 0.27.0
 
 ### Changed
