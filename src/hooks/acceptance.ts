@@ -21,8 +21,9 @@ import type { AcceptanceVerdict } from "./lib.js";
 
 // Model explicitly pinned: a `claude -p` without `--model` inherits the global entry — this is how
 // both workers ran unnoticed on a large model from 08/13–17 (double quota load). For a one-line
-// verdict on a short text, Haiku is the right class.
-const MODEL = "claude-haiku-4-5-20251001";
+// verdict on a short text, Haiku is the right class. Family alias, never a full ID: the CLI resolves
+// it to the newest Haiku.
+const MODEL = "haiku";
 /** Hard upper bound of the check call. The hook timeout in the settings must be above this. */
 const TIMEOUT_MS = 45_000;
 /** This much of the final message the checker sees — the rest contributes nothing to the judgment. */

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.30.1
+
+### Fixed
+
+- The turn-end acceptance check (`spec-sync hook stop`) calls `claude -p --model haiku` (family alias, newest Haiku) instead of the pinned old ID `claude-haiku-4-5-20251001`.
+
 ## 0.30.0
 
 ### Fixed
