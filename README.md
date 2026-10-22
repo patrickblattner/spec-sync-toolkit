@@ -193,8 +193,8 @@ node <toolkit>/dist/hooks/architect-stop-check.js  # stop hook: budget boundary 
 
 `subagent-stop-check` measures the sub-agent's own transcript (`agent_transcript_path` of the
 SubagentStop input, the parent's `transcript_path` only as a fallback) against `contextBudget` and
-keeps its block counter per agent run; at 100 % it blocks once and orders `CONTEXT LOW`, so a
-phase-batch agent hands the rest of its phase to a fresh agent (v0.27.0, register #1707).
+keeps its block counter per agent run; at 100 % it blocks once and orders `CONTEXT LOW` (v0.27.0, register #1707); the agent finishes its
+ticket, and the next ticket gets a fresh agent anyway (register #1741).
 
 `architect-stop-check` (owner's word 08/22, PROC-DEV-020 rev 4 / PROC-DEV-036 rev 5) is the
 architect variant: pause flag → fresh handover (with attest verification) → budget stage at
