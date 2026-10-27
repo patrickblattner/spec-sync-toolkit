@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.30.2
+
+### Fixed
+
+- `merge` resume counts only its own squash commit (subject = issue title + `#<n>`) as landed on
+  `main`, never any subject that merely mentions the ticket. A spec repin `→ #622` after a stale
+  `merge-started` made the resume skip squash, commit and push, then close the issue and delete the
+  branch while `main` had not moved (suite-ui Q#4807).
+- A resume that has to redo squash and commit also pushes, whatever `pushed` reported before the new
+  commit existed.
+
 ## 0.30.1
 
 ### Fixed

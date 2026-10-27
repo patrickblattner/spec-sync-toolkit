@@ -815,6 +815,26 @@ describe("a merge that died halfway is resumed, not refused (§7.4)", () => {
     expect(names).not.toContain("commit");
   });
 
+  it("does not take a commit that only mentions the ticket for the landed squash", async () => {
+    const { deps, root } = fakeDeps(
+      world({
+        headSubject: "Repin specs: FEATURE-001 r7 → #42",
+        landedSubjects: ["Outline hover fix (found in #42 ui review) #43"],
+        unpushed: "0",
+        issueState: "OPEN",
+      }),
+    );
+    recordGreenGate(root, 42);
+    appendEvent(root, { type: "merge-started", issue: 42, branch: "feat/csv" });
+
+    const result = await runMerge(deps, { ...options, dryRun: true }, NORM_DEFAULTS);
+
+    const names = (result.data.steps as { name: string }[]).map((step) => step.name);
+    expect(names).toContain("squash-merge");
+    expect(names).toContain("commit");
+    expect(names).toContain("push");
+  });
+
   it("does not take #12 for a landed #125", async () => {
     const { deps, root } = fakeDeps(
       world({

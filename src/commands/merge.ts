@@ -459,7 +459,9 @@ async function execute(
  * driver, not something to re-run.
  */
 const REPAIRS: Record<string, readonly string[]> = {
-  "commit-on-main": ["squash-merge", "commit"],
+  // A commit made by the resume itself is unpushed by construction, whatever
+  // `pushed` reported before it existed.
+  "commit-on-main": ["squash-merge", "commit", "push"],
   pushed: ["push"],
   "issue-closed": ["label-issue", "close-issue"],
   "worktree-removed": ["unlock-worktree", "remove-worktree"],
@@ -486,8 +488,11 @@ export async function postconditions(
   options: MergeOptions,
 ): Promise<Check[]> {
   const head = (await deps.git(["log", "-1", "--format=%s"])).trim();
-  const referencesIssue = (subject: string): boolean =>
-    new RegExp(`#${options.issue}(?!\\d)`).test(subject);
+  // Only the squash commit of this merge counts, never any subject that merely
+  // mentions the ticket (a spec repin "→ #622" landed on main after a stale
+  // `merge-started` and made the resume skip squash, commit and push).
+  const landedSubject = commitMessage(options.issue, facts.issue.title);
+  const referencesIssue = (subject: string): boolean => subject === landedSubject;
   // A resume can run days later, after further commits on main: HEAD alone then
   // misses the landed ticket. Search main since the ticket's latest
   // `merge-started` (minus a safety margin for clock/second precision).
