@@ -14,7 +14,7 @@ spec directory.
 
 ## Runtime
 
-Node comes from `mise.toml` (pinned `26.3.0`) — never install Node directly, no nvm, no
+Node comes from `mise.toml` (pinned `26.12.1`) — never install Node directly, no nvm, no
 system Node. Prefix commands with `mise exec --` when your shell has no mise activation.
 
 ```
