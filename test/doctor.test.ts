@@ -84,6 +84,9 @@ interface RepoOptions {
   ledger?: unknown[];
   /** The `review` block of the config (SST-DESIGN-030). */
   review?: unknown;
+  /** Files written to `.github/workflows/`. */
+  workflows?: string[];
+  nightlyWorkflow?: string;
 }
 
 const config = {
@@ -104,8 +107,19 @@ function fakeRepo(options: RepoOptions = {}): string {
   if (options.omitConfig !== true) {
     writeFileSync(
       join(root, "spec-sync.config.json"),
-      JSON.stringify(options.review === undefined ? config : { ...config, review: options.review }),
+      JSON.stringify({
+        ...config,
+        ...(options.review === undefined ? {} : { review: options.review }),
+        ...(options.nightlyWorkflow === undefined
+          ? {}
+          : { nightlyWorkflow: options.nightlyWorkflow }),
+      }),
     );
+  }
+  if (options.workflows !== undefined) {
+    mkdirSync(join(root, ".github", "workflows"), { recursive: true });
+    for (const file of options.workflows)
+      writeFileSync(join(root, ".github", "workflows", file), "");
   }
   if (options.pins !== null) {
     const content =
@@ -319,6 +333,19 @@ describe("doctor (spec §7.7)", () => {
     const findings = findingsOf(invalid.data).join(" ");
     expect(findings).toContain("spec-pins.json is not a valid {key: rev} map");
     expect(findings).toContain(".spec-sync-pause exists");
+  });
+
+  it("reports an unset nightlyWorkflow only when the repo has workflows", async () => {
+    const unset = await runDoctor(
+      context(fakeRepo({ workflows: ["image.yml"] })),
+      deps(fakeHome(), fakeTools()),
+    );
+    expect(findingsOf(unset.data).join(" ")).toContain("no `nightlyWorkflow` in the config");
+
+    for (const options of [{}, { workflows: ["image.yml"], nightlyWorkflow: "image.yml" }]) {
+      const quiet = await runDoctor(context(fakeRepo(options)), deps(fakeHome(), fakeTools()));
+      expect(findingsOf(quiet.data).join(" ")).not.toContain("nightlyWorkflow");
+    }
   });
 
   it("reports a moved pinned spec instead of adjusting the defaults", async () => {

@@ -13,7 +13,7 @@
  * Exit 1 on at least one finding.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import picomatch from "picomatch";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -37,6 +37,7 @@ export const EFFORT_TABLE_KEY = "PROC-DEV-042";
 
 const PINS_FILE = "spec-pins.json";
 const PAUSE_FILE = ".spec-sync-pause";
+const WORKFLOWS_DIR = join(".github", "workflows");
 
 /** `effort:` values the agent loader accepts (foundation.dev.process §Worker-Loop). */
 const EFFORT_VALUES = new Set(["low", "medium", "high", "xhigh", "max"]);
@@ -96,6 +97,7 @@ export async function runDoctor(ctx: CommandContext, deps: DoctorDeps): Promise<
   checkPins(ctx.repoRoot, add);
   await checkNormHash(deps.tools, add);
   checkPause(ctx.repoRoot, add);
+  checkNightly(ctx, add);
 
   // Leftovers of aborted runs (spec §7.7). They need to know which tickets are
   // still open, so this runs after the checks that already reported a broken `gh`.
@@ -356,6 +358,29 @@ async function checkNormHash(tools: Tools, add: Add): Promise<void> {
 function checkPause(repoRoot: string, add: Add): void {
   if (existsSync(join(repoRoot, PAUSE_FILE))) {
     add("pause", `${PAUSE_FILE} exists — the loop is paused`);
+  }
+}
+
+/**
+ * An unset `nightlyWorkflow` silently switches the red-main check of `queue`
+ * off. A repo without workflows has nothing to check; a repo with workflows
+ * must name the one that builds main.
+ */
+function checkNightly(ctx: CommandContext, add: Add): void {
+  let config: Config;
+  try {
+    config = loadConfig(ctx.repoRoot, ctx.flags.config);
+  } catch {
+    return;
+  }
+  if (config.nightlyWorkflow !== undefined) return;
+  const dir = join(ctx.repoRoot, WORKFLOWS_DIR);
+  if (!existsSync(dir)) return;
+  if (readdirSync(dir).some((file) => /\.ya?ml$/.test(file))) {
+    add(
+      "nightly",
+      `no \`nightlyWorkflow\` in the config, but ${WORKFLOWS_DIR} has workflows — the red-main check is off`,
+    );
   }
 }
 
