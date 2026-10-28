@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.30.3
+
+### Changed
+
+- `lenses`: files matching `review.textGlobs` select no lens, so a diff of only text or translation
+  files gets none (PROC-DEV-002, SST-DESIGN-020 rev 3, Q#4843). Extglob workarounds in lens globs
+  that only exist to skip text files can go back to plain globs.
+- `doctor` reports a missing `nightlyWorkflow` when the repo has workflows under
+  `.github/workflows/`; without it the red-main check of `queue` is silently off (SST-DESIGN-022
+  rev 4, console-hub Q#4841).
+- Node pinned to 26.12.1 (`mise.toml`).
+- Norm pin PROC-DEV-010 rev 6 (review findings fixed in the same PR; no label change).
+
 ## 0.30.2
 
 ### Fixed
