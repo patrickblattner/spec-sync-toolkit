@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.30.4
+
+### Security
+
+- `zod` raised to 4.6.7 (Dependabot alert 1, HIGH: memory exhaustion while validating oversized
+  constrained collections; patched in 4.6.6). No API change.
+
 ## 0.30.3
 
 ### Changed
