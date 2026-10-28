@@ -22,6 +22,7 @@ const config = {
     security: ["server/**", "worker/**", "package-lock.json", "**/auth/**"],
     migration: ["server/migrations/**"],
   },
+  review: { textGlobs: ["client/src/i18n/locales/**"] },
 };
 
 function fakeTools(files: string[], options: { diffFails?: string; dirty?: boolean } = {}): Tools {
@@ -74,6 +75,20 @@ describe("lenses (spec §7.5)", () => {
     const result = runLenses(context(), fakeTools(["client/pages/Table.tsx"]));
     expect(result.data?.lenses).toContain("a11y");
     expect(result.data?.skipped).toEqual(["security", "migration"]);
+  });
+
+  it("selects no lens for a diff of only textGlobs files (PROC-DEV-002)", () => {
+    const result = runLenses(context(), fakeTools(["client/src/i18n/locales/de.ts"]));
+    expect(result.data?.lenses).toEqual([]);
+    expect(result.data?.changedFiles).toBe(1);
+  });
+
+  it("still selects lenses for the other files of a mixed diff", () => {
+    const result = runLenses(
+      context(),
+      fakeTools(["client/src/i18n/locales/de.ts", "client/src/i18n/config.ts"]),
+    );
+    expect(result.data?.lenses).toEqual(["acceptance", "tests", "a11y"]);
   });
 
   it("skips every lens on an empty diff and says so", () => {

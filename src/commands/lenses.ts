@@ -7,6 +7,9 @@
  * is where the skip happens: deciding *before* the spawn costs nothing, while a
  * review agent that starts up only to report `SKIPPED` costs a full run-up.
  *
+ * Files matching `review.textGlobs` select no lens (PROC-DEV-002: a diff of only
+ * texts or translation files gets none), whatever the lens globs say.
+ *
  * The command reports applicability, never a verdict (spec §2) — an applicable
  * lens still says nothing about what the review will find.
  */
@@ -43,10 +46,13 @@ export function runLenses(ctx: CommandContext, tools: Tools): CommandResult {
     notes.push("uncommitted changes are not part of the diff — commit them before reviewing");
   }
 
+  const textGlobs = config.review.textGlobs;
+  const lensFiles = files.filter((file) => !picomatch.isMatch(file, textGlobs));
+
   const applicable: string[] = [];
   const skipped: string[] = [];
   for (const [lens, globs] of configured) {
-    if (files.some((file) => picomatch.isMatch(file, globs))) applicable.push(lens);
+    if (lensFiles.some((file) => picomatch.isMatch(file, globs))) applicable.push(lens);
     else skipped.push(lens);
   }
 
