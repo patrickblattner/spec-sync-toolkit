@@ -6,8 +6,11 @@
  *
  * Three promises hold this command together:
  *
- *   1. Phases run in CONFIG ORDER and stop at the first red. No walking on to
- *      more expensive phases once the answer is known.
+ *   1. Phases run in CONFIG ORDER, and a red does not end the run: every
+ *      phase of the profile runs and every red is reported (`SST-DESIGN-016`
+ *      rev 6), so one fix round can address all findings instead of finding
+ *      them one round at a time. The only early end is a `blocking` phase —
+ *      once it is red, the phases behind it are skipped, `blocked by <phase>`.
  *   2. Full output never reaches stdout (spec §3). It lands in
  *      `.spec-sync/logs/<ISO>/<phase>.log`; the response carries the path and,
  *      on failure, `firstError` — at most three lines.
@@ -16,7 +19,8 @@
  *      (`foundation.testing.guideline` §load-dependent measurements).
  *
  * The response stays inside the line budget of spec §3 by carrying nothing
- * beyond what §7.1 asks for: `phases[]`, `firstError` when red, `logDir`.
+ * beyond what §7.1 asks for: `phases[]`, `failures[]` and `firstError` when
+ * red, `logDir`.
  *
  * With `--issue` the run is recorded in the ledger as a `gate` event (spec §8).
  * That event is not bookkeeping on the side: `merge` checks it as its
@@ -384,9 +388,9 @@ export async function runGate(
     // Every run that ran is recorded (SST-DESIGN-026): one without `--issue`
     // matches a ticket in `latestGate` only through `tree` (clean-tree runs).
     const reports = (result.data as { phases?: PhaseReport[] } | undefined)?.phases ?? [];
-    const failedPhase = result.ok
-      ? undefined
-      : reports.find((p) => !p.skipped && p.exit !== 0)?.name;
+    const failedPhases = result.ok
+      ? []
+      : reports.filter((p) => !p.skipped && p.exit !== 0).map((p) => p.name);
     // `tree` only when the working tree was clean at start AND end of the run:
     // then HEAD's tree is exactly what the phases judged (SST-DESIGN-016 rev 5).
     const tree = cleanAtStart ? await headTreeIfClean(ctx.repoRoot) : undefined;
@@ -405,7 +409,9 @@ export async function runGate(
         durationMs,
         skipped,
       })),
-      ...(failedPhase !== undefined ? { failedPhase } : {}),
+      // `failedPhase` (the first red) stays for existing readers; `failedPhases`
+      // lists every red in run order (SST-DESIGN-016 rev 6). Green: neither.
+      ...(failedPhases.length > 0 ? { failedPhase: failedPhases[0], failedPhases } : {}),
       // The only link from a run's logs back to its ticket — `protectedLogDirs`
       // reads it to keep the logs of an unfinished merge out of the pruning.
       logDir: result.logDir,
@@ -447,7 +453,9 @@ async function runPhases({
     keep: protectedLogDirs(readLedger(ctx.repoRoot).events),
   });
   const reports: PhaseReport[] = [];
-  let failed: { name: string; output: string; signal: NodeJS.Signals | null } | undefined;
+  const failed: { name: string; output: string; signal: NodeJS.Signals | null }[] = [];
+  /** The blocking phase that went red, once one has — every later phase is skipped. */
+  let blockedBy: string | undefined;
 
   const probe = new MachineProbe({ measureCapacity });
   probe.begin();
@@ -457,6 +465,13 @@ async function runPhases({
   await probe.probeCapacity("before");
 
   for (const phase of phases) {
+    // Behind a red blocking phase nothing runs: its red makes every later
+    // phase meaningless (`SST-DESIGN-016` rev 6).
+    if (blockedBy !== undefined) {
+      reports.push({ name: phase.name, skipped: true, reason: `blocked by ${blockedBy}` });
+      continue;
+    }
+
     // The hard exclusion goes ahead of the `--changed` one: a phase that only
     // judges in the gate image stays out of the pre-run whatever the diff says.
     if (preflight && phase.imageOnly !== undefined) {
@@ -491,10 +506,10 @@ async function runPhases({
     reports.push({ name: phase.name, skipped: false, exit: outcome.code, durationMs });
 
     if (outcome.code !== 0) {
-      // Stop at the first red: the answer is known, and the phases behind it
-      // are the expensive ones.
-      failed = { name: phase.name, output: outcome.output, signal: outcome.signal };
-      break;
+      // A red does not end the run — the full failure list is what saves the
+      // next fix round. Only a phase marked `blocking` stops the walk.
+      failed.push({ name: phase.name, output: outcome.output, signal: outcome.signal });
+      if (phase.blocking === true) blockedBy = phase.name;
     }
   }
 
@@ -512,26 +527,31 @@ async function runPhases({
   // nothing but this field distinguishes the two responses.
   const mark = preflight ? { preflight: true } : {};
 
-  if (failed === undefined) {
+  if (failed.length === 0) {
     return { ok: true, exit: EXIT.OK, notes, logDir, data: { ...mark, phases: reports } };
   }
 
-  const exit = phaseExit({
-    output: failed.output,
-    signal: failed.signal,
-    saturated: condition.saturated,
-  });
-  if (exit === EXIT.UNPROVABLE) {
+  // Each red is judged on its own under the run's one measurement condition.
+  // The run is unprovable only when EVERY red is: a single defect among them is
+  // a finding to fix, whatever the load did to the rest (`SST-DESIGN-016` rev 6).
+  const judged = failed.map((phase) => ({
+    ...phase,
+    exit: phaseExit({ output: phase.output, signal: phase.signal, saturated: condition.saturated }),
+  }));
+  const unprovable = judged.filter((phase) => phase.exit === EXIT.UNPROVABLE);
+  const exit = unprovable.length === judged.length ? EXIT.UNPROVABLE : EXIT.FAILED;
+  if (unprovable.length > 0) {
     // The reasons themselves are long and belong in the log — the response says
     // what to DO about it (spec §4: repeat, do not diagnose). Which of the two
     // routes got here is read off the load rather than re-derived: the transient
     // route is the only one that reaches exit 2 without saturation, so a quiet
     // box identifies it. Naming the wrong one would send the reader to a
     // measurement log that flatly contradicts the note.
+    const names = unprovable.map((phase) => phase.name).join(", ");
     notes.push(
       condition.saturated
-        ? `unprovable: ${failed.name} failed on a saturated box — repeat on a quiet one, do not diagnose (${MEASUREMENT_LOG}.log)`
-        : `unprovable: ${failed.name} failed on a quiet box with only a transient infra signature — repeat, do not diagnose (${MEASUREMENT_LOG}.log)`,
+        ? `unprovable: ${names} failed on a saturated box — repeat on a quiet one, do not diagnose (${MEASUREMENT_LOG}.log)`
+        : `unprovable: ${names} failed on a quiet box with only a transient infra signature — repeat, do not diagnose (${MEASUREMENT_LOG}.log)`,
     );
   }
 
@@ -540,19 +560,23 @@ async function runPhases({
   // right for a typecheck or a lint run, which report diagnostics and no tests
   // at all, and it is a weaker pointer for everything else — so it says so
   // rather than passing a scanned line off as a runner verdict.
-  const named = reportedFailure(failed.output);
-  if (named === undefined) {
-    notes.push(
-      `${failed.name}: no failing test in the output — firstError is a line of the log, not a runner verdict`,
-    );
-  }
+  const failures = judged.map((phase) => {
+    const named = reportedFailure(phase.output);
+    if (named === undefined) {
+      notes.push(
+        `${phase.name}: no failing test in the output — firstError is a line of the log, not a runner verdict`,
+      );
+    }
+    return { name: phase.name, firstError: named ?? firstError(phase.output) };
+  });
 
   return {
     ok: false,
     exit,
     notes,
     logDir,
-    data: { ...mark, phases: reports, firstError: named ?? firstError(failed.output) },
+    // Top-level `firstError` stays that of the first red, for existing readers.
+    data: { ...mark, phases: reports, failures, firstError: failures[0]?.firstError },
   };
 }
 

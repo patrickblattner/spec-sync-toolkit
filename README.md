@@ -92,8 +92,16 @@ the other case — it took place, it is recorded, and it counts. That limit bind
 incident, not per ticket**: once the cause of the load is found, fixed and recorded in the
 ticket, the next run is a _first_ run of that ticket.
 
+A red phase does not end a run (SST-DESIGN-016 rev 6): every phase of the profile runs, and a red
+response carries `failures[]` — one `{ name, firstError }` per failed phase in run order — next to
+`firstError` (that of the first failed phase). The exit is `1` when at least one failed phase is a
+defect and `2` only when every failed phase is unprovable on its own. The one early end is a phase
+marked `blocking`: once it is red, the phases behind it are skipped with
+`reason: "blocked by <phase>"`.
+
 Every gate run that did run writes a `gate` ledger event (v0.28.0, SST-DESIGN-026) with `phases[]`
-(`name`, `exit`, `durationMs`, `skipped`) and, when red, `failedPhase`. If the working tree was clean at the
+(`name`, `exit`, `durationMs`, `skipped`) and, when red, `failedPhase` (the first failed phase) and
+`failedPhases` (all of them, run order). If the working tree was clean at the
 start and at the end of the run (v0.29.0, SST-DESIGN-016 rev 5 "Beleg nach Baum"), the event carries `tree`
 (`git rev-parse HEAD^{tree}`); `merge` accepts the latest green `merge`-profile run whose `tree` equals the
 tree of the ticket branch head, with or without `--issue`. A run on a dirty tree without `--issue` is no
@@ -118,7 +126,9 @@ unprovable); `--changed` combines, the gate lock is taken, battery and `node_mod
 preconditions apply. Before the first spawn it refuses a merge profile whose `unit`, `build`,
 `e2e-smoke`, `e2e-touched` or `e2e-full` phase carries no `imageOnly` mark — exit 4,
 `reason: "preflight-config"` — so a pre-run never starts a database, a build or a browser by
-accident. `--preflight` on any other profile is exit 4 naming the flag.
+accident. `--preflight` on any other profile is exit 4 naming the flag. Like a gate run, a red
+phase does not end the pre-run (SST-DESIGN-013 rev 5): it reports the full failure list, and
+`blocking` phases behave the same way.
 
 The two phase fields it reads, both optional:
 
@@ -130,6 +140,15 @@ The two phase fields it reads, both optional:
 `imageOnly` is the **reason** the phase stays out of the pre-run (it judges only in the gate
 image, or a norm forbids it on the developer machine), never a boolean; `preflightCmd` is the
 build-free part of the phase.
+
+A third optional phase field, read by every gate run and the pre-run alike:
+
+```jsonc
+{ "name": "build", "cmd": "npm run build", "blocking": true }
+```
+
+`blocking: true` marks a phase whose red makes every later phase meaningless (an environment
+preflight, `build` in front of browser phases); without it, a red phase never stops the run.
 
 Everything project-specific lives in one file, `spec-sync.config.json`: gate phases and
 profiles, path globs for review lenses, label names, log retention, context budget.

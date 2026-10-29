@@ -450,12 +450,13 @@ describe("gate records its run in the ledger (spec §8)", () => {
     ]);
     expect(typeof (phases[0] as { durationMs?: number }).durationMs).toBe("number");
     expect("failedPhase" in (event ?? {})).toBe(false);
+    expect("failedPhases" in (event ?? {})).toBe(false);
   });
 
-  it("names the first red phase as failedPhase", async () => {
+  it("names the first red as failedPhase and every red as failedPhases (SST-DESIGN-016 rev 6)", async () => {
     const root = makeRepo(
       [
-        { name: "lint", cmd: "true" },
+        { name: "lint", cmd: "echo 'Error: lint boom'; exit 1" },
         { name: "unit", cmd: "echo 'Error: boom'; exit 1" },
         { name: "e2e", cmd: "true" },
       ],
@@ -464,8 +465,15 @@ describe("gate records its run in the ledger (spec §8)", () => {
     await runGate(root, ["--profile", "merge", "--issue", "42"]);
 
     const event = latestGate(readLedger(root).events, 42, "merge");
-    expect(event?.failedPhase).toBe("unit");
-    expect((event?.phases as { name: string }[]).map((p) => p.name)).toEqual(["lint", "unit"]);
+    expect(event?.failedPhase).toBe("lint");
+    expect(event?.failedPhases).toEqual(["lint", "unit"]);
+    expect((event?.phases as { name: string }[]).map((p) => p.name)).toEqual([
+      "lint",
+      "unit",
+      "e2e",
+    ]);
+    // One run counts once, however many phases failed (PROC-011).
+    expect(ticketMetrics(readLedger(root).events)[0]).toMatchObject({ gateRuns: 1, retries: 1 });
   });
 
   it("reads an old gate line without phases without error", () => {
@@ -522,7 +530,7 @@ describe("gate — a working tree without its own install (#13)", () => {
   });
 });
 
-describe("gate — phase order and the first red", () => {
+describe("gate — phase order and the full failure list (SST-DESIGN-016 rev 6)", () => {
   it("runs the phases in CONFIG order", async () => {
     const root = makeRepo([
       { name: "format", cmd: "echo format >> order.txt" },
@@ -545,7 +553,7 @@ describe("gate — phase order and the first red", () => {
     ]);
   });
 
-  it("stops at the first red — the expensive phases behind it never run", async () => {
+  it("runs on past a red — every phase of the profile runs", async () => {
     const root = makeRepo([
       { name: "format", cmd: "echo format >> order.txt" },
       { name: "lint", cmd: "echo 'AssertionError: expected 1 to be 2' >&2; exit 1" },
@@ -555,10 +563,107 @@ describe("gate — phase order and the first red", () => {
 
     expect(result.ok).toBe(false);
     expect(result.exit).toBe(EXIT.FAILED);
-    expect(readFileSync(join(root, "order.txt"), "utf8")).not.toContain("e2e");
+    expect(readFileSync(join(root, "order.txt"), "utf8").split("\n").filter(Boolean)).toEqual([
+      "format",
+      "e2e",
+    ]);
     const phases = result.data?.phases as { name: string; exit?: number }[];
-    expect(phases.map((p) => p.name)).toEqual(["format", "lint"]);
-    expect(phases[1]?.exit).toBe(1);
+    expect(phases.map((p) => [p.name, p.exit])).toEqual([
+      ["format", 0],
+      ["lint", 1],
+      ["e2e", 0],
+    ]);
+  });
+
+  it("lists two non-blocking reds in failures[], each with its own firstError", async () => {
+    const root = makeRepo([
+      { name: "lint", cmd: "echo 'Error: lint boom'; exit 1" },
+      { name: "typecheck", cmd: "true" },
+      { name: "unit", cmd: "echo 'Error: unit boom'; exit 1" },
+    ]);
+    const result = await runGate(root);
+
+    expect(result.exit).toBe(EXIT.FAILED);
+    expect(result.data?.failures).toEqual([
+      { name: "lint", firstError: "Error: lint boom" },
+      { name: "unit", firstError: "Error: unit boom" },
+    ]);
+    // The top-level field stays that of the first red, for existing readers.
+    expect(result.data?.firstError).toBe("Error: lint boom");
+    const notes = result.notes?.join("\n") ?? "";
+    expect(notes).toContain("lint: no failing test in the output");
+    expect(notes).toContain("unit: no failing test in the output");
+  });
+
+  it("skips every phase behind a red blocking phase, naming it as the reason", async () => {
+    const root = makeRepo([
+      { name: "lint", cmd: "echo 'Error: lint boom'; exit 1" },
+      { name: "build", cmd: "echo 'Error: build boom'; exit 1", blocking: true },
+      { name: "e2e", cmd: "echo e2e >> order.txt" },
+      { name: "e2e-full", cmd: "echo e2e-full >> order.txt" },
+    ]);
+    const result = await runGate(root);
+
+    expect(result.exit).toBe(EXIT.FAILED);
+    expect(existsSync(join(root, "order.txt"))).toBe(false);
+    expect(result.data?.phases).toMatchObject([
+      { name: "lint", skipped: false, exit: 1 },
+      { name: "build", skipped: false, exit: 1 },
+      { name: "e2e", skipped: true, reason: "blocked by build" },
+      { name: "e2e-full", skipped: true, reason: "blocked by build" },
+    ]);
+    expect((result.data?.failures as { name: string }[]).map((f) => f.name)).toEqual([
+      "lint",
+      "build",
+    ]);
+  });
+
+  it("does not block on a green blocking phase", async () => {
+    const root = makeRepo([
+      { name: "build", cmd: "true", blocking: true },
+      { name: "e2e", cmd: "true" },
+    ]);
+    const result = await runGate(root);
+
+    expect(result.ok).toBe(true);
+    expect(result.data?.phases).toMatchObject([
+      { name: "build", skipped: false, exit: 0 },
+      { name: "e2e", skipped: false, exit: 0 },
+    ]);
+  });
+
+  it("answers exit 1 when one red is a defect and another only unprovable", async () => {
+    const root = makeRepo([
+      { name: "lint", cmd: "echo 'Error: boom'; exit 1" },
+      { name: "unit", cmd: "echo 'Error: read ECONNRESET'; exit 1" },
+    ]);
+    const result = await runGate(root);
+
+    expect(result.exit).toBe(EXIT.FAILED);
+    // The note names only the phase it applies to.
+    const note = result.notes?.find((n) => n.startsWith("unprovable:"));
+    expect(note).toMatch(/^unprovable: unit failed on a (quiet|saturated) box/);
+  });
+
+  it("answers exit 2 only when every red is unprovable, naming each phase", async () => {
+    const root = makeRepo([
+      { name: "lint", cmd: "echo 'Error: read ECONNRESET'; exit 1" },
+      { name: "format", cmd: "true" },
+      { name: "unit", cmd: "echo 'Error: read ECONNRESET'; exit 1" },
+    ]);
+    const result = await runGate(root);
+
+    expect(result.exit).toBe(EXIT.UNPROVABLE);
+    const note = result.notes?.find((n) => n.startsWith("unprovable:"));
+    expect(note).toMatch(/^unprovable: lint, unit failed on a (quiet|saturated) box/);
+  });
+
+  it("leaves a green response as it was — no failures, no firstError", async () => {
+    const root = makeRepo([{ name: "lint", cmd: "true" }]);
+    const result = await runGate(root);
+
+    expect(result.ok).toBe(true);
+    expect(Object.keys(result.data ?? {})).toEqual(["phases"]);
   });
 });
 
@@ -949,5 +1054,30 @@ describe("gate --preflight (SST-DESIGN-013 rev 4)", () => {
     expect(result.exit).toBe(EXIT.FAILED);
     expect(result.data?.preflight).toBe(true);
     expect(readLedger(root).events).toEqual([]);
+  });
+
+  it("runs on past a red in the pre-run and reports the full failure list (rev 5)", async () => {
+    const root = makeRepo(
+      [
+        { name: "lint", cmd: "echo 'Error: lint boom'; exit 1" },
+        { name: "hygiene", cmd: "echo 'Error: hygiene boom'; exit 1" },
+        { name: "unit", cmd: "true", imageOnly: "PROC-REL-030" },
+      ],
+      "merge",
+    );
+
+    const result = await runGate(root, ["--profile", "merge", "--preflight"]);
+
+    expect(result.exit).toBe(EXIT.FAILED);
+    expect(result.data?.preflight).toBe(true);
+    expect(result.data?.phases).toMatchObject([
+      { name: "lint", skipped: false, exit: 1 },
+      { name: "hygiene", skipped: false, exit: 1 },
+      { name: "unit", skipped: true, reason: "image-only (PROC-REL-030)" },
+    ]);
+    expect(result.data?.failures).toEqual([
+      { name: "lint", firstError: "Error: lint boom" },
+      { name: "hygiene", firstError: "Error: hygiene boom" },
+    ]);
   });
 });

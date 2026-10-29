@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- `gate` and `gate --preflight` no longer stop at the first red phase: every phase of the profile
+  runs and the response carries `failures[]` (`{ name, firstError }` per failed phase, run order);
+  top-level `firstError` stays that of the first failed phase. Exit `1` when at least one failed
+  phase is a defect, `2` only when every failed phase is unprovable; the unprovable note names
+  the phases. The ledger `gate` event adds `failedPhases[]` next to `failedPhase` on red runs.
+  Green runs are unchanged (SST-DESIGN-016 rev 6, SST-DESIGN-013 rev 5).
+
+### Added
+
+- Optional phase field `blocking`: a red blocking phase skips every later phase with
+  `reason: "blocked by <phase>"`.
+
 ## 0.30.4
 
 ### Security

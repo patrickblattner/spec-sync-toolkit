@@ -33,6 +33,12 @@ const phaseSchema = z.object({
    * Absent means the pre-run uses `cmd` as it stands.
    */
   preflightCmd: z.string().min(1).optional(),
+  /**
+   * A red here makes every later phase meaningless (an environment preflight,
+   * `build` in front of browser phases): the phases behind it do not run and
+   * are reported as skipped, `blocked by <phase>` (`SST-DESIGN-016` rev 6).
+   */
+  blocking: z.boolean().optional(),
 });
 
 const gateSchema = z.object({
