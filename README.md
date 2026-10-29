@@ -173,7 +173,7 @@ nothing is found, exit 1 with one `health` finding per failed check. The checks:
 (a swept ticket without a class label), `several-classes` (more than one class label),
 `p1-share` (P1 tickets above `p1MaxShare` of the swept queue, judged only from `p1MinQueue`
 tickets on) and `stale-block` (a ticket with the block label whose newest comment is older than
-`staleBlockDays`; without any comment the issue's `updatedAt` stands in). Each finding carries
+`staleBlockDays`; without any comment the issue's `updatedAt` stands in); a block whose newest comment names a still-open ticket of the repo (`#<n>`) waits on that ticket and is skipped (rev 8). Each finding carries
 `check`, `tickets` (at most 10 numbers, `more` counts the rest), `value` and `threshold`. It writes
 nothing — no label, comment or ledger event — and does not call the nightly. `--health` together
 with `--check` exits 4. Thresholds live in an optional `health` block, defaults as shown:

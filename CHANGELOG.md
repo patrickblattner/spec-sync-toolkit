@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- `queue --health` `stale-block` skips a blocked ticket whose newest comment names a still-open
+  ticket of the same repo (`#<n>`) — a documented dependency, not a stale block; once that ticket is
+  closed the block counts again. Open means "in the sweep's open-issue list"; no extra `gh` call
+  (SST-DESIGN-017 rev 8).
+- Spec pin `SST-DESIGN-017` raised to rev 8.
+
 ## 0.33.0
 
 ### Added

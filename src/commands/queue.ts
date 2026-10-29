@@ -588,7 +588,50 @@ function newestActivity(issue: GhIssue): number | undefined {
 }
 
 /**
- * Judges a sweep mechanically (`SST-DESIGN-017` rev 7). Pure over its input;
+ * A same-repo ticket reference: `#` plus number, not preceded by a word
+ * character or `/` — so `org/repo#12` (another repo) and `abc#12` do not count.
+ */
+const SAME_REPO_REF = /(?<![\w/])#(\d+)\b/g;
+
+/**
+ * The newest comment of an issue: the latest by `createdAt`, or — when no
+ * comment is dated — the last one in the order `gh` returns.
+ */
+function newestComment(issue: GhIssue): { body: string } | undefined {
+  const comments = issue.comments ?? [];
+  let newest: { body: string; at: number } | undefined;
+  for (const comment of comments) {
+    const at = comment.createdAt === undefined ? Number.NaN : Date.parse(comment.createdAt);
+    if (Number.isFinite(at) && (newest === undefined || at >= newest.at)) {
+      newest = { body: comment.body, at };
+    }
+  }
+  return newest ?? comments.at(-1);
+}
+
+/**
+ * Whether a blocked ticket waits on a still-open ticket (`SST-DESIGN-017`
+ * rev 8): its newest comment names `#<n>` of this repo and `<n>` is open.
+ *
+ * Open/closed is read from the sweep's own issue list, which holds every OPEN
+ * issue (`gh issue list --state open`) — no extra `gh` call per reference. A
+ * number in that set is open; a number not in it counts as closed, so the
+ * block is judged again. (Above `ISSUE_LIMIT` open issues a still-open ticket
+ * beyond the limit would count as closed — the stricter side.) A reference to
+ * the ticket itself is ignored.
+ */
+function waitsOnOpenTicket(issue: GhIssue, open: Set<number>): boolean {
+  const body = newestComment(issue)?.body;
+  if (body === undefined) return false;
+  for (const match of body.matchAll(SAME_REPO_REF)) {
+    const number = Number.parseInt(match[1] ?? "", 10);
+    if (number !== issue.number && open.has(number)) return true;
+  }
+  return false;
+}
+
+/**
+ * Judges a sweep mechanically (`SST-DESIGN-017` rev 7/8). Pure over its input;
  * it never decides how a finding is fixed and writes nothing. The swept queue
  * is the sorted `queue` — the same set the `unclassified` list and the class
  * counts are taken from.
@@ -657,11 +700,14 @@ export function healthFindings(
   }
 
   // (4) stale-block — blocked, and the newest activity older than `staleBlockDays`.
+  // A block waiting on a still-open ticket is a documented dependency, not stale (rev 8).
+  const open = new Set(byNumber.keys());
   const stale: { issue: number; days: number }[] = [];
   const undated: number[] = [];
   for (const entry of queue) {
     if (entry.blocked !== true) continue;
     const issue = byNumber.get(entry.issue);
+    if (issue !== undefined && waitsOnOpenTicket(issue, open)) continue;
     const at = issue === undefined ? undefined : newestActivity(issue);
     if (at === undefined) {
       undated.push(entry.issue);

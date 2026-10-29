@@ -798,7 +798,7 @@ describe("--health — the sweep judged like a gate (SST-DESIGN-017 rev 7)", () 
       issue(4, ["spec-sync"], "M1"),
       ...[5, 6, 7, 8, 9].map((n) => classed(n, "P2 important")),
       dated(classed(10, "P3 polish", ["blocked"]), [
-        { body: "Condition: waits for #3, Phase: M2", createdAt: daysAgo(8) },
+        { body: "Condition: waits for #99, Phase: M2", createdAt: daysAgo(8) },
       ]),
     ];
     const { result, calls, findings, checks } = await health(issues);
@@ -878,6 +878,36 @@ describe("--health — the sweep judged like a gate (SST-DESIGN-017 rev 7)", () 
     expect(checks).toEqual(["p1-share", "stale-block"]);
     expect(findings[0]).toMatchObject({ value: 0.25, threshold: 0.1 });
     expect(findings[1]).toMatchObject({ value: 3, threshold: 2 });
+  });
+
+  it("AC8: a block waiting on a still-open ticket is skipped; with that ticket closed it counts", async () => {
+    const waiting = dated(classed(5, "P2 important", ["blocked"]), [
+      { body: "Waits on #7", createdAt: daysAgo(10) },
+    ]);
+    const dependency = classed(7, "P2 important");
+    expect((await health([waiting, dependency])).checks).toEqual([]);
+    // #7 no longer in the open set = closed.
+    const closed = await health([waiting]);
+    expect(closed.checks).toEqual(["stale-block"]);
+    expect(closed.findings[0]).toMatchObject({ tickets: [5], value: 10, threshold: 7 });
+  });
+
+  it("skips a block whose newest comment names several tickets when at least one is open", async () => {
+    const waiting = dated(classed(5, "P2 important", ["blocked"]), [
+      { body: "Waits on #40 and #41, see also other/repo#7", createdAt: daysAgo(10) },
+    ]);
+    expect((await health([waiting, classed(41, "P2 important")])).checks).toEqual([]);
+    // Only a cross-repo or self reference open → still stale.
+    const crossRepo = await health([waiting, classed(7, "P2 important")]);
+    expect(crossRepo.checks).toEqual(["stale-block"]);
+  });
+
+  it("judges only the newest comment for the dependency", async () => {
+    const waiting = dated(classed(5, "P2 important", ["blocked"]), [
+      { body: "Waits on #7", createdAt: daysAgo(20) },
+      { body: "Condition: owner decision, Phase: M2", createdAt: daysAgo(10) },
+    ]);
+    expect((await health([waiting, classed(7, "P2 important")])).checks).toEqual(["stale-block"]);
   });
 
   it("rejects --health together with --check as a usage error (exit 4)", () => {
