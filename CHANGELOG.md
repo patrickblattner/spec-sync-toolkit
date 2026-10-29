@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.33.2
+
+### Changed
+
+- Norm pin `PROC-DEV-039` raised to rev 4 (a toolkit pin raise is always `P1 must`). That is the
+  worker's classification rule, so the queue defaults stay unchanged; `doctor` no longer reports
+  the norm-hash finding.
+- Spec pin `PROC-DEV-039` raised to rev 4.
+
 ## 0.33.1
 
 ### Changed
