@@ -76,13 +76,13 @@ describe("revision drift against the pinned specs (spec §6, §7.7)", () => {
   });
 
   it("reports drift once a pinned spec moved", async () => {
-    const drift = await checkNormDrift(readerFor({ "PROC-DEV-039": 4 }));
+    const drift = await checkNormDrift(readerFor({ "PROC-DEV-039": 5 }));
     expect(drift.drifted).toBe(true);
-    expect(drift.moved).toEqual([{ key: "PROC-DEV-039", pinnedRev: 3, currentRev: 4 }]);
+    expect(drift.moved).toEqual([{ key: "PROC-DEV-039", pinnedRev: 4, currentRev: 5 }]);
   });
 
   it("reports one entry per moved spec", async () => {
-    const drift = await checkNormDrift(readerFor({ "PROC-DEV-039": 4, "PROC-DEV-010": 7 }));
+    const drift = await checkNormDrift(readerFor({ "PROC-DEV-039": 5, "PROC-DEV-010": 7 }));
     expect(drift.moved.map((entry) => entry.key)).toEqual(["PROC-DEV-039", "PROC-DEV-010"]);
   });
 
