@@ -354,7 +354,7 @@ describe("doctor (spec §7.7)", () => {
       deps(fakeHome(), fakeTools({ currentRevs: { "PROC-DEV-039": 9 } })),
     );
     expect(findingsOf(result.data).join(" ")).toContain(
-      "PROC-DEV-039 moved to rev 9 (pinned rev 2)",
+      "PROC-DEV-039 moved to rev 9 (pinned rev 3)",
     );
   });
 

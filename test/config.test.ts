@@ -50,8 +50,20 @@ describe("loadConfig (spec §5)", () => {
       hold: "owner-hold",
       started: "status: in-progress",
       blocked: "blocked",
+      priority: { must: "P1 must", important: "P2 important", polish: "P3 polish" },
     });
     expect(config.lenses).toEqual({});
+  });
+
+  it("takes custom priority class label names and defaults the rest (SST-DESIGN-017 rev 6)", () => {
+    const config = loadConfig(
+      repoWith({ ...valid, labels: { priority: { must: "prio:1", polish: "prio:3" } } }),
+    );
+    expect(config.labels.priority).toEqual({
+      must: "prio:1",
+      important: "P2 important",
+      polish: "prio:3",
+    });
   });
 
   it("defaults logRetention to 20 when the config does not name it", () => {

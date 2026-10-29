@@ -2,8 +2,11 @@
  * `queue` — assemble and sort the work queue (spec §7.2).
  *
  * The command **decides nothing** (spec §2). It sweeps the open tickets, drops
- * what `owner-hold` protects, sorts what carries a legible phase pin by the four
- * tiers of `foundation.dev.process` §Worker-Loop, and *reports* everything else:
+ * what `owner-hold` protects, sorts what carries a legible phase pin first by its
+ * priority class label (`P1 must` → `P2 important` → `P3 polish`, `PROC-DEV-039`
+ * rev 3 "sort level ½", `SST-DESIGN-017` rev 6), then by the four tiers of
+ * `foundation.dev.process` §Worker-Loop within each class, and *reports*
+ * everything else:
  *
  *   - a ticket without a legible phase pin is **not guessed** — it lands in
  *     `needsPin` with the reason it could not be placed;
@@ -13,7 +16,10 @@
  *     Zielabgleich can name them;
  *   - a **blocked** ticket is marked at its sort position, never filtered out —
  *     a stale label must not silently hide work, and the position itself is the
- *     anchor a path-clearer inherits its rank at (`PROC-DEV-039`, level 0).
+ *     anchor a path-clearer inherits its rank at (`PROC-DEV-039`, level 0);
+ *   - a ticket without a class label sorts as P2 and is listed in
+ *     `unclassified` — the class is never guessed; one with several class
+ *     labels sorts by the highest and is a `label-drift` finding.
  *
  * `--check` answers in one line — open count and next number — from a **single**
  * `gh` call, so an empty tick costs one roundtrip.
@@ -93,9 +99,22 @@ export function readBlockedCondition(issue: GhIssue): string | null {
   return documented;
 }
 
+/** The priority class of a queue entry (`SST-DESIGN-017` rev 6). */
+export type PriorityClass = "must" | "important" | "polish" | "unclassified";
+
+/** Sort order of the classes: an unclassified ticket sorts as P2, never guessed. */
+const CLASS_ORDER: Record<PriorityClass, number> = {
+  must: 0,
+  important: 1,
+  unclassified: 1,
+  polish: 2,
+};
+
 export interface QueueEntry {
   issue: number;
   title: string;
+  /** Priority class from the class label — the first sort key, ahead of tier 1. */
+  class: PriorityClass;
   /** 0 = `auto-audit`, 1 = `type: bug`, 2 = ordinary build ticket. Tier 1. */
   rank: number;
   /** Increments already merged to `main` — tier 2, started before unstarted. */
@@ -151,6 +170,8 @@ export interface Sweep {
   deferred: TicketRef[];
   /** Open tickets outside the sweep — the mandatory closing line names these. */
   notSwept: TicketRef[];
+  /** Queued tickets without a class label — sorted as P2, listed for backfill. */
+  unclassified: TicketRef[];
   labelDrift: Finding[];
 }
 
@@ -217,11 +238,35 @@ function labelNames(issue: GhIssue): string[] {
 }
 
 /**
+ * The class a ticket's labels name, and every class label it carries. Several
+ * class labels resolve to the highest — the caller reports the drift.
+ */
+function readClass(
+  labels: string[],
+  names: Config["labels"]["priority"],
+): { class: PriorityClass; found: string[] } {
+  const ordered: [Exclude<PriorityClass, "unclassified">, string][] = [
+    ["must", names.must],
+    ["important", names.important],
+    ["polish", names.polish],
+  ];
+  const present = ordered.filter(([, name]) => labels.includes(name));
+  return { class: present[0]?.[0] ?? "unclassified", found: present.map(([, name]) => name) };
+}
+
+/**
  * Sweeps the open issues into the five lists of §7.2. Pure over its input, so
  * the sorting rules are testable without touching a repo.
  */
 export function sweepIssues(issues: GhIssue[], config: Config, norms: Norms): Sweep {
-  const { audit, bug, build, started: startedLabel, blocked: blockedLabel } = config.labels;
+  const {
+    audit,
+    bug,
+    build,
+    started: startedLabel,
+    blocked: blockedLabel,
+    priority,
+  } = config.labels;
   const hold = norms.hold;
   const deferredLabel = norms.deferred;
 
@@ -232,6 +277,7 @@ export function sweepIssues(issues: GhIssue[], config: Config, norms: Norms): Sw
   const labelDrift: Finding[] = [];
   const pinned: {
     issue: GhIssue;
+    class: PriorityClass;
     rank: number;
     started: boolean;
     pin: string;
@@ -299,8 +345,18 @@ export function sweepIssues(issues: GhIssue[], config: Config, norms: Norms): Sw
       continue;
     }
 
+    const priorityClass = readClass(labels, priority);
+    if (priorityClass.found.length > 1) {
+      labelDrift.push({
+        kind: "label-drift",
+        issue: issue.number,
+        detail: `several class labels (${priorityClass.found.map((name) => `"${name}"`).join(", ")}) — sorted by the highest, keep one`,
+      });
+    }
+
     pinned.push({
       issue,
+      class: priorityClass.class,
       rank: isAudit ? 0 : isBug ? 1 : 2,
       started: labels.includes(startedLabel),
       pin,
@@ -321,6 +377,7 @@ export function sweepIssues(issues: GhIssue[], config: Config, norms: Norms): Sw
     .map((entry) => ({
       issue: entry.issue.number,
       title: entry.issue.title,
+      class: entry.class,
       rank: entry.rank,
       started: entry.started,
       phase: typeof entry.phase === "number" ? entry.phase : currentPhase,
@@ -336,8 +393,11 @@ export function sweepIssues(issues: GhIssue[], config: Config, norms: Norms): Sw
     // the phase gate when it was begun, so finishing it cannot violate the phase
     // order. Half-integrated increments on `main` are a state, not a backlog.
     // Tiers 3 and 4 then order within each of the two groups, unchanged.
+    // The class (sort level ½) sits above all four tiers; without class labels
+    // every entry is P2 and the order is exactly the four-tier order.
     .sort(
       (a, b) =>
+        CLASS_ORDER[a.class] - CLASS_ORDER[b.class] ||
         a.rank - b.rank ||
         Number(b.started) - Number(a.started) ||
         a.phase - b.phase ||
@@ -345,7 +405,11 @@ export function sweepIssues(issues: GhIssue[], config: Config, norms: Norms): Sw
     )
     .map((entry, index) => ({ ...entry, position: index + 1 }));
 
-  return { queue, needsPin, held, deferred, notSwept, labelDrift };
+  const unclassified = queue
+    .filter((entry) => entry.class === "unclassified")
+    .map((entry) => ({ issue: entry.issue, title: entry.title }));
+
+  return { queue, needsPin, held, deferred, notSwept, unclassified, labelDrift };
 }
 
 /** One `gh` call: every open issue with the fields the sweep needs. */
@@ -528,6 +592,14 @@ export async function runQueue(
     );
   }
 
+  if (sweep.queue.length > 0) {
+    const count = (cls: PriorityClass) => sweep.queue.filter((entry) => entry.class === cls).length;
+    notes.push(
+      `classes: ${count("must")} must, ${count("important")} important, ` +
+        `${count("polish")} polish, ${count("unclassified")} unclassified (sorted as P2)`,
+    );
+  }
+
   return {
     ok: true,
     notes,
@@ -537,6 +609,7 @@ export async function runQueue(
       held: sweep.held,
       deferred: sweep.deferred,
       notSwept: sweep.notSwept,
+      unclassified: sweep.unclassified,
       findings,
     },
   };

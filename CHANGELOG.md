@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `queue` sorts by a priority class label first — `P1 must` → `P2 important` → `P3 polish` —
+  ahead of the four tiers, which stay unchanged within each class. Each entry carries `class`;
+  a ticket without a class label sorts as P2 and is listed in the new `unclassified` list; several
+  class labels sort by the highest and raise a `label-drift` finding; a note names the count per
+  class. Label names configurable as `labels.priority.must|important|polish`. Without class
+  labels the order is unchanged; `--check` is unchanged (SST-DESIGN-017 rev 6, PROC-DEV-039 rev 3).
+- Norm pin `PROC-DEV-039` raised to rev 3.
+
 ## 0.31.0
 
 ### Changed

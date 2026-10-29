@@ -24,6 +24,7 @@ const config = {
     deferred: "status: deferred",
     started: "status: in-progress",
     blocked: "blocked",
+    priority: { must: "P1 must", important: "P2 important", polish: "P3 polish" },
   },
   nightlyWorkflow: "nightly.yml",
 } as unknown as Config;
@@ -620,5 +621,131 @@ describe("blocked tickets — marked at their position, never filtered", () => {
     });
     const result = await runQueue(deps(gh), config, { check: false }, norms);
     expect(result.notes.join("\n")).not.toContain("blocked");
+  });
+});
+
+describe("priority class — sort level ½ (SST-DESIGN-017 rev 6, PROC-DEV-039 rev 3)", () => {
+  const order = (sweep: { queue: { issue: number }[] }) => sweep.queue.map((entry) => entry.issue);
+
+  it("AC1: same phase, P3 / none / P1 → P1, unclassified, P3; the unclassified one is listed", () => {
+    const sweep = sweepIssues(
+      [
+        issue(3, ["spec-sync", "P3 polish"], "M2"),
+        issue(5, ["spec-sync"], "M2"),
+        issue(7, ["spec-sync", "P1 must"], "M2"),
+      ],
+      config,
+      norms,
+    );
+    expect(order(sweep)).toEqual([7, 5, 3]);
+    expect(sweep.queue.map((entry) => entry.class)).toEqual(["must", "unclassified", "polish"]);
+    expect(sweep.unclassified).toEqual([{ issue: 5, title: "ticket 5" }]);
+    expect(sweep.labelDrift).toEqual([]);
+  });
+
+  it("AC2: a P2 build ticket sorts ahead of a P3 auto-audit ticket", () => {
+    const sweep = sweepIssues(
+      [issue(2, ["auto-audit", "P3 polish"], "M1"), issue(8, ["spec-sync", "P2 important"], "M1")],
+      config,
+      norms,
+    );
+    expect(order(sweep)).toEqual([8, 2]);
+  });
+
+  it("AC2: within P1, audit < bug < build, and started precedes unstarted", () => {
+    const sweep = sweepIssues(
+      [
+        issue(1, ["spec-sync", "P1 must"], "M1"),
+        issue(2, ["spec-sync", "P1 must", "status: in-progress"], "M3"),
+        issue(3, ["type: bug", "P1 must"], "M1"),
+        issue(4, ["auto-audit", "P1 must"], "M1"),
+      ],
+      config,
+      norms,
+    );
+    expect(order(sweep)).toEqual([4, 3, 2, 1]);
+  });
+
+  it("AC3: P1 and P3 on one ticket → sorts as P1 and is a label-drift finding", () => {
+    const sweep = sweepIssues(
+      [
+        issue(4, ["spec-sync", "P2 important"], "M1"),
+        issue(9, ["spec-sync", "P1 must", "P3 polish"], "M1"),
+      ],
+      config,
+      norms,
+    );
+    expect(order(sweep)).toEqual([9, 4]);
+    expect(sweep.queue[0]?.class).toBe("must");
+    expect(sweep.labelDrift).toHaveLength(1);
+    expect(sweep.labelDrift[0]).toMatchObject({ kind: "label-drift", issue: 9 });
+    expect(sweep.labelDrift[0]?.detail).toContain('"P1 must"');
+    expect(sweep.labelDrift[0]?.detail).toContain('"P3 polish"');
+  });
+
+  it("AC4: without any class label the order is the four-tier order, all unclassified", () => {
+    const issues = [
+      issue(6, ["spec-sync"], "M2"),
+      issue(5, ["spec-sync"], "M1"),
+      issue(4, ["type: bug"], "M3"),
+      issue(3, ["spec-sync", "status: in-progress"], "M3"),
+      issue(2, ["auto-audit"], "M4"),
+    ];
+    const sweep = sweepIssues(issues, config, norms);
+    expect(order(sweep)).toEqual([2, 4, 3, 5, 6]);
+    expect(sweep.queue.every((entry) => entry.class === "unclassified")).toBe(true);
+    expect(sweep.unclassified.map((entry) => entry.issue)).toEqual([2, 4, 3, 5, 6]);
+  });
+
+  it("honours configured class label names", () => {
+    const custom = {
+      ...config,
+      labels: {
+        ...config.labels,
+        priority: { must: "prio:1", important: "prio:2", polish: "prio:3" },
+      },
+    } as Config;
+    const sweep = sweepIssues(
+      [
+        issue(1, ["spec-sync", "prio:3"], "M1"),
+        issue(2, ["spec-sync", "P1 must"], "M1"),
+        issue(3, ["spec-sync", "prio:1"], "M1"),
+      ],
+      custom,
+      norms,
+    );
+    expect(order(sweep)).toEqual([3, 2, 1]);
+    expect(sweep.queue.map((entry) => entry.class)).toEqual(["must", "unclassified", "polish"]);
+  });
+
+  it("the summary names the count per class and lists unclassified and the drift", async () => {
+    const { gh } = fakeGh({
+      issues: [
+        issue(1, ["spec-sync", "P1 must"], "M1"),
+        issue(2, ["spec-sync", "P1 must", "P2 important"], "M1"),
+        issue(3, ["spec-sync"], "M1"),
+        issue(4, ["spec-sync", "P3 polish"], "M1"),
+      ],
+      runs: [{ conclusion: "success", createdAt: "2026-07-26T06:00:00.000Z" }],
+    });
+    const result = await runQueue(deps(gh), config, { check: false }, norms);
+    expect(result.notes.join("\n")).toContain(
+      "classes: 2 must, 0 important, 1 polish, 1 unclassified",
+    );
+    expect(result.data.unclassified).toEqual([{ issue: 3, title: "ticket 3" }]);
+    expect(result.data.findings).toEqual([
+      expect.objectContaining({ kind: "label-drift", issue: 2 }),
+    ]);
+  });
+
+  it("leaves --check unchanged", async () => {
+    const { gh } = fakeGh({
+      issues: [
+        issue(5, ["spec-sync", "P3 polish"], "M1"),
+        issue(9, ["spec-sync", "P1 must"], "M1"),
+      ],
+    });
+    const result = await runQueue(deps(gh), config, { check: true }, norms);
+    expect(result.data).toEqual({ open: 2, next: 9 });
   });
 });

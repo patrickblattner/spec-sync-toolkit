@@ -31,7 +31,16 @@ function repo(): string {
 }
 
 function emptySweep(over: Partial<Sweep> = {}): Sweep {
-  return { queue: [], needsPin: [], held: [], deferred: [], notSwept: [], labelDrift: [], ...over };
+  return {
+    queue: [],
+    needsPin: [],
+    held: [],
+    deferred: [],
+    notSwept: [],
+    unclassified: [],
+    labelDrift: [],
+    ...over,
+  };
 }
 
 function deps(
@@ -195,7 +204,16 @@ describe("the Zielabgleich content (§7.6)", () => {
     const root = repo();
     completeRun(root);
     const restQueue = [
-      { issue: 8, title: "next", rank: 2, started: false, phase: 3, pin: "M3", position: 1 },
+      {
+        issue: 8,
+        title: "next",
+        class: "unclassified" as const,
+        rank: 2,
+        started: false,
+        phase: 3,
+        pin: "M3",
+        position: 1,
+      },
     ];
     const result = await runReport(deps(root, emptySweep({ queue: restQueue })), {});
 

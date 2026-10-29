@@ -277,10 +277,13 @@ function checkLabels(ctx: CommandContext, tools: Tools, add: Add, notes: string[
     return;
   }
 
-  const missing = Object.entries(config.labels).filter(([, label]) => !known.has(label));
+  // The priority class labels (`labels.priority`, SST-DESIGN-017 rev 6) are
+  // optional by design — a repo without them sorts exactly as before — so their
+  // absence is not a doctor finding; only the flat label fields are checked.
+  const { priority: _priority, ...flat } = config.labels;
+  const missing = Object.entries(flat).filter(([, label]) => !known.has(label));
   for (const [key, label] of missing) add("labels", `${key} label "${label}" does not exist here`);
-  if (missing.length === 0)
-    notes.push(`${Object.keys(config.labels).length} configured labels exist`);
+  if (missing.length === 0) notes.push(`${Object.keys(flat).length} configured labels exist`);
 }
 
 /**

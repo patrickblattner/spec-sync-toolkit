@@ -57,6 +57,15 @@ const labelsSchema = z.object({
   // `NORM_DEFAULTS` would claim a pinned revision it was never transcribed from
   // (SST-DESIGN-015).
   blocked: z.string().min(1).default("blocked"),
+  // Priority class labels (`SST-DESIGN-017` rev 6, `PROC-DEV-039` rev 3): the
+  // first sort key of `queue`, ahead of the four tiers.
+  priority: z
+    .object({
+      must: z.string().min(1).default("P1 must"),
+      important: z.string().min(1).default("P2 important"),
+      polish: z.string().min(1).default("P3 polish"),
+    })
+    .prefault({}),
 });
 
 /**

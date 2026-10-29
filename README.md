@@ -156,6 +156,18 @@ profiles, path globs for review lenses, label names, log retention, context budg
 SST-DESIGN-014 rev 3); a repo sets it only to deviate on the owner's word — a missing entry never
 means "no limit".
 
+`queue` sorts by a priority class label first (SST-DESIGN-017 rev 6, PROC-DEV-039 rev 3 "sort
+level ½"): `P1 must` → `P2 important` → `P3 polish`, then by the four tiers (audit · bug · build,
+started before unstarted, phase, issue number) within each class. Every queue entry carries
+`class` (`must`, `important`, `polish` or `unclassified`). A ticket without a class label sorts as
+P2 and is listed in `unclassified` (`{ issue, title }`) for backfill — the class is never guessed;
+a ticket with several class labels sorts by the highest and is reported as a `label-drift`
+finding. A note names the count per class. The label names are configurable:
+
+```jsonc
+"labels": { "priority": { "must": "P1 must", "important": "P2 important", "polish": "P3 polish" } }
+```
+
 ## Map (`map extract` · `map check`)
 
 The **model** of a repo's architecture: nodes and edges on three levels — landscape, one app
