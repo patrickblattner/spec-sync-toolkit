@@ -23,12 +23,16 @@
  *
  * `--check` answers in one line — open count and next number — from a **single**
  * `gh` call, so an empty tick costs one roundtrip.
+ *
+ * `--health` judges the same sweep like a gate (`SST-DESIGN-017` rev 7): exit 0
+ * without a finding, exit 1 with one `health` finding per failed check. It
+ * writes nothing.
  */
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { simpleGit } from "simple-git";
-import { EXIT, ToolkitError } from "../output.js";
+import { EXIT, ToolkitError, type ExitCode } from "../output.js";
 import { loadNorms, type Norms } from "../norms.js";
 import type { Command, CommandContext } from "../cli.js";
 import type { Config } from "../config.js";
@@ -57,13 +61,16 @@ export interface QueueDeps {
   now: () => Date;
 }
 
-/** The shape of `gh issue list --json number,title,labels,author,comments`. */
+/** The shape of `gh issue list --json number,title,labels,author,comments,updatedAt`. */
 export interface GhIssue {
   number: number;
   title: string;
   labels?: { name: string }[];
   author?: { login: string } | null;
-  comments?: { body: string }[];
+  /** `gh` returns full comment objects; `createdAt` dates them for `--health`. */
+  comments?: { body: string; createdAt?: string }[];
+  /** Last activity on the issue — the stale-block fallback when it has no comment. */
+  updatedAt?: string;
 }
 
 /**
@@ -177,6 +184,8 @@ export interface Sweep {
 
 export interface QueueOptions {
   check: boolean;
+  /** `--health`: judge the sweep like a gate (`SST-DESIGN-017` rev 7). Absent = off. */
+  health?: boolean;
 }
 
 /**
@@ -188,14 +197,22 @@ export interface QueueOptions {
  */
 export function parseQueueOptions(args: string[]): QueueOptions {
   let check = false;
+  let health = false;
   for (const token of args) {
     if (token === "--check") check = true;
+    else if (token === "--health") health = true;
     else
       throw new ToolkitError(`unknown option for queue: ${token}`, EXIT.PRECONDITION, {
         field: token,
       });
   }
-  return { check };
+  // Two different answers — a one-line count and a verdict — never both at once.
+  if (check && health) {
+    throw new ToolkitError("--health cannot be combined with --check", EXIT.PRECONDITION, {
+      field: "--health",
+    });
+  }
+  return { check, health };
 }
 
 /**
@@ -422,7 +439,7 @@ export async function fetchIssues(gh: GhRunner): Promise<GhIssue[]> {
     "--limit",
     String(ISSUE_LIMIT),
     "--json",
-    "number,title,labels,author,comments",
+    "number,title,labels,author,comments,updatedAt",
   ]);
   return parseJson<GhIssue[]>(raw, "gh issue list");
 }
@@ -519,8 +536,164 @@ export async function nightlyFindings(
   return { findings, notes };
 }
 
+/** The four checks of `queue --health` (`SST-DESIGN-017` rev 7). */
+export type HealthCheck = "unclassified" | "several-classes" | "p1-share" | "stale-block";
+
+export interface HealthFinding {
+  kind: "health";
+  check: HealthCheck;
+  /** At most `HEALTH_MAX_TICKETS` issue numbers; `more` counts the rest. */
+  tickets: number[];
+  more: number;
+  /** Measured value and the threshold it is judged against. */
+  value: number;
+  threshold: number;
+  detail: string;
+}
+
+/** Tickets named per health finding before the rest is only counted. */
+export const HEALTH_MAX_TICKETS = 10;
+
+const DAY_MS = 86_400_000;
+
+function healthFinding(
+  check: HealthCheck,
+  numbers: number[],
+  value: number,
+  threshold: number,
+  measured: string,
+): HealthFinding {
+  const tickets = numbers.slice(0, HEALTH_MAX_TICKETS);
+  const more = numbers.length - tickets.length;
+  const list = tickets.map((n) => `#${n}`).join(", ") + (more > 0 ? ` +${more} more` : "");
+  return { kind: "health", check, tickets, more, value, threshold, detail: `${measured}: ${list}` };
+}
+
+/**
+ * The newest activity a blocked ticket shows: its newest dated comment. Without
+ * any dated comment the issue's own `updatedAt` stands in — a block label set
+ * without a comment still moved `updatedAt`, so it is the closest available
+ * date for "when was this last looked at"; `createdAt` of the issue would date
+ * the ticket, not the block. `undefined` when neither is readable.
+ */
+function newestActivity(issue: GhIssue): number | undefined {
+  const dates = (issue.comments ?? [])
+    .map((comment) =>
+      comment.createdAt === undefined ? Number.NaN : Date.parse(comment.createdAt),
+    )
+    .filter((at) => Number.isFinite(at));
+  if (dates.length > 0) return Math.max(...dates);
+  const updated = issue.updatedAt === undefined ? Number.NaN : Date.parse(issue.updatedAt);
+  return Number.isFinite(updated) ? updated : undefined;
+}
+
+/**
+ * Judges a sweep mechanically (`SST-DESIGN-017` rev 7). Pure over its input;
+ * it never decides how a finding is fixed and writes nothing. The swept queue
+ * is the sorted `queue` — the same set the `unclassified` list and the class
+ * counts are taken from.
+ */
+export function healthFindings(
+  issues: GhIssue[],
+  sweep: Sweep,
+  config: Config,
+  now: Date,
+): { findings: HealthFinding[]; notes: string[] } {
+  const { p1MaxShare, p1MinQueue, staleBlockDays } = config.health;
+  const byNumber = new Map(issues.map((issue) => [issue.number, issue]));
+  const findings: HealthFinding[] = [];
+  const notes: string[] = [];
+  const queue = sweep.queue;
+
+  // (1) unclassified — any swept ticket without a class label.
+  if (sweep.unclassified.length > 0) {
+    findings.push(
+      healthFinding(
+        "unclassified",
+        sweep.unclassified.map((ref) => ref.issue),
+        sweep.unclassified.length,
+        0,
+        `${sweep.unclassified.length} ticket(s) without a class label (threshold 0)`,
+      ),
+    );
+  }
+
+  // (2) several-classes — more than one class label on one ticket.
+  const several = queue
+    .filter((entry) => {
+      const issue = byNumber.get(entry.issue);
+      return (
+        issue !== undefined && readClass(labelNames(issue), config.labels.priority).found.length > 1
+      );
+    })
+    .map((entry) => entry.issue);
+  if (several.length > 0) {
+    findings.push(
+      healthFinding(
+        "several-classes",
+        several,
+        several.length,
+        0,
+        `${several.length} ticket(s) with more than one class label (threshold 0)`,
+      ),
+    );
+  }
+
+  // (3) p1-share — only judged from `p1MinQueue` tickets on; strictly above the share.
+  const p1 = queue.filter((entry) => entry.class === "must").map((entry) => entry.issue);
+  if (queue.length >= p1MinQueue) {
+    const share = p1.length / queue.length;
+    if (share > p1MaxShare) {
+      findings.push(
+        healthFinding(
+          "p1-share",
+          p1,
+          share,
+          p1MaxShare,
+          `P1 share ${Math.round(share * 100)} % (${p1.length} of ${queue.length}) > ${Math.round(p1MaxShare * 100)} %`,
+        ),
+      );
+    }
+  }
+
+  // (4) stale-block — blocked, and the newest activity older than `staleBlockDays`.
+  const stale: { issue: number; days: number }[] = [];
+  const undated: number[] = [];
+  for (const entry of queue) {
+    if (entry.blocked !== true) continue;
+    const issue = byNumber.get(entry.issue);
+    const at = issue === undefined ? undefined : newestActivity(issue);
+    if (at === undefined) {
+      undated.push(entry.issue);
+      continue;
+    }
+    const days = (now.getTime() - at) / DAY_MS;
+    if (days > staleBlockDays) stale.push({ issue: entry.issue, days });
+  }
+  if (stale.length > 0) {
+    const oldest = Math.max(...stale.map((s) => s.days));
+    findings.push(
+      healthFinding(
+        "stale-block",
+        stale.map((s) => s.issue),
+        Math.floor(oldest),
+        staleBlockDays,
+        `${stale.length} blocked ticket(s) without activity for more than ${staleBlockDays} days (oldest ${Math.floor(oldest)} days)`,
+      ),
+    );
+  }
+  if (undated.length > 0) {
+    notes.push(
+      `stale-block not measurable for ${undated.map((n) => `#${n}`).join(", ")} — no dated comment and no updatedAt`,
+    );
+  }
+
+  return { findings, notes };
+}
+
 export interface QueueResult {
   ok: boolean;
+  exit?: ExitCode;
   notes: string[];
   data: Record<string, unknown>;
 }
@@ -551,6 +724,24 @@ export async function runQueue(
         open: sweep.queue.length + sweep.needsPin.length,
         next: sweep.queue[0]?.issue ?? null,
       },
+    };
+  }
+
+  // `--health` judges the same sweep like a gate and stops there: no nightly
+  // call, nothing written (`SST-DESIGN-017` rev 7).
+  if (options.health === true) {
+    const health = healthFindings(issues, sweep, config, deps.now());
+    const healthy = health.findings.length === 0;
+    return {
+      ok: healthy,
+      exit: healthy ? EXIT.OK : EXIT.FAILED,
+      notes: [
+        ...health.notes,
+        healthy
+          ? `queue healthy: ${sweep.queue.length} swept ticket(s), no finding`
+          : `${health.findings.length} health finding(s) — reported, nothing changed`,
+      ],
+      data: { swept: sweep.queue.length, findings: health.findings },
     };
   }
 

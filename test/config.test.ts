@@ -55,6 +55,19 @@ describe("loadConfig (spec §5)", () => {
     expect(config.lenses).toEqual({});
   });
 
+  it("defaults the health thresholds and takes overrides (SST-DESIGN-017 rev 7)", () => {
+    expect(loadConfig(repoWith(valid)).health).toEqual({
+      p1MaxShare: 0.25,
+      p1MinQueue: 8,
+      staleBlockDays: 7,
+    });
+    expect(loadConfig(repoWith({ ...valid, health: { p1MinQueue: 12 } })).health).toEqual({
+      p1MaxShare: 0.25,
+      p1MinQueue: 12,
+      staleBlockDays: 7,
+    });
+  });
+
   it("takes custom priority class label names and defaults the rest (SST-DESIGN-017 rev 6)", () => {
     const config = loadConfig(
       repoWith({ ...valid, labels: { priority: { must: "prio:1", polish: "prio:3" } } }),

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   BOT_LOGIN,
+  HEALTH_MAX_TICKETS,
   parseQueueOptions,
   readPhasePin,
   runQueue,
@@ -27,6 +28,7 @@ const config = {
     priority: { must: "P1 must", important: "P2 important", polish: "P3 polish" },
   },
   nightlyWorkflow: "nightly.yml",
+  health: { p1MaxShare: 0.25, p1MinQueue: 8, staleBlockDays: 7 },
 } as unknown as Config;
 
 const norms = NORM_DEFAULTS;
@@ -469,8 +471,9 @@ describe("nightly findings are reported, not turned into tickets (§7.2)", () =>
 
 describe("option parsing", () => {
   it("accepts --check and defaults to the full queue", () => {
-    expect(parseQueueOptions([])).toEqual({ check: false });
-    expect(parseQueueOptions(["--check"])).toEqual({ check: true });
+    expect(parseQueueOptions([])).toEqual({ check: false, health: false });
+    expect(parseQueueOptions(["--check"])).toEqual({ check: true, health: false });
+    expect(parseQueueOptions(["--health"])).toEqual({ check: false, health: true });
   });
 
   it("rejects a mistyped option with exit 4 and names the field", () => {
@@ -747,5 +750,144 @@ describe("priority class — sort level ½ (SST-DESIGN-017 rev 6, PROC-DEV-039 r
     });
     const result = await runQueue(deps(gh), config, { check: true }, norms);
     expect(result.data).toEqual({ open: 2, next: 9 });
+  });
+});
+
+describe("--health — the sweep judged like a gate (SST-DESIGN-017 rev 7)", () => {
+  const NOW = "2026-07-26T12:00:00.000Z";
+  const daysAgo = (days: number) => new Date(Date.parse(NOW) - days * 86_400_000).toISOString();
+  const classed = (number: number, cls: string, extra: string[] = []) =>
+    issue(number, ["spec-sync", cls, ...extra], "M1");
+  const dated = (base: GhIssue, comments: { body: string; createdAt: string }[]): GhIssue => ({
+    ...base,
+    comments: [...(base.comments ?? []), ...comments],
+  });
+  const health = async (issues: GhIssue[], cfg: Config = config) => {
+    const { gh, calls } = fakeGh({ issues });
+    const result = await runQueue(deps(gh), cfg, { check: false, health: true }, norms);
+    const findings = result.data.findings as {
+      check: string;
+      tickets: number[];
+      more: number;
+      value: number;
+      threshold: number;
+    }[];
+    return { result, calls, findings, checks: findings.map((f) => f.check) };
+  };
+
+  it("AC5: every ticket one class, P1 ≤ 25 %, no stale block → exit 0, no finding", async () => {
+    const issues = [
+      classed(1, "P1 must"),
+      classed(2, "P1 must"),
+      ...[3, 4, 5, 6, 7, 8].map((n) => classed(n, "P2 important")),
+      dated(classed(9, "P3 polish", ["blocked"]), [
+        { body: "Condition: waits for #3, Phase: M2", createdAt: daysAgo(6) },
+      ]),
+    ];
+    const { result, findings } = await health(issues);
+    expect(result.ok).toBe(true);
+    expect(result.exit).toBe(EXIT.OK);
+    expect(findings).toEqual([]);
+  });
+
+  it("AC6: unclassified + 3 of 10 P1 + an 8-day-old block → exit 1, three findings, nothing written", async () => {
+    const issues = [
+      classed(1, "P1 must"),
+      classed(2, "P1 must"),
+      classed(3, "P1 must"),
+      issue(4, ["spec-sync"], "M1"),
+      ...[5, 6, 7, 8, 9].map((n) => classed(n, "P2 important")),
+      dated(classed(10, "P3 polish", ["blocked"]), [
+        { body: "Condition: waits for #3, Phase: M2", createdAt: daysAgo(8) },
+      ]),
+    ];
+    const { result, calls, findings, checks } = await health(issues);
+    expect(result.ok).toBe(false);
+    expect(result.exit).toBe(EXIT.FAILED);
+    expect(checks).toEqual(["unclassified", "p1-share", "stale-block"]);
+    expect(findings[0]).toMatchObject({ tickets: [4], value: 1, threshold: 0 });
+    expect(findings[1]).toMatchObject({ tickets: [1, 2, 3], value: 0.3, threshold: 0.25 });
+    expect((findings[1] as unknown as { detail: string }).detail).toContain(
+      "30 % (3 of 10) > 25 %",
+    );
+    expect(findings[2]).toMatchObject({ tickets: [10], value: 8, threshold: 7 });
+    // Writes nothing: the only gh call is the read-only issue list, no nightly call.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.slice(0, 2)).toEqual(["issue", "list"]);
+    expect(calls[0]).toContain("number,title,labels,author,comments,updatedAt");
+  });
+
+  it("AC7: 2 of 4 P1 → no p1-share finding below the minimum queue", async () => {
+    const { result, checks } = await health([
+      classed(1, "P1 must"),
+      classed(2, "P1 must"),
+      classed(3, "P2 important"),
+      classed(4, "P3 polish"),
+    ]);
+    expect(checks).toEqual([]);
+    expect(result.exit).toBe(EXIT.OK);
+  });
+
+  it("reports a ticket with several class labels as several-classes", async () => {
+    const { checks, findings, result } = await health([
+      classed(1, "P2 important"),
+      classed(2, "P1 must", ["P3 polish"]),
+    ]);
+    expect(checks).toEqual(["several-classes"]);
+    expect(findings[0]).toMatchObject({ tickets: [2], value: 1, threshold: 0 });
+    expect(result.exit).toBe(EXIT.FAILED);
+  });
+
+  it("names at most ten tickets per finding, then counts the rest", async () => {
+    const issues = Array.from({ length: 13 }, (_, i) => issue(i + 1, ["spec-sync"], "M1"));
+    const { findings } = await health(issues);
+    expect(findings[0]?.tickets).toHaveLength(HEALTH_MAX_TICKETS);
+    expect(findings[0]?.more).toBe(3);
+    expect((findings[0] as unknown as { detail: string }).detail).toContain("+3 more");
+  });
+
+  it("falls back to updatedAt for a blocked ticket without a dated comment", async () => {
+    const stale = {
+      ...issue(1, ["spec-sync", "P2 important", "blocked"], "M1"),
+      updatedAt: daysAgo(9),
+    };
+    const fresh = {
+      ...issue(2, ["spec-sync", "P2 important", "blocked"], "M1"),
+      updatedAt: daysAgo(1),
+    };
+    const { checks, findings } = await health([stale, fresh]);
+    expect(checks).toEqual(["stale-block"]);
+    expect(findings[0]?.tickets).toEqual([1]);
+  });
+
+  it("honours configured thresholds", async () => {
+    const strict = {
+      ...config,
+      health: { p1MaxShare: 0.1, p1MinQueue: 4, staleBlockDays: 2 },
+    } as unknown as Config;
+    const issues = [
+      classed(1, "P1 must"),
+      classed(2, "P2 important"),
+      classed(3, "P2 important"),
+      dated(classed(4, "P3 polish", ["blocked"]), [
+        { body: "Condition: x, Phase: M2", createdAt: daysAgo(3) },
+      ]),
+    ];
+    expect((await health(issues)).checks).toEqual([]);
+    const { checks, findings } = await health(issues, strict);
+    expect(checks).toEqual(["p1-share", "stale-block"]);
+    expect(findings[0]).toMatchObject({ value: 0.25, threshold: 0.1 });
+    expect(findings[1]).toMatchObject({ value: 3, threshold: 2 });
+  });
+
+  it("rejects --health together with --check as a usage error (exit 4)", () => {
+    let caught: ToolkitError | undefined;
+    try {
+      parseQueueOptions(["--health", "--check"]);
+    } catch (error) {
+      caught = error as ToolkitError;
+    }
+    expect(caught?.exit).toBe(EXIT.PRECONDITION);
+    expect(caught?.field).toBe("--health");
   });
 });

@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `queue --health` judges the sweep like a gate: exit 0 without a finding, exit 1 with one `health`
+  finding per failed check — `unclassified`, `several-classes`, `p1-share` (above 25 % from 8
+  swept tickets on) and `stale-block` (blocked, newest comment older than 7 days; `updatedAt` when
+  there is no comment). Each finding names the check, up to 10 tickets plus a count, value and
+  threshold. Writes nothing; `--health` with `--check` exits 4. Thresholds configurable in the new
+  optional `health` block (`p1MaxShare`, `p1MinQueue`, `staleBlockDays`). The sweep now also
+  fetches `updatedAt` (SST-DESIGN-017 rev 7).
+- Spec pin `SST-DESIGN-017` raised to rev 7.
+
 ## 0.32.0
 
 ### Added

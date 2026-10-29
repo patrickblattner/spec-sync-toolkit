@@ -24,7 +24,7 @@ no attempt to be general. Outside that setup most of it will not make sense.
 
 ```bash
 spec-sync gate --profile local|merge|nightly [--changed] [--preflight]
-spec-sync queue [--check]
+spec-sync queue [--check | --health]
 spec-sync pack <issue>
 spec-sync merge <issue> --branch <name> [--dry-run]
 spec-sync lenses [--base main]
@@ -166,6 +166,20 @@ finding. A note names the count per class. The label names are configurable:
 
 ```jsonc
 "labels": { "priority": { "must": "P1 must", "important": "P2 important", "polish": "P3 polish" } }
+```
+
+`queue --health` (SST-DESIGN-017 rev 7) runs the same sweep and judges it like a gate: exit 0 when
+nothing is found, exit 1 with one `health` finding per failed check. The checks: `unclassified`
+(a swept ticket without a class label), `several-classes` (more than one class label),
+`p1-share` (P1 tickets above `p1MaxShare` of the swept queue, judged only from `p1MinQueue`
+tickets on) and `stale-block` (a ticket with the block label whose newest comment is older than
+`staleBlockDays`; without any comment the issue's `updatedAt` stands in). Each finding carries
+`check`, `tickets` (at most 10 numbers, `more` counts the rest), `value` and `threshold`. It writes
+nothing — no label, comment or ledger event — and does not call the nightly. `--health` together
+with `--check` exits 4. Thresholds live in an optional `health` block, defaults as shown:
+
+```jsonc
+"health": { "p1MaxShare": 0.25, "p1MinQueue": 8, "staleBlockDays": 7 }
 ```
 
 ## Map (`map extract` · `map check`)

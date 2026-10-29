@@ -69,6 +69,19 @@ const labelsSchema = z.object({
 });
 
 /**
+ * The `health` block (`SST-DESIGN-017` rev 7): thresholds of `queue --health`.
+ * Optional; every key defaults to the value the spec writes.
+ */
+const healthSchema = z.object({
+  /** Largest share of P1 tickets in the swept queue that is still healthy. */
+  p1MaxShare: z.number().min(0).max(1).default(0.25),
+  /** The P1 share is only judged from this queue size on. */
+  p1MinQueue: z.number().int().positive().default(8),
+  /** A blocked ticket whose newest comment is older than this many days is stale. */
+  staleBlockDays: z.number().positive().default(7),
+});
+
+/**
  * The `review` block (SST-DESIGN-030). Optional and non-strict: unknown keys
  * are stripped, so the legacy keys of the per-repo review scripts (`engine`,
  * `cmd`, `promptTemplate`, `batchLenses`, `uiLens`, `mark`) pass and are
@@ -153,6 +166,7 @@ const configSchema = z
      */
     pinExclude: z.array(z.string().min(1)).optional(),
     review: reviewSchema.prefault({}),
+    health: healthSchema.prefault({}),
   })
   .superRefine((config, ctx) => {
     // A profile may only name phases that exist — otherwise `gate --profile x`
