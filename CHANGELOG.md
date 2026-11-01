@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.35.0
+
+### Changed
+
+- **Breaking for callers:** `licence-allowlist.json` exceptions are now
+  `{ package, licence, reason }` — every exception needs `licence`, the expression it was granted
+  for (the read SPDX expression, `UNLICENSED`, or `unreadable`). An exception passes only while the
+  package's read licence equals it (SPDX text compared up to case and whitespace; `unreadable`
+  needs an unreadable package); otherwise it is a finding
+  `exception granted for <X>, package now <Y>`. An exception without `licence` or `reason` → exit 4
+  naming the entry (SST-FEATURE-001 rev 5).
+- `licence-inventory` no longer judges nodes `npm ls` marks `extraneous`; they are not part of the
+  closure and are counted as `skippedExtraneous` in the payload (always present, 0 if none).
+
 ## 0.34.0
 
 ### Added

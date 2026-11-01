@@ -186,7 +186,10 @@ describe("licence-inventory (SST-FEATURE-001)", () => {
     const result = await runLicenceInventory(ctxFor(root), ls);
     expect(NPM_LS_ARGS).toEqual(["ls", "--omit=dev", "--all", "--json"]);
     expect(calls).toHaveLength(1);
-    expect(result).toMatchObject({ exit: EXIT.OK, data: { packages: 1, findings: 0 } });
+    expect(result).toMatchObject({
+      exit: EXIT.OK,
+      data: { packages: 1, skippedExtraneous: 0, findings: 0 },
+    });
   });
 
   it("AC5: runs without network access", async () => {
@@ -210,11 +213,101 @@ describe("licence-inventory (SST-FEATURE-001)", () => {
     ).rejects.toMatchObject({ exit: EXIT.PRECONDITION, field: "ops/licences.json" });
   });
 
-  it("an exception without a reason → exit 4", async () => {
-    const root = repo([], { licenses: ["MIT"], exceptions: [{ package: "x" }] });
+  it("an exception without a reason → exit 4 naming the entry", async () => {
+    const root = repo([], { licenses: ["MIT"], exceptions: [{ package: "x", licence: "MIT" }] });
     await expect(runLicenceInventory(ctxFor(root), npmLs({}))).rejects.toMatchObject({
       exit: EXIT.PRECONDITION,
+      field: "licence-allowlist.json:exceptions.0.reason",
     });
+  });
+
+  it("AC6: an exception without licence → exit 4 naming the entry", async () => {
+    const root = repo([], {
+      licenses: ["MIT"],
+      exceptions: [
+        { package: "ok", licence: "MIT", reason: "fine" },
+        { package: "x", reason: "granted before rev 5" },
+      ],
+    });
+    await expect(runLicenceInventory(ctxFor(root), npmLs({}))).rejects.toMatchObject({
+      exit: EXIT.PRECONDITION,
+      field: "licence-allowlist.json:exceptions.1.licence",
+      message: expect.stringContaining("exceptions.1.licence") as unknown,
+    });
+  });
+
+  it("AC6: exception granted for LGPL-3.0-or-later, package now GPL-3.0-only → finding naming both", async () => {
+    const root = repo([{ name: "l", version: "2.0.0", manifest: { license: "GPL-3.0-only" } }], {
+      licenses: ["MIT"],
+      exceptions: [{ package: "l", licence: "LGPL-3.0-or-later", reason: "dynamic linking" }],
+    });
+    const result = await runLicenceInventory(ctxFor(root), npmLs({ l: { version: "2.0.0" } }));
+    expect(result).toMatchObject({
+      exit: EXIT.FAILED,
+      data: {
+        findings: 1,
+        first: [
+          "l@2.0.0: GPL-3.0-only — exception granted for LGPL-3.0-or-later, package now GPL-3.0-only",
+        ],
+      },
+    });
+  });
+
+  it("an exception passes while the read licence equals its licence, up to case and whitespace", async () => {
+    const root = repo(
+      [
+        { name: "l", version: "1.0.0", manifest: { license: "(LGPL-3.0-or-later OR MPL-2.0)" } },
+        { name: "u", version: "1.0.0", manifest: { license: "SEE LICENSE IN x" } },
+        { name: "n", version: "1.0.0" },
+        { name: "m", version: "1.0.0", manifest: { license: "MIT" } },
+      ],
+      {
+        licenses: ["Apache-2.0"],
+        exceptions: [
+          { package: "l", licence: "( lgpl-3.0-or-later  or MPL-2.0 )", reason: "a" },
+          { package: "u", licence: "SEE LICENSE IN x", reason: "b" },
+          { package: "n@1.0.0", licence: "unreadable", reason: "c" },
+          { package: "m", licence: "unreadable", reason: "d" },
+        ],
+      },
+    );
+    const result = await runLicenceInventory(
+      ctxFor(root),
+      npmLs({
+        l: { version: "1.0.0" },
+        u: { version: "1.0.0" },
+        n: { version: "1.0.0" },
+        m: { version: "1.0.0" },
+      }),
+    );
+    expect(result.data).toMatchObject({
+      findings: 1,
+      first: ["m@1.0.0: MIT — exception granted for unreadable, package now MIT"],
+    });
+    const byName = new Map(inventoryOf(root, result.data?.inventory).map((e) => [e.name, e]));
+    expect(byName.get("n")).toMatchObject({ licence: "unreadable", verdict: "exception" });
+  });
+
+  it("AC4: an extraneous GPL-3.0 node → exit 0, skippedExtraneous: 1, not judged", async () => {
+    const root = repo(
+      [
+        { name: "a", version: "1.0.0", manifest: { license: "MIT" } },
+        { name: "stray", version: "1.0.0", manifest: { license: "GPL-3.0" } },
+      ],
+      ALLOW,
+    );
+    const result = await runLicenceInventory(
+      ctxFor(root),
+      npmLs({
+        a: { version: "1.0.0", dependencies: { stray: { version: "1.0.0", extraneous: true } } },
+        stray: { version: "1.0.0", extraneous: true },
+      }),
+    );
+    expect(result).toMatchObject({
+      exit: EXIT.OK,
+      data: { packages: 1, skippedExtraneous: 1, findings: 0 },
+    });
+    expect(inventoryOf(root, result.data?.inventory).map((e) => e.name)).toEqual(["a"]);
   });
 
   it("--allowlist reads another file", async () => {
@@ -234,7 +327,9 @@ describe("licence-inventory (SST-FEATURE-001)", () => {
     ];
     const root = repo(packages, {
       licenses: ["MIT", "UNLICENSED"],
-      exceptions: [{ package: "private-a", reason: "our own closed package" }],
+      exceptions: [
+        { package: "private-a", licence: "UNLICENSED", reason: "our own closed package" },
+      ],
     });
     const result = await runLicenceInventory(
       ctxFor(root),
@@ -254,7 +349,7 @@ describe("licence-inventory (SST-FEATURE-001)", () => {
   it("an exception may name name@version only", async () => {
     const root = repo([{ name: "g", version: "2.0.0", manifest: { license: "GPL-2.0" } }], {
       licenses: ["MIT"],
-      exceptions: [{ package: "g@1.0.0", reason: "old one" }],
+      exceptions: [{ package: "g@1.0.0", licence: "GPL-2.0", reason: "old one" }],
     });
     const result = await runLicenceInventory(ctxFor(root), npmLs({ g: { version: "2.0.0" } }));
     expect(result.data).toMatchObject({ findings: 1 });

@@ -1,15 +1,18 @@
 /**
  * `licence-inventory` — licence inventory of the production dependencies,
- * offline and fail-closed (SST-FEATURE-001 rev 4, GL-CODE-002).
+ * offline and fail-closed (SST-FEATURE-001 rev 5, GL-CODE-002).
  *
  * `spec-sync licence-inventory [--allowlist <file>]`
  *
  * Population: the production closure from `npm ls --omit=dev --all --json`
  * (workspaces included), deduplicated by name@version; the repo's own
  * workspace packages (`resolved: file:…`) are skipped, their dependencies are
- * not. The licence comes from the installed `package.json` (`license`, legacy
+ * not. Nodes npm marks `extraneous` are not in the closure; they are counted
+ * (`skippedExtraneous`), never judged. The licence comes from the installed `package.json` (`license`, legacy
  * `licenses`); a missing or `*` field falls back to the LICENSE/LICENCE/COPYING
- * file. Anything unreadable is a finding, never skipped. Exit 0 without a
+ * file. Anything unreadable is a finding, never skipped. An exception is bound
+ * to the licence it was granted for (`licence`: SPDX expression, `UNLICENSED`
+ * or `unreadable`) and passes only while the package still reads so. Exit 0 without a
  * finding, exit 1 with one; the full inventory goes to the log directory.
  */
 
@@ -47,6 +50,7 @@ const allowlistSchema = z.object({
     .array(
       z.object({
         package: z.string().min(1),
+        licence: z.string().trim().min(1),
         reason: z.string().trim().min(1),
       }),
     )
@@ -58,6 +62,7 @@ interface LsNode {
   version?: string;
   resolved?: string;
   missing?: boolean;
+  extraneous?: boolean;
   dependencies?: Record<string, LsNode>;
 }
 
@@ -81,7 +86,7 @@ export async function runLicenceInventory(
   const allowlist = readAllowlist(ctx.repoRoot, allowlistFile);
 
   const tree = readTree(npmLs(ctx.repoRoot));
-  const { entries, workspaces, notInstalled } = collect(ctx.repoRoot, tree);
+  const { entries, workspaces, notInstalled, skippedExtraneous } = collect(ctx.repoRoot, tree);
   const judged = entries.map((entry) => judge(entry, allowlist));
   const findings = judged.filter((entry) => entry.verdict === "finding");
 
@@ -110,6 +115,7 @@ export async function runLicenceInventory(
     notes,
     data: {
       packages: judged.length,
+      skippedExtraneous,
       findings: findings.length,
       first: findings
         .slice(0, MAX_LISTED)
@@ -178,15 +184,21 @@ interface Located {
 function collect(
   repoRoot: string,
   root: LsNode,
-): { entries: Located[]; workspaces: number; notInstalled: number } {
+): { entries: Located[]; workspaces: number; notInstalled: number; skippedExtraneous: number } {
   const rootDir = realpathSync(repoRoot);
   const seen = new Map<string, Located>();
   const workspaceNames = new Set<string>();
   let notInstalled = 0;
+  const extraneous = new Set<string>();
   const walked = new Set<string>();
 
   const walk = (node: LsNode, fromDir: string): void => {
     for (const [name, child] of Object.entries(node.dependencies ?? {})) {
+      if (child.extraneous === true) {
+        // Installed but not part of the closure npm resolves: counted, never judged.
+        extraneous.add(`${name}@${child.version ?? "?"}`);
+        continue;
+      }
       if (child.missing === true) {
         const key = `${name}@${child.version ?? "?"}`;
         if (!seen.has(key)) seen.set(key, { name, version: child.version ?? "?", missing: true });
@@ -222,7 +234,12 @@ function collect(
   const entries = [...seen.values()].sort((a, b) =>
     a.name === b.name ? a.version.localeCompare(b.version) : a.name.localeCompare(b.name),
   );
-  return { entries, workspaces: workspaceNames.size, notInstalled };
+  return {
+    entries,
+    workspaces: workspaceNames.size,
+    notInstalled,
+    skippedExtraneous: extraneous.size,
+  };
 }
 
 /** Node's lookup: `node_modules/<name>` in the directory and each ancestor. */
@@ -339,7 +356,17 @@ function judge(located: Located, allowlist: Allowlist): InventoryEntry {
   const entry = { ...base, licence: read.licence, source: read.source, path: located.dir };
 
   if (exception !== undefined) {
-    return { ...entry, verdict: "exception", why: exception.reason };
+    const granted = exception.licence;
+    const holds =
+      granted.toLowerCase() === "unreadable"
+        ? read.unreadable !== undefined
+        : read.unreadable === undefined && normaliseSpdx(granted) === normaliseSpdx(read.licence);
+    if (holds) return { ...entry, verdict: "exception", why: exception.reason };
+    return {
+      ...entry,
+      verdict: "finding",
+      why: `exception granted for ${granted}, package now ${read.licence}`,
+    };
   }
   if (read.unreadable !== undefined) {
     return { ...entry, verdict: "finding", why: read.unreadable };
@@ -358,6 +385,16 @@ function judge(located: Located, allowlist: Allowlist): InventoryEntry {
     return { ...entry, verdict: "finding", why: "not satisfiable from the allowed licences" };
   }
   return { ...entry, verdict: "allowed" };
+}
+
+/** SPDX text compared as written, up to whitespace and case (ids and operators are case-insensitive). */
+function normaliseSpdx(expression: string): string {
+  return expression
+    .replace(/\s+/g, " ")
+    .replace(/\(\s*/g, "(")
+    .replace(/\s*\)/g, ")")
+    .trim()
+    .toUpperCase();
 }
 
 function finding(

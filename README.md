@@ -46,23 +46,32 @@ spec-sync licence-inventory [--allowlist <file>]
 
 `licence-inventory` (SST-FEATURE-001) replaces `license-checker`: it inventories the production
 closure from `npm ls --omit=dev --all --json` (workspaces included, deduplicated by name@version,
-the repo's own workspace packages skipped), reads each licence from the installed `package.json`
+the repo's own workspace packages skipped; nodes npm marks `extraneous` are not judged, only
+counted as `skippedExtraneous`), reads each licence from the installed `package.json`
 (`license`, legacy `licenses`) or, when that is missing or `*`, from the LICENSE/LICENCE/COPYING
 file matched against common licence texts, and judges it against `licence-allowlist.json`. Offline
 and fail-closed: an unreadable licence is a finding. Exit 0 without findings, 1 with findings, 4
-when the allowlist is missing. The payload carries the package and finding counts, the first 10
+when the allowlist is missing or an exception lacks `licence` or `reason`. The payload carries the
+package count, `skippedExtraneous`, the finding count, the first 10
 findings and the path of the full inventory JSON in the log directory. The allowlist:
 
 ```json
 {
   "licenses": ["MIT", "Apache-2.0"],
-  "exceptions": [{ "package": "name[@version]", "reason": "…" }]
+  "exceptions": [
+    { "package": "name[@version]", "licence": "LGPL-3.0-or-later", "reason": "…" },
+    { "package": "our-closed-pkg", "licence": "UNLICENSED", "reason": "…" },
+    { "package": "no-licence-pkg@1.2.3", "licence": "unreadable", "reason": "…" }
+  ]
 }
 ```
 
 An SPDX expression passes when it is satisfiable from `licenses` (`OR` needs one, `AND` needs all,
-`WITH` reads as the base licence); an exception passes its package whatever its licence, and is
-the only way `UNLICENSED` passes.
+`WITH` reads as the base licence). An exception is bound to the licence it was granted for:
+`licence` is the read SPDX expression, `UNLICENSED`, or `unreadable` for a package without a
+readable licence. It passes only while the package still reads exactly that (SPDX text compared up
+to case and whitespace); otherwise it is a finding `exception granted for <X>, package now <Y>`.
+An exception is the only way `UNLICENSED` or an unreadable licence passes.
 
 `measure` changes a file a gate step measures against — size limits, coverage stock, hygiene
 ratchet — and binds the change to a register decision (SST-DESIGN-002, PROC-DEV-047). The file
