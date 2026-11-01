@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.34.0
+
+### Added
+
+- `licence-inventory [--allowlist <file>]` — shared licence inventory of the production closure
+  (`npm ls --omit=dev --all --json`, workspaces included, own workspace packages skipped), replacing
+  `license-checker` (GHSA-g3hv-75wg-m249 has no fixed version in its chain). Licence from the
+  installed `package.json` (`license`, legacy `licenses`), else the LICENSE/LICENCE/COPYING file
+  matched against common SPDX licence texts; unreadable = finding. Judged against
+  `licence-allowlist.json` (allowed SPDX ids plus per-package exceptions with a reason;
+  `UNLICENSED` passes only by exception). Offline, fail-closed; exit 0/1, missing allowlist exit 4.
+  Payload: package count, finding count, first 10 findings, path of the full inventory JSON in the
+  log directory. No new dependency (SST-FEATURE-001 rev 4).
+
 ## 0.33.2
 
 ### Changed

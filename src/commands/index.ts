@@ -26,6 +26,7 @@ import { coverCommand } from "./cover.js";
 import { mapCommand } from "./map.js";
 import { measureCommand } from "./measure.js";
 import { reviewCommand } from "./review.js";
+import { licenceInventoryCommand } from "./licence-inventory.js";
 
 export const ALL_COMMANDS: readonly Command[] = [
   gateCommand,
@@ -43,4 +44,5 @@ export const ALL_COMMANDS: readonly Command[] = [
   mapCommand,
   measureCommand,
   reviewCommand,
+  licenceInventoryCommand,
 ];
