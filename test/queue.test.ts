@@ -5,6 +5,7 @@ import {
   parseQueueOptions,
   readPhasePin,
   runQueue,
+  specArea,
   sweepIssues,
   type GhIssue,
   type QueueDeps,
@@ -12,6 +13,7 @@ import {
 import { NORM_DEFAULTS } from "../src/norms.js";
 import { EXIT, ToolkitError, formatJson } from "../src/output.js";
 import type { Config } from "../src/config.js";
+import { findSpecKeys } from "../src/pack/refs.js";
 
 const config = {
   project: "demo",
@@ -1032,7 +1034,7 @@ describe("queue --bundle (PROC-DEV-005 §Bundled tickets)", () => {
       issue(2, ["spec-sync", "P2 important", "area: frontend"], "M1"),
       "not small (no bug, polish, translation or accessibility label)",
     ],
-    ["a ticket without area", small(2, null), 'no "area: …" label'],
+    ["a ticket without area", small(2, null), 'no "area: …" label and no spec key'],
   ])("never bundles %s", async (_name, candidate, reason) => {
     // A P2 head with a small label, so a P2 candidate cannot sort above it.
     const head = issue(1, ["spec-sync", "P2 important", "area: frontend", "bug"], "M1");
@@ -1058,6 +1060,80 @@ describe("queue --bundle (PROC-DEV-005 §Bundled tickets)", () => {
       area: null,
       excluded: [{ issue: 1, reason: expect.stringContaining("not small") }],
     });
+  });
+
+  it("without an area label, derives the area from the spec keys in title and body", async () => {
+    const { data, result, calls } = await bundle([
+      small(1, null, [], "Asset classes: course-bound media (COM-FEATURE-CONT-100 r2)"),
+      {
+        ...small(2, null, [], "Protected copy follows replacement"),
+        body: "Spec: `COM-DESIGN-CONT-103` rev 4",
+      },
+      small(3, null, [], "Library sort order (COM-FEATURE-CONT-104, COM-GL-CONT-010)"),
+      small(4, null, [], "Kurs notes (COM-FEATURE-KURS-010 r2)"),
+    ]);
+    expect(data).toMatchObject({
+      bundle: [1, 2, 3],
+      area: "CONT",
+      areaSource: "keys",
+      excluded: [],
+    });
+    expect(result.notes?.[0]).toContain("(spec area CONT)");
+    // The body is fetched only for --bundle.
+    expect(calls[0]).toContain("number,title,labels,author,comments,updatedAt,body");
+  });
+
+  it.each<[string, GhIssue, string]>([
+    [
+      "keys of several areas",
+      small(2, null, [], "Tooltips (GL-UI-016 rev 19, COM-FEATURE-CONT-100)"),
+      "spec keys span several areas (GL-UI, CONT)",
+    ],
+    [
+      "a key without an area",
+      small(2, null, [], "Leave guard (COM-FEATURE-591 r2)"),
+      "spec key COM-FEATURE-591 names no area",
+    ],
+    [
+      "another spec area",
+      small(2, null, [], "Kurs notes (COM-FEATURE-KURS-010 r2)"),
+      "other area (spec area KURS)",
+    ],
+  ])("a follower with %s ends the run", async (_name, candidate, reason) => {
+    const head = small(1, null, [], "Asset classes (COM-FEATURE-CONT-100 r2)");
+    const { data } = await bundle([head, candidate]);
+    expect(data).toMatchObject({ bundle: [1], area: null, excluded: [{ issue: 2, reason }] });
+  });
+
+  it("the label wins over the keys, and a label area never equals a key area", async () => {
+    const { data } = await bundle([
+      small(1, "CONT", [], "Asset classes (COM-FEATURE-KURS-014 r2)"),
+      small(2, null, [], "Library (COM-FEATURE-CONT-104)"),
+    ]);
+    expect(data).toMatchObject({
+      bundle: [1],
+      excluded: [{ issue: 2, reason: "other area (spec area CONT)" }],
+    });
+  });
+
+  it("specArea reads the segments between kind and number", () => {
+    expect(specArea("COM-FEATURE-CONT-100")).toBe("CONT");
+    expect(specArea("CPT-FEATURE-TPL-061")).toBe("TPL");
+    expect(specArea("COM-PROC-HYG-025")).toBe("HYG");
+    expect(specArea("GL-UI-034")).toBe("GL-UI");
+    expect(specArea("PROC-DEV-005")).toBe("PROC-DEV");
+    expect(specArea("COM-FEATURE-591")).toBeUndefined();
+    expect(specArea("COM-GL-071")).toBeUndefined();
+    expect(specArea("PROC-010")).toBeUndefined();
+    expect(specArea("AUTH-040")).toBeUndefined();
+  });
+
+  it("findSpecKeys finds bare and backticked keys in the shape pack parses", () => {
+    expect(
+      findSpecKeys(
+        "Fix (COM-FEATURE-411 r6, GL-UI-039 r2) and `SST-DESIGN-018`; not X-1 or GL-UI-0345",
+      ),
+    ).toEqual(["COM-FEATURE-411", "GL-UI-039", "SST-DESIGN-018"]);
   });
 
   it("an empty queue proposes nothing", async () => {

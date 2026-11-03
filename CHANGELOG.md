@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.36.1
+
+### Changed
+
+- `queue --bundle` no longer needs an `area:` label (PROC-DEV-005 §Bundled tickets, register
+  #1950): a ticket without one takes its area from the spec keys in title and body — the key
+  shape `pack` parses, bare or backticked — as the segments between kind and number
+  (`COM-FEATURE-CONT-100` → `CONT`, `CPT-FEATURE-TPL-061` → `TPL`, `GL-UI-034` → `GL-UI`). Keys of
+  several areas, a key without an area, or no key at all ⇒ the ticket stands alone. The label wins
+  when present; a label area and a key area never count as the same. The payload gains
+  `areaSource` (`label`|`keys`); only `--bundle` fetches issue bodies.
+
 ## 0.36.0
 
 PR flow with little CI rework (PROC-DEV-005, owner go register #1950).

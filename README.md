@@ -125,12 +125,18 @@ like any other file — only when both PRs touch it; a generated file never coun
 ```
 
 `queue --bundle` proposes a bundle from the head of the sorted queue; the order itself is
-untouched. Up to `maxTickets` tickets that stand next to each other, carry the same single area
-label (`areaPrefix`), are each small (the `labels.bug` or `labels.priority.polish` label, or one
-of `smallLabels`), are not blocked, and carry none of `excludeKeywords` (word prefix,
-case-insensitive) in title or labels. The first follower that fails ends the run and is listed in
-`excluded` with its reason; an unbundleable head stands alone with its reason. The payload carries
-`bundle` (ticket numbers, head first), `area`, `lineCap` and `excluded`. The ~300-line cap is
+untouched. Up to `maxTickets` tickets that stand next to each other, share the same area, are
+each small (the `labels.bug` or `labels.priority.polish` label, or one of `smallLabels`), are not
+blocked, and carry none of `excludeKeywords` (word prefix, case-insensitive) in title or labels.
+The area is the ticket's one area label (`areaPrefix`); the label wins when present. Without one,
+it is the area of the spec keys in title and body (the key shape `pack` parses, bare or
+backticked): the segments between kind and number — `COM-FEATURE-CONT-100` → `CONT`,
+`CPT-FEATURE-TPL-061` → `TPL`, while a foundation key keeps its kind, `GL-UI-034` → `GL-UI`. A
+ticket whose keys span several areas, include a key without an area (`COM-FEATURE-591`), or that
+has no key stands alone. A label area and a key area never count as the same area. The first
+follower that fails ends the run and is listed in `excluded` with its reason; an unbundleable head
+stands alone with its reason. The payload carries `bundle` (ticket numbers, head first), `area`,
+`areaSource` (`label` or `keys`), `lineCap` and `excluded`. The ~300-line cap is
 printed, not enforced — the worker measures the diff after building and splits a bundle that
 grows past it; whether a ticket is an intended visual change beyond its keywords is also the
 worker's call. No nightly call, nothing written; with `--check` or `--health` exit 4. Optional

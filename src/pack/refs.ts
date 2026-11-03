@@ -13,6 +13,16 @@
 /** `PROC-DEV-039`, `GL-SEC-010`, `ADR-CC-001`, `PROC-010`, `VISION-001`, … */
 const KEY_TOKEN = /^[A-Z][A-Z0-9]*(?:-[A-Z][A-Z0-9]*)*-\d{3}$/u;
 
+/**
+ * Every key-shaped token of a text — same shape as `KEY_TOKEN`, backticked or
+ * not, because ticket titles carry their keys bare (`… (COM-FEATURE-411 r6)`).
+ * Not a reference list for `pack`; `queue --bundle` reads areas from it.
+ */
+export function findSpecKeys(text: string): string[] {
+  const loose = new RegExp(`(?<![\\w-])${KEY_TOKEN.source.slice(1, -1)}(?![\\w-])`, "gu");
+  return [...new Set([...text.matchAll(loose)].map((match) => match[0]))];
+}
+
 /** The backticked, key-shaped tokens of a ticket, in first-seen order, deduped. */
 export function parseSpecReferences(text: string): string[] {
   const keys: string[] = [];

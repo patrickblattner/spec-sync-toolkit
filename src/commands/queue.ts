@@ -39,6 +39,7 @@ import { EXIT, ToolkitError, type ExitCode } from "../output.js";
 import { loadNorms, type Norms } from "../norms.js";
 import type { Command, CommandContext } from "../cli.js";
 import type { Config } from "../config.js";
+import { findSpecKeys } from "../pack/refs.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -74,6 +75,8 @@ export interface GhIssue {
   comments?: { body: string; createdAt?: string }[];
   /** Last activity on the issue — the stale-block fallback when it has no comment. */
   updatedAt?: string;
+  /** Only fetched for `--bundle` — the spec keys of a ticket without an area label. */
+  body?: string;
 }
 
 /**
@@ -444,7 +447,7 @@ export function sweepIssues(issues: GhIssue[], config: Config, norms: Norms): Sw
 }
 
 /** One `gh` call: every open issue with the fields the sweep needs. */
-export async function fetchIssues(gh: GhRunner): Promise<GhIssue[]> {
+export async function fetchIssues(gh: GhRunner, withBody = false): Promise<GhIssue[]> {
   const raw = await gh([
     "issue",
     "list",
@@ -453,7 +456,8 @@ export async function fetchIssues(gh: GhRunner): Promise<GhIssue[]> {
     "--limit",
     String(ISSUE_LIMIT),
     "--json",
-    "number,title,labels,author,comments,updatedAt",
+    // The body only for `--bundle`, which reads spec keys from it.
+    `number,title,labels,author,comments,updatedAt${withBody ? ",body" : ""}`,
   ]);
   return parseJson<GhIssue[]>(raw, "gh issue list");
 }
@@ -754,19 +758,44 @@ export function healthFindings(
 export interface BundleProposal {
   /** The head ticket first, then the bundled followers in queue order. */
   tickets: number[];
-  /** The shared area (label without its prefix), `null` when the head alone stands. */
+  /** The shared area (label without its prefix, or the spec area), `null` when the head alone stands. */
   area: string | null;
+  /** Where the area came from: the area label, or the spec keys of the tickets. */
+  areaSource: "label" | "keys" | null;
   /** Why a ticket could not join — the head itself, or the follower that ended the run. */
   excluded: { issue: number; reason: string }[];
+}
+
+/** Kind segments of a spec key (`COM-FEATURE-…`, `GL-…`, `PROC-…`). */
+const KEY_KINDS = new Set(["FEATURE", "DESIGN", "ADR", "GL", "PROC", "VISION", "CARD"]);
+
+/**
+ * The area of a spec key: the segments between kind and number. A project key
+ * carries a project prefix before its kind (`COM-FEATURE-CONT-100` → `CONT`,
+ * `CPT-FEATURE-TPL-061` → `TPL`); a foundation key starts with its kind and
+ * keeps it, so it cannot collide with a project area (`GL-UI-034` → `GL-UI`).
+ * `undefined` when the key names no area (`COM-FEATURE-591`, `PROC-010`) or no
+ * known kind.
+ */
+export function specArea(key: string): string | undefined {
+  const segments = key.split("-").slice(0, -1);
+  const kind = segments.findIndex((segment) => KEY_KINDS.has(segment));
+  if (kind === -1) return undefined;
+  if (kind === 0) return segments.length >= 2 ? segments.join("-") : undefined;
+  const area = segments.slice(kind + 1);
+  return area.length === 0 ? undefined : area.join("-");
 }
 
 /**
  * The bundle of `PROC-DEV-005` §Bundled tickets, proposed — not decided — from
  * the head of the sorted queue: up to `bundle.maxTickets` tickets that stand
- * next to each other, carry the same single area label, are each small (bug,
+ * next to each other, carry the same area, are each small (bug,
  * polish or one of `bundle.smallLabels`), are not blocked, and carry none of
  * `bundle.excludeKeywords` in title or labels (schema, migration, ratchet
- * baseline, registry, visual change). The first follower that fails ends the
+ * baseline, registry, visual change). The area is the one area label; without
+ * one, it is the area every spec key in title and body names (`specArea`) — a
+ * ticket whose keys span several areas, include a key without an area, or
+ * that carries no key stands alone. The first follower that fails ends the
  * run, because the rest would no longer stand next to the head. Whether a
  * ticket is an intended visual change beyond its keywords, and the line cap,
  * stay with the worker.
@@ -777,7 +806,7 @@ export function proposeBundle(
   config: Config,
 ): BundleProposal {
   const head = queue[0];
-  if (head === undefined) return { tickets: [], area: null, excluded: [] };
+  if (head === undefined) return { tickets: [], area: null, areaSource: null, excluded: [] };
 
   const { areaPrefix, maxTickets, smallLabels, excludeKeywords } = config.bundle;
   const small = new Set([config.labels.bug, config.labels.priority.polish, ...smallLabels]);
@@ -791,7 +820,11 @@ export function proposeBundle(
         );
 
   /** The reason a ticket cannot be bundled at all, or its area when it can. */
-  const judge = (entry: QueueEntry): { reason: string } | { area: string } => {
+  type Area = { area: string; source: "label" | "keys" };
+  const show = (area: Area): string =>
+    area.source === "label" ? `${areaPrefix}${area.area}` : `spec area ${area.area}`;
+
+  const judge = (entry: QueueEntry): { reason: string } | Area => {
     const issue = byNumber.get(entry.issue);
     const labels = issue === undefined ? [] : labelNames(issue);
     if (entry.blocked === true) return { reason: "blocked" };
@@ -800,16 +833,20 @@ export function proposeBundle(
     if (!labels.some((label) => small.has(label))) {
       return { reason: "not small (no bug, polish, translation or accessibility label)" };
     }
+    // The label wins when present.
     const areas = labels.filter((label) => label.startsWith(areaPrefix));
-    if (areas.length !== 1) {
-      return {
-        reason:
-          areas.length === 0
-            ? `no "${areaPrefix}…" label`
-            : `several area labels (${areas.join(", ")})`,
-      };
+    if (areas.length > 1) return { reason: `several area labels (${areas.join(", ")})` };
+    if (areas.length === 1) {
+      return { area: (areas[0] as string).slice(areaPrefix.length), source: "label" };
     }
-    return { area: (areas[0] as string).slice(areaPrefix.length) };
+    const keys = findSpecKeys(`${entry.title}\n${issue?.body ?? ""}`);
+    if (keys.length === 0) return { reason: `no "${areaPrefix}…" label and no spec key` };
+    const arealess = keys.filter((key) => specArea(key) === undefined);
+    if (arealess.length > 0) return { reason: `spec key ${arealess[0]} names no area` };
+    const keyAreas = [...new Set(keys.map((key) => specArea(key) as string))];
+    if (keyAreas.length > 1)
+      return { reason: `spec keys span several areas (${keyAreas.join(", ")})` };
+    return { area: keyAreas[0] as string, source: "keys" };
   };
 
   const first = judge(head);
@@ -817,6 +854,7 @@ export function proposeBundle(
     return {
       tickets: [head.issue],
       area: null,
+      areaSource: null,
       excluded: [{ issue: head.issue, reason: first.reason }],
     };
   }
@@ -826,16 +864,22 @@ export function proposeBundle(
   for (const entry of queue.slice(1)) {
     if (tickets.length >= maxTickets) break;
     const verdict = judge(entry);
-    if ("reason" in verdict || verdict.area !== first.area) {
+    if ("reason" in verdict || verdict.area !== first.area || verdict.source !== first.source) {
       excluded.push({
         issue: entry.issue,
-        reason: "reason" in verdict ? verdict.reason : `other area (${areaPrefix}${verdict.area})`,
+        reason: "reason" in verdict ? verdict.reason : `other area (${show(verdict)})`,
       });
       break;
     }
     tickets.push(entry.issue);
   }
-  return { tickets, area: tickets.length > 1 ? first.area : null, excluded };
+  const bundled = tickets.length > 1;
+  return {
+    tickets,
+    area: bundled ? first.area : null,
+    areaSource: bundled ? first.source : null,
+    excluded,
+  };
 }
 
 export interface QueueResult {
@@ -860,7 +904,7 @@ export async function runQueue(
   options: QueueOptions,
   norms: Norms = loadNorms().norms,
 ): Promise<QueueResult> {
-  const issues = await fetchIssues(deps.gh);
+  const issues = await fetchIssues(deps.gh, options.bundle === true);
   const sweep = sweepIssues(issues, config, norms);
 
   if (options.check) {
@@ -896,7 +940,12 @@ export async function runQueue(
   // and stops there: no nightly call, nothing written (`PROC-DEV-005`).
   if (options.bundle === true) {
     const proposal = proposeBundle(sweep.queue, issues, config);
-    const area = proposal.area === null ? "" : ` (${config.bundle.areaPrefix}${proposal.area})`;
+    const area =
+      proposal.area === null
+        ? ""
+        : proposal.areaSource === "label"
+          ? ` (${config.bundle.areaPrefix}${proposal.area})`
+          : ` (spec area ${proposal.area})`;
     const head = proposal.tickets[0];
     return {
       ok: true,
@@ -910,6 +959,7 @@ export async function runQueue(
       data: {
         bundle: proposal.tickets,
         area: proposal.area,
+        areaSource: proposal.areaSource,
         lineCap: config.bundle.maxLines,
         excluded: proposal.excluded,
       },
