@@ -6,7 +6,8 @@ import type { CommandContext } from "../src/cli.js";
 import type { Config } from "../src/config.js";
 import { runRepin, toBaseUrl } from "../src/commands/repin.js";
 import { COVERAGE_FILE } from "../src/coverage.js";
-import { EXIT } from "../src/output.js";
+import { EXIT, ToolkitError } from "../src/output.js";
+import { runProcess } from "../src/pack/exec.js";
 
 describe("toBaseUrl (SST-DESIGN-025, endpoint vs. base URL)", () => {
   it("strips the endpoint suffix `callSpecTool` appends itself", () => {
@@ -280,5 +281,114 @@ describe("repin pinExclude (SST-DESIGN-025 rev 5)", () => {
     expect(result.ok).toBe(true);
     expect(result.data).toMatchObject({ mode: "ids", units: 1, excluded: 1 });
     expect(pinsOf(repo)).toEqual({ "PROC-DEV-031": 2 });
+  });
+});
+
+/** `repin --check` (PROC-DEV-005 §Pins with the change) — read-only, pre-push usable. */
+describe("repin --check", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const git = (root: string, args: string[]): void => {
+    const result = runProcess("git", args, root);
+    if (!result.ok) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
+  };
+
+  /** A committed repo with pins (and optionally receipts) — the server answers `pinsPayload`. */
+  function committedRepo(pins: Record<string, number>, receipts = ""): string {
+    const root = repoWithMcpJson("http://localhost:8787/mcp");
+    writeFileSync(join(root, "spec-pins.json"), JSON.stringify(pins));
+    if (receipts !== "") {
+      mkdirSync(join(root, ".spec-sync"), { recursive: true });
+      writeFileSync(join(root, COVERAGE_FILE), receipts);
+    }
+    git(root, ["init", "-q"]);
+    git(root, ["add", "-A"]);
+    git(root, ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init"]);
+    return root;
+  }
+
+  const checkCtx = (root: string, args: string[] = []): CommandContext => ({
+    flags: { human: false, dryRun: false },
+    args: ["--check", ...args],
+    repoRoot: root,
+    config: { project: "production-cockpit" } as Config,
+  });
+
+  const receipt = (key: string, from: number | null, to: number | null): string =>
+    `${JSON.stringify({ ts: "t", key, from, to, disposition: "ticket", ref: "16" })}\n`;
+
+  const current = { "PROC-DEV-031": 2, "GL-CODE-010": 1 };
+
+  it("exit 0 when the committed pins already match the server", async () => {
+    vi.stubGlobal("fetch", fakeFetch([]));
+    const root = committedRepo(current);
+    const result = await runRepin(checkCtx(root));
+    expect(result).toMatchObject({ ok: true, exit: EXIT.OK });
+    expect(result.data).toMatchObject({ mode: "check", stale: [], uncommitted: [], uncovered: 0 });
+  });
+
+  it("exit 1 naming a receipted key that repin would pin now — and writes nothing", async () => {
+    vi.stubGlobal("fetch", fakeFetch([]));
+    const pins = { "PROC-DEV-031": 1, "GL-CODE-010": 1 };
+    const root = committedRepo(pins, receipt("PROC-DEV-031", 1, 2));
+    const before = readFileSync(join(root, "spec-pins.json"), "utf8");
+
+    const result = await runRepin(checkCtx(root));
+    expect(result).toMatchObject({ ok: false, exit: EXIT.FAILED });
+    expect(result.data).toMatchObject({ stale: ["PROC-DEV-031"], uncommitted: [] });
+    expect(result.notes?.join(" ")).toContain("spec-sync repin --ids PROC-DEV-031");
+    expect(readFileSync(join(root, "spec-pins.json"), "utf8")).toBe(before);
+  });
+
+  it("an unreceipted moved key is fresh drift, not stale: exit 0 with a note", async () => {
+    vi.stubGlobal("fetch", fakeFetch([]));
+    const root = committedRepo({ "PROC-DEV-031": 1, "GL-CODE-010": 1 });
+    const result = await runRepin(checkCtx(root));
+    expect(result).toMatchObject({ ok: true, exit: EXIT.OK });
+    expect(result.data).toMatchObject({ stale: [], uncovered: 1 });
+    expect(result.notes?.join(" ")).toContain("1 moved key(s) without a receipt");
+  });
+
+  it("exit 1 when pins or coverage are changed but not committed", async () => {
+    vi.stubGlobal("fetch", fakeFetch([]));
+    const root = committedRepo(current);
+    mkdirSync(join(root, ".spec-sync"), { recursive: true });
+    writeFileSync(join(root, COVERAGE_FILE), receipt("PROC-DEV-031", 1, 2));
+
+    const result = await runRepin(checkCtx(root));
+    expect(result).toMatchObject({ ok: false, exit: EXIT.FAILED });
+    expect(result.data).toMatchObject({ uncommitted: [COVERAGE_FILE] });
+  });
+
+  it("server unreachable: exit 2 when nothing local is stale, exit 1 when it is", async () => {
+    vi.stubGlobal("fetch", (() =>
+      Promise.reject(new Error("ECONNREFUSED"))) as unknown as typeof globalThis.fetch);
+    const clean = committedRepo(current);
+    await expect(runRepin(checkCtx(clean))).rejects.toSatisfy(
+      (error: unknown) => error instanceof ToolkitError && error.exit === EXIT.UNPROVABLE,
+    );
+
+    const dirty = committedRepo(current);
+    writeFileSync(join(dirty, "spec-pins.json"), JSON.stringify({ "PROC-DEV-031": 2 }));
+    const result = await runRepin(checkCtx(dirty));
+    expect(result).toMatchObject({ ok: false, exit: EXIT.FAILED });
+    expect(result.data).toMatchObject({ uncommitted: ["spec-pins.json"] });
+    expect(result.notes?.join(" ")).toContain("spec server unreachable");
+  });
+
+  it("exit 4 without a pin file, and when combined with --ids", async () => {
+    vi.stubGlobal("fetch", fakeFetch([]));
+    const bare = repoWithMcpJson("http://localhost:8787/mcp");
+    await expect(runRepin(checkCtx(bare))).rejects.toSatisfy(
+      (error: unknown) => error instanceof ToolkitError && error.exit === EXIT.PRECONDITION,
+    );
+    await expect(runRepin(checkCtx(committedRepo(current), ["--ids", "X"]))).rejects.toSatisfy(
+      (error: unknown) =>
+        error instanceof ToolkitError &&
+        error.exit === EXIT.PRECONDITION &&
+        error.field === "--check",
+    );
   });
 });

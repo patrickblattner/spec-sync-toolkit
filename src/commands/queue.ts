@@ -27,6 +27,9 @@
  * `--health` judges the same sweep like a gate (`SST-DESIGN-017` rev 7): exit 0
  * without a finding, exit 1 with one `health` finding per failed check. It
  * writes nothing.
+ *
+ * `--bundle` proposes a bundle from the head of the same sorted queue
+ * (`PROC-DEV-005` §Bundled tickets, see `proposeBundle`) and writes nothing.
  */
 
 import { execFile } from "node:child_process";
@@ -186,6 +189,8 @@ export interface QueueOptions {
   check: boolean;
   /** `--health`: judge the sweep like a gate (`SST-DESIGN-017` rev 7). Absent = off. */
   health?: boolean;
+  /** `--bundle`: propose a bundle from the head of the sorted queue (`PROC-DEV-005`). Absent = off. */
+  bundle?: boolean;
 }
 
 /**
@@ -198,9 +203,11 @@ export interface QueueOptions {
 export function parseQueueOptions(args: string[]): QueueOptions {
   let check = false;
   let health = false;
+  let bundle = false;
   for (const token of args) {
     if (token === "--check") check = true;
     else if (token === "--health") health = true;
+    else if (token === "--bundle") bundle = true;
     else
       throw new ToolkitError(`unknown option for queue: ${token}`, EXIT.PRECONDITION, {
         field: token,
@@ -212,7 +219,14 @@ export function parseQueueOptions(args: string[]): QueueOptions {
       field: "--health",
     });
   }
-  return { check, health };
+  if (bundle && (check || health)) {
+    throw new ToolkitError(
+      "--bundle cannot be combined with --check or --health",
+      EXIT.PRECONDITION,
+      { field: "--bundle" },
+    );
+  }
+  return { check, health, bundle };
 }
 
 /**
@@ -737,6 +751,93 @@ export function healthFindings(
   return { findings, notes };
 }
 
+export interface BundleProposal {
+  /** The head ticket first, then the bundled followers in queue order. */
+  tickets: number[];
+  /** The shared area (label without its prefix), `null` when the head alone stands. */
+  area: string | null;
+  /** Why a ticket could not join — the head itself, or the follower that ended the run. */
+  excluded: { issue: number; reason: string }[];
+}
+
+/**
+ * The bundle of `PROC-DEV-005` §Bundled tickets, proposed — not decided — from
+ * the head of the sorted queue: up to `bundle.maxTickets` tickets that stand
+ * next to each other, carry the same single area label, are each small (bug,
+ * polish or one of `bundle.smallLabels`), are not blocked, and carry none of
+ * `bundle.excludeKeywords` in title or labels (schema, migration, ratchet
+ * baseline, registry, visual change). The first follower that fails ends the
+ * run, because the rest would no longer stand next to the head. Whether a
+ * ticket is an intended visual change beyond its keywords, and the line cap,
+ * stay with the worker.
+ */
+export function proposeBundle(
+  queue: QueueEntry[],
+  issues: GhIssue[],
+  config: Config,
+): BundleProposal {
+  const head = queue[0];
+  if (head === undefined) return { tickets: [], area: null, excluded: [] };
+
+  const { areaPrefix, maxTickets, smallLabels, excludeKeywords } = config.bundle;
+  const small = new Set([config.labels.bug, config.labels.priority.polish, ...smallLabels]);
+  const byNumber = new Map(issues.map((issue) => [issue.number, issue]));
+  const keyword =
+    excludeKeywords.length === 0
+      ? undefined
+      : new RegExp(
+          `\\b(${excludeKeywords.map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`,
+          "i",
+        );
+
+  /** The reason a ticket cannot be bundled at all, or its area when it can. */
+  const judge = (entry: QueueEntry): { reason: string } | { area: string } => {
+    const issue = byNumber.get(entry.issue);
+    const labels = issue === undefined ? [] : labelNames(issue);
+    if (entry.blocked === true) return { reason: "blocked" };
+    const hit = keyword?.exec([entry.title, ...labels].join("\n"));
+    if (hit != null) return { reason: `keyed "${hit[1]}"` };
+    if (!labels.some((label) => small.has(label))) {
+      return { reason: "not small (no bug, polish, translation or accessibility label)" };
+    }
+    const areas = labels.filter((label) => label.startsWith(areaPrefix));
+    if (areas.length !== 1) {
+      return {
+        reason:
+          areas.length === 0
+            ? `no "${areaPrefix}…" label`
+            : `several area labels (${areas.join(", ")})`,
+      };
+    }
+    return { area: (areas[0] as string).slice(areaPrefix.length) };
+  };
+
+  const first = judge(head);
+  if ("reason" in first) {
+    return {
+      tickets: [head.issue],
+      area: null,
+      excluded: [{ issue: head.issue, reason: first.reason }],
+    };
+  }
+
+  const tickets = [head.issue];
+  const excluded: BundleProposal["excluded"] = [];
+  for (const entry of queue.slice(1)) {
+    if (tickets.length >= maxTickets) break;
+    const verdict = judge(entry);
+    if ("reason" in verdict || verdict.area !== first.area) {
+      excluded.push({
+        issue: entry.issue,
+        reason: "reason" in verdict ? verdict.reason : `other area (${areaPrefix}${verdict.area})`,
+      });
+      break;
+    }
+    tickets.push(entry.issue);
+  }
+  return { tickets, area: tickets.length > 1 ? first.area : null, excluded };
+}
+
 export interface QueueResult {
   ok: boolean;
   exit?: ExitCode;
@@ -788,6 +889,30 @@ export async function runQueue(
           : `${health.findings.length} health finding(s) — reported, nothing changed`,
       ],
       data: { swept: sweep.queue.length, findings: health.findings },
+    };
+  }
+
+  // `--bundle` reads the sorted queue as it stands — the order is not touched —
+  // and stops there: no nightly call, nothing written (`PROC-DEV-005`).
+  if (options.bundle === true) {
+    const proposal = proposeBundle(sweep.queue, issues, config);
+    const area = proposal.area === null ? "" : ` (${config.bundle.areaPrefix}${proposal.area})`;
+    const head = proposal.tickets[0];
+    return {
+      ok: true,
+      notes: [
+        head === undefined
+          ? "queue empty — nothing to bundle"
+          : proposal.tickets.length > 1
+            ? `bundle ${proposal.tickets.map((n) => `#${n}`).join(", ")}${area} — keep it under ~${config.bundle.maxLines} changed lines, measured after building`
+            : `no bundle — #${head} alone`,
+      ],
+      data: {
+        bundle: proposal.tickets,
+        area: proposal.area,
+        lineCap: config.bundle.maxLines,
+        excluded: proposal.excluded,
+      },
     };
   }
 

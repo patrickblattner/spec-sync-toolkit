@@ -158,6 +158,8 @@ interface GhWorld {
   openIssueBodies?: string[];
   tagIssues?: { number: number; title: string }[];
   gateCompletedAt?: string;
+  /** A draft PR: `isDraft` in the view, and no check has run (`gh pr checks` exits 1). */
+  draft?: boolean;
 }
 
 interface GhLog {
@@ -184,9 +186,18 @@ function tools(root: string, world: GhWorld): { tools: Tools; gh: GhLog } {
           return ok(
             JSON.stringify({
               headRefOid: world.prHead,
+              isDraft: world.draft === true,
               comments: (world.prComments ?? []).map((body) => ({ body })),
             }),
           );
+        }
+        if (a === "pr" && b === "checks" && world.draft === true) {
+          return {
+            ok: false,
+            code: 1,
+            stdout: "",
+            stderr: "no checks reported on the 'feat' branch",
+          };
         }
         if (a === "pr" && b === "checks") {
           return ok(
@@ -328,6 +339,24 @@ describe("review pr (acceptance 3, 4)", () => {
     });
     expect(result.exit).toBe(EXIT.OK);
     expect(result.data).toMatchObject({ outcome: "clean" });
+  });
+
+  it("reviews a draft PR like any other (PROC-DEV-005: Codex runs before ready)", async () => {
+    const r = prRepo();
+    const codex = fakeCodex({ answers: [answer([highFinding])] });
+    const { tools: t, gh } = tools(r.root, { prHead: r.head, draft: true });
+    const result = await runReview(context(r.root, ["pr", "12", "--issue", "34"]), {
+      tools: t,
+      codexEnv: codex.env,
+    });
+    expect(codex.calls()).toHaveLength(1);
+    expect(result.exit).toBe(EXIT.FAILED);
+    expect(result.data).toMatchObject({ outcome: "findings" });
+    expect(gh.calls.filter((c) => c[1] === "comment")).toHaveLength(1);
+    // No required check has run on a draft: the overrun is simply not measured.
+    const [event] = reviewEvents(r.root);
+    expect(event).toMatchObject({ pr: 12, outcome: "findings" });
+    expect(event?.overrunMs).toBeUndefined();
   });
 
   it.each<[string, CodexBehaviour, { install?: boolean }, Record<string, unknown>]>([

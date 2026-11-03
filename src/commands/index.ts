@@ -27,6 +27,7 @@ import { mapCommand } from "./map.js";
 import { measureCommand } from "./measure.js";
 import { reviewCommand } from "./review.js";
 import { licenceInventoryCommand } from "./licence-inventory.js";
+import { prCommand } from "./pr.js";
 
 export const ALL_COMMANDS: readonly Command[] = [
   gateCommand,
@@ -45,4 +46,5 @@ export const ALL_COMMANDS: readonly Command[] = [
   measureCommand,
   reviewCommand,
   licenceInventoryCommand,
+  prCommand,
 ];

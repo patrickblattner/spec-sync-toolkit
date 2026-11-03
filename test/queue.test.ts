@@ -471,9 +471,10 @@ describe("nightly findings are reported, not turned into tickets (§7.2)", () =>
 
 describe("option parsing", () => {
   it("accepts --check and defaults to the full queue", () => {
-    expect(parseQueueOptions([])).toEqual({ check: false, health: false });
-    expect(parseQueueOptions(["--check"])).toEqual({ check: true, health: false });
-    expect(parseQueueOptions(["--health"])).toEqual({ check: false, health: true });
+    expect(parseQueueOptions([])).toEqual({ check: false, health: false, bundle: false });
+    expect(parseQueueOptions(["--check"])).toEqual({ check: true, health: false, bundle: false });
+    expect(parseQueueOptions(["--health"])).toEqual({ check: false, health: true, bundle: false });
+    expect(parseQueueOptions(["--bundle"])).toEqual({ check: false, health: false, bundle: true });
   });
 
   it("rejects a mistyped option with exit 4 and names the field", () => {
@@ -919,5 +920,162 @@ describe("--health — the sweep judged like a gate (SST-DESIGN-017 rev 7)", () 
     }
     expect(caught?.exit).toBe(EXIT.PRECONDITION);
     expect(caught?.field).toBe("--health");
+  });
+});
+
+describe("queue --bundle (PROC-DEV-005 §Bundled tickets)", () => {
+  const bundleConfig = {
+    ...config,
+    bundle: {
+      maxTickets: 3,
+      maxLines: 300,
+      areaPrefix: "area: ",
+      smallLabels: ["bug", "fix", "i18n", "translation", "a11y", "accessibility"],
+      excludeKeywords: [
+        "schema",
+        "migration",
+        "ratchet",
+        "baseline",
+        "measure",
+        "registry",
+        "registries",
+        "visual",
+      ],
+    },
+  } as unknown as Config;
+
+  /** A swept polish ticket of one area; `title` and extra labels vary per case. */
+  const small = (
+    n: number,
+    area: string | null,
+    extra: string[] = [],
+    title?: string,
+  ): GhIssue => ({
+    ...issue(
+      n,
+      ["spec-sync", "P3 polish", ...(area === null ? [] : [`area: ${area}`]), ...extra],
+      "M1",
+    ),
+    ...(title === undefined ? {} : { title }),
+  });
+
+  const bundle = async (issues: GhIssue[]) => {
+    const { gh, calls } = fakeGh({ issues });
+    const result = await runQueue(deps(gh), bundleConfig, {
+      check: false,
+      health: false,
+      bundle: true,
+    });
+    return { result, calls, data: result.data as Record<string, unknown> };
+  };
+
+  it("bundles up to three adjacent small tickets of one area, head first", async () => {
+    const { result, calls, data } = await bundle([
+      small(1, "frontend"),
+      small(2, "frontend"),
+      small(3, "frontend"),
+      small(4, "frontend"),
+    ]);
+    expect(result.ok).toBe(true);
+    expect(data).toMatchObject({ bundle: [1, 2, 3], area: "frontend", lineCap: 300, excluded: [] });
+    expect(result.notes).toEqual([
+      "bundle #1, #2, #3 (area: frontend) — keep it under ~300 changed lines, measured after building",
+    ]);
+    // Like --health: no nightly call, the sweep's single gh call only.
+    expect(calls).toHaveLength(1);
+  });
+
+  it("does not change the order: the bundle follows the sorted queue", async () => {
+    // #9 is P1 and therefore the head, even though #1 is older.
+    const { data } = await bundle([
+      small(1, "frontend"),
+      { ...issue(9, ["spec-sync", "P1 must", "type: bug", "area: frontend"], "M1") },
+    ]);
+    expect(data.bundle).toEqual([9, 1]);
+  });
+
+  it("a ticket of another area ends the run, and the reason is named", async () => {
+    const { data, result } = await bundle([
+      small(1, "frontend"),
+      small(2, "backend"),
+      small(3, "frontend"),
+    ]);
+    expect(data).toMatchObject({
+      bundle: [1],
+      area: null,
+      excluded: [{ issue: 2, reason: "other area (area: backend)" }],
+    });
+    expect(result.notes).toEqual(["no bundle — #1 alone"]);
+  });
+
+  it.each<[string, GhIssue, string]>([
+    ["a migration", small(2, "frontend", [], "Block IDs: schema + migration"), 'keyed "schema"'],
+    [
+      "a ratchet baseline",
+      small(2, "frontend", [], "Raise the ratchet baseline"),
+      'keyed "ratchet"',
+    ],
+    [
+      "a registry change",
+      small(2, "frontend", [], "Add to the obligations registry"),
+      'keyed "registry"',
+    ],
+    ["a visual change", small(2, "frontend", ["visual-regression"]), 'keyed "visual"'],
+    [
+      "a measure change",
+      small(2, "frontend", [], "measure: raise the size limit"),
+      'keyed "measure"',
+    ],
+    ["a blocked ticket", small(2, "frontend", ["blocked"]), "blocked"],
+    [
+      "a non-small ticket",
+      issue(2, ["spec-sync", "P2 important", "area: frontend"], "M1"),
+      "not small (no bug, polish, translation or accessibility label)",
+    ],
+    ["a ticket without area", small(2, null), 'no "area: …" label'],
+  ])("never bundles %s", async (_name, candidate, reason) => {
+    // A P2 head with a small label, so a P2 candidate cannot sort above it.
+    const head = issue(1, ["spec-sync", "P2 important", "area: frontend", "bug"], "M1");
+    const { data } = await bundle([head, candidate]);
+    expect(data).toMatchObject({ bundle: [1], excluded: [{ issue: 2, reason }] });
+  });
+
+  it("counts translation and accessibility labels as small", async () => {
+    const { data } = await bundle([
+      { ...issue(1, ["spec-sync", "P2 important", "area: frontend", "i18n"], "M1") },
+      { ...issue(2, ["spec-sync", "P2 important", "area: frontend", "a11y"], "M1") },
+    ]);
+    expect(data.bundle).toEqual([1, 2]);
+  });
+
+  it("an unbundleable head stands alone, with its reason", async () => {
+    const { data } = await bundle([
+      issue(1, ["spec-sync", "P2 important", "area: frontend"], "M1"),
+      small(2, "frontend"),
+    ]);
+    expect(data).toMatchObject({
+      bundle: [1],
+      area: null,
+      excluded: [{ issue: 1, reason: expect.stringContaining("not small") }],
+    });
+  });
+
+  it("an empty queue proposes nothing", async () => {
+    const { data, result } = await bundle([]);
+    expect(data).toMatchObject({ bundle: [], area: null, excluded: [] });
+    expect(result.notes).toEqual(["queue empty — nothing to bundle"]);
+  });
+
+  it("rejects --bundle together with --check or --health (exit 4)", () => {
+    for (const other of ["--check", "--health"]) {
+      let caught: ToolkitError | undefined;
+      try {
+        parseQueueOptions(["--bundle", other]);
+      } catch (error) {
+        caught = error as ToolkitError;
+      }
+      expect(caught?.exit).toBe(EXIT.PRECONDITION);
+      expect(caught?.field).toBe("--bundle");
+    }
   });
 });

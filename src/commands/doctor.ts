@@ -7,7 +7,11 @@
  * valid `effort:` frontmatter, the skill table is internally sound, the repo
  * knows the configured labels, `spec-pins.json` is present, the pinned
  * `PROC-DEV-015` subtree specs still carry their pinned revision (spec §6),
- * and the pause flag is absent. Findings are reported, never fixed — repairing
+ * and the pause flag is absent. A repo with workflows (it lands through PRs)
+ * is also checked against the push flow of PROC-DEV-005: the pre-push hook runs
+ * the merge pre-run, `.gitattributes` merges the coverage ledger as union, and
+ * the merge profile has a `unit-static` phase — the last one a warning, which
+ * is listed under `warnings` and never turns the exit red. Findings are reported, never fixed — repairing
  * a drifted norm would decide something the owner has not decided (spec §2).
  *
  * Exit 1 on at least one finding.
@@ -70,6 +74,9 @@ export async function runDoctor(ctx: CommandContext, deps: DoctorDeps): Promise<
   const notes: string[] = [];
   const details: string[] = [];
   const add = (check: string, detail: string): void => void findings.push({ check, detail });
+  // A warning is reported like a finding but does not turn the exit red.
+  const warnings: Finding[] = [];
+  const warn = (check: string, detail: string): void => void warnings.push({ check, detail });
 
   const specSection = await readNormSection(deps.tools, add);
   if (specSection === undefined) {
@@ -98,6 +105,7 @@ export async function runDoctor(ctx: CommandContext, deps: DoctorDeps): Promise<
   await checkNormHash(deps.tools, add);
   checkPause(ctx.repoRoot, add);
   checkNightly(ctx, add);
+  checkPushFlow(ctx, add, warn);
 
   // Leftovers of aborted runs (spec §7.7). They need to know which tickets are
   // still open, so this runs after the checks that already reported a broken `gh`.
@@ -126,7 +134,12 @@ export async function runDoctor(ctx: CommandContext, deps: DoctorDeps): Promise<
     exit: findings.length === 0 ? EXIT.OK : EXIT.FAILED,
     notes,
     logDir,
-    data: { findings: listed },
+    data: {
+      findings: listed,
+      ...(warnings.length === 0
+        ? {}
+        : { warnings: warnings.map((warning) => `${warning.check}: ${warning.detail}`) }),
+    },
   };
 }
 
@@ -377,12 +390,183 @@ function checkNightly(ctx: CommandContext, add: Add): void {
     return;
   }
   if (config.nightlyWorkflow !== undefined) return;
-  const dir = join(ctx.repoRoot, WORKFLOWS_DIR);
-  if (!existsSync(dir)) return;
-  if (readdirSync(dir).some((file) => /\.ya?ml$/.test(file))) {
+  if (hasWorkflows(ctx.repoRoot)) {
     add(
       "nightly",
       `no \`nightlyWorkflow\` in the config, but ${WORKFLOWS_DIR} has workflows — the red-main check is off`,
+    );
+  }
+}
+
+function hasWorkflows(repoRoot: string): boolean {
+  const dir = join(repoRoot, WORKFLOWS_DIR);
+  return existsSync(dir) && readdirSync(dir).some((file) => /\.ya?ml$/.test(file));
+}
+
+/** The pre-run every push must pass (PROC-DEV-005 §Preflight on every push). */
+export const PREFLIGHT_COMMAND = "npx spec-sync gate --profile merge --preflight";
+export const UNIT_STATIC_PHASE = "unit-static";
+export const COVERAGE_ATTRIBUTE = ".spec-sync/drift-coverage.jsonl merge=union";
+
+/**
+ * The push flow of PROC-DEV-005, for a repo that lands through PRs — one with
+ * workflows, the same signal `checkNightly` reads. A repo without workflows
+ * (this toolkit) pushes straight to main and has no PR flow to check.
+ */
+function checkPushFlow(ctx: CommandContext, add: Add, warn: Add): void {
+  if (!hasWorkflows(ctx.repoRoot)) return;
+  checkPrePushHook(ctx.repoRoot, add);
+  checkGitattributes(ctx.repoRoot, add);
+
+  let config: Config;
+  try {
+    config = loadConfig(ctx.repoRoot, ctx.flags.config);
+  } catch {
+    return;
+  }
+  const merge = config.gate.profiles.merge;
+  if (merge === undefined) {
+    warn(
+      "unit-static",
+      `no \`merge\` profile in the config — PROC-DEV-005 runs a fast \`${UNIT_STATIC_PHASE}\` phase in it`,
+    );
+  } else if (!merge.includes(UNIT_STATIC_PHASE)) {
+    warn(
+      "unit-static",
+      `the merge profile has no \`${UNIT_STATIC_PHASE}\` phase — add one for the source-scan, rule and registry tests that need no database, image or browser (PROC-DEV-005)`,
+    );
+  }
+}
+
+interface HookSource {
+  /** Repo-relative file the text came from. */
+  file: string;
+  text: string;
+}
+
+/**
+ * Where a repo defines its pre-push hook: `.husky/pre-push`, `.githooks/pre-push`,
+ * or the `pre-push` entry of `simple-git-hooks` (or legacy `husky.hooks`) in
+ * `package.json`. Each source is followed one step into the files and npm
+ * scripts it calls (`node scripts/prePush.mjs`, `npm run verify`), so a hook
+ * that delegates still counts. The first returned source is the entry point.
+ */
+export function prePushSources(repoRoot: string): HookSource[] {
+  const read = (file: string): string | undefined => {
+    const path = join(repoRoot, file);
+    try {
+      return existsSync(path) ? readFileSync(path, "utf8") : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
+  let scripts: Record<string, string> = {};
+  const entries: HookSource[] = [];
+  for (const file of [join(".husky", "pre-push"), join(".githooks", "pre-push")]) {
+    const text = read(file);
+    if (text !== undefined) entries.push({ file, text });
+  }
+  const pkgText = read("package.json");
+  if (pkgText !== undefined) {
+    try {
+      const pkg = JSON.parse(pkgText) as {
+        scripts?: Record<string, string>;
+        "simple-git-hooks"?: Record<string, string>;
+        husky?: { hooks?: Record<string, string> };
+      };
+      scripts = pkg.scripts ?? {};
+      const command = pkg["simple-git-hooks"]?.["pre-push"] ?? pkg.husky?.hooks?.["pre-push"];
+      if (typeof command === "string") entries.push({ file: "package.json", text: command });
+    } catch {
+      // An unreadable package.json is not this check's finding.
+    }
+  }
+
+  const sources = [...entries];
+  const seen = new Set(sources.map((source) => source.file));
+  for (const source of entries) {
+    for (const match of source.text.matchAll(/npm\s+run(?:-script)?\s+([\w:.-]+)/gu)) {
+      const name = match[1] as string;
+      const script = scripts[name];
+      const key = `package.json#${name}`;
+      if (script !== undefined && !seen.has(key)) {
+        seen.add(key);
+        sources.push({ file: key, text: script });
+      }
+    }
+    for (const match of source.text.matchAll(
+      /(?:node|sh|bash|zsh|tsx)\s+["']?((?:\.\/)?[\w./-]+\.(?:mjs|cjs|js|ts|sh))/gu,
+    )) {
+      const file = (match[1] as string).replace(/^\.\//u, "");
+      if (seen.has(file)) continue;
+      const text = read(file);
+      if (text !== undefined) {
+        seen.add(file);
+        sources.push({ file, text });
+      }
+    }
+  }
+  return sources;
+}
+
+/**
+ * Does the text invoke `spec-sync gate` with `--profile merge` and
+ * `--preflight`? Quotes, commas and brackets are flattened first, so the
+ * argument array of a `spawnSync("npx", ["spec-sync", "gate", …])` reads like a
+ * shell line.
+ */
+export function invokesPreflight(text: string): boolean {
+  const flat = text.replace(/["'`,[\]()]/gu, " ").replace(/\s+/gu, " ");
+  for (const match of flat.matchAll(/spec-sync gate((?: (?!spec-sync\b)\S+){0,12})/gu)) {
+    const args = match[1] ?? "";
+    if (/ --preflight\b/u.test(args) && /--profile[ =]merge\b/u.test(args)) return true;
+  }
+  return false;
+}
+
+function checkPrePushHook(repoRoot: string, add: Add): void {
+  const sources = prePushSources(repoRoot);
+  if (sources.length === 0) {
+    add(
+      "pre-push",
+      `no pre-push hook (.husky/pre-push, .githooks/pre-push or package.json "simple-git-hooks") — add one that runs \`${PREFLIGHT_COMMAND}\` (PROC-DEV-005)`,
+    );
+    return;
+  }
+  if (sources.some((source) => invokesPreflight(source.text))) return;
+
+  // Name the file a reader edits: the script the hook delegates to, else the entry.
+  const target =
+    sources.find((source) => /\.(?:mjs|cjs|js|ts)$/u.test(source.file)) ??
+    sources.find((source) => !source.file.startsWith("package.json")) ??
+    (sources[0] as HookSource);
+  const line = /\.(?:mjs|cjs|js|ts)$/u.test(target.file)
+    ? `spawnSync("npx", ["spec-sync", "gate", "--profile", "merge", "--preflight"], { stdio: "inherit" })`
+    : target.file === "package.json"
+      ? `"pre-push": "${PREFLIGHT_COMMAND} && …"`
+      : PREFLIGHT_COMMAND;
+  add(
+    "pre-push",
+    `${target.file} does not run the merge pre-run — add \`${line}\` and refuse the push on a non-zero exit (PROC-DEV-005)`,
+  );
+}
+
+function checkGitattributes(repoRoot: string, add: Add): void {
+  const path = join(repoRoot, ".gitattributes");
+  const text = existsSync(path) ? readFileSync(path, "utf8") : "";
+  const present = text.split("\n").some((line) => {
+    const [pattern, ...attributes] = line.trim().split(/\s+/u);
+    return (
+      (pattern === ".spec-sync/drift-coverage.jsonl" ||
+        pattern === "/.spec-sync/drift-coverage.jsonl") &&
+      attributes.includes("merge=union")
+    );
+  });
+  if (!present) {
+    add(
+      "gitattributes",
+      `.gitattributes lacks \`${COVERAGE_ATTRIBUTE}\` — add that line so parallel PRs append receipts without a conflict (PROC-DEV-005)`,
     );
   }
 }

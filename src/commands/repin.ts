@@ -3,6 +3,7 @@
  * model context (SST-DESIGN-025).
  *
  * `spec-sync repin [--ids <a,b>] [--server <url>]`
+ * `spec-sync repin --check [--server <url>]` — read-only staleness check, see `runCheck`.
  *
  * The server endpoint comes from the repo's `.mcp.json` (`spec` entry);
  * `--server` overrides. Neither present ⇒ exit 4. Both are accepted in full
@@ -32,10 +33,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Command, CommandContext, CommandResult } from "../cli.js";
 import type { Config } from "../config.js";
-import { computeMoved, isCovered, readReceipts } from "../coverage.js";
+import { COVERAGE_FILE, computeMoved, isCovered, readReceipts } from "../coverage.js";
 import { callSpecTool, parsePins } from "../norms.js";
 import { EXIT, ToolkitError } from "../output.js";
 import { checkFlags, valueFlag } from "../pack/args.js";
+import { failureLine, runProcess } from "../pack/exec.js";
 import {
   excludeMatcher,
   PINS_FILE,
@@ -53,10 +55,18 @@ export const repinCommand: Command = {
 };
 
 export async function runRepin(ctx: CommandContext): Promise<CommandResult> {
-  checkFlags(ctx.args, ["--ids", "--server"]);
+  checkFlags(ctx.args, ["--ids", "--server"], ["--check"]);
   const config = ctx.config as Config;
 
   const idsFlag = valueFlag(ctx.args, "--ids");
+  if (ctx.args.includes("--check")) {
+    if (idsFlag !== undefined) {
+      throw new ToolkitError("--check cannot be combined with --ids", EXIT.PRECONDITION, {
+        field: "--check",
+      });
+    }
+    return runCheck(ctx, config);
+  }
   const server = resolveServer(ctx.repoRoot, ctx.args);
 
   const existing = readPinsFile(ctx.repoRoot);
@@ -137,6 +147,86 @@ export async function runRepin(ctx: CommandContext): Promise<CommandResult> {
   }
 
   return { ok: true, notes, data: { pinsPath, mode, units, excluded } };
+}
+
+/**
+ * `repin --check` (PROC-DEV-005 §Pins with the change): read-only, usable from
+ * a pre-push hook. Stale means the push would leave pins or coverage behind:
+ *
+ *   - `spec-pins.json` or the coverage ledger differ from `HEAD` (uncommitted
+ *     or untracked) — the change is not in the commit being pushed;
+ *   - a moved key already carries a valid receipt but is not pinned — `repin`
+ *     (full or `--ids`) would write it now, so it belongs in this commit.
+ *
+ * A moved key without a receipt is fresh server drift, not this push's
+ * business — counted in a note, never a red. Exit 0 clean · 1 stale (keys and
+ * files listed) · 2 server unreachable and nothing local stale (a hook passes
+ * on 2 with a line) · 4 no pin file. Nothing is written, ever.
+ */
+async function runCheck(ctx: CommandContext, config: Config): Promise<CommandResult> {
+  const notes: string[] = [];
+  const existing = readPinsFile(ctx.repoRoot);
+  if (existing === undefined) {
+    throw new ToolkitError(
+      `repin --check needs an existing ${PINS_FILE} — bootstrap with repin`,
+      EXIT.PRECONDITION,
+      { field: PINS_FILE },
+    );
+  }
+
+  const status = runProcess(
+    "git",
+    ["status", "--porcelain", "--untracked-files=all", "--", PINS_FILE, COVERAGE_FILE],
+    ctx.repoRoot,
+  );
+  let uncommitted: string[] = [];
+  if (status.ok) {
+    uncommitted = status.stdout
+      .split("\n")
+      .filter((line) => line.trim() !== "")
+      .map((line) => line.slice(3).trim());
+  } else {
+    notes.push(`git status failed — uncommitted check skipped: ${failureLine(status)}`);
+  }
+
+  const server = resolveServer(ctx.repoRoot, ctx.args);
+  const isExcluded = excludeMatcher(config.pinExclude);
+  let fetched: Map<string, number>;
+  try {
+    fetched = withoutExcluded(await fetchPins(config.project, server), isExcluded);
+  } catch (error) {
+    // Unreachable is exit 2 — unless something local is already provably stale.
+    if (!(error instanceof ToolkitError && error.exit === EXIT.UNPROVABLE)) throw error;
+    if (uncommitted.length === 0) throw error;
+    notes.push(`spec server unreachable — server comparison skipped: ${error.message}`);
+    fetched = new Map(Object.entries(withoutExcluded(existing, isExcluded)));
+  }
+
+  const receipts = readReceipts(ctx.repoRoot);
+  const moved = computeMoved(withoutExcluded(existing, isExcluded), fetched);
+  const stale = moved.filter((m) => isCovered(m, receipts)).map((m) => m.key);
+  const uncovered = moved.length - stale.length;
+  if (uncovered > 0) {
+    notes.push(
+      `${uncovered} moved key(s) without a receipt — fresh drift for the loop, not stale for this push`,
+    );
+  }
+
+  const ok = stale.length === 0 && uncommitted.length === 0;
+  if (stale.length > 0) {
+    notes.push(
+      `${stale.length} receipted key(s) not pinned — run \`spec-sync repin --ids ${stale.join(",")}\` and commit with the change`,
+    );
+  }
+  if (uncommitted.length > 0) {
+    notes.push(`not committed: ${uncommitted.join(", ")} — commit it with the change`);
+  }
+  return {
+    ok,
+    exit: ok ? EXIT.OK : EXIT.FAILED,
+    notes,
+    data: { pinsPath: PINS_FILE, mode: "check", stale, uncommitted, uncovered },
+  };
 }
 
 /**

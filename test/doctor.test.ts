@@ -1,11 +1,13 @@
 import { mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { CommandContext } from "../src/cli.js";
 import {
   EFFORT_TABLE_KEY,
+  invokesPreflight,
   parseEffortTable,
+  prePushSources,
   runDoctor,
   type DoctorDeps,
 } from "../src/commands/doctor.js";
@@ -87,6 +89,10 @@ interface RepoOptions {
   /** Files written to `.github/workflows/`. */
   workflows?: string[];
   nightlyWorkflow?: string;
+  /** Extra repo files, path → content (hooks, `.gitattributes`, `package.json`). */
+  files?: Record<string, string>;
+  /** `gate.profiles` override. */
+  profiles?: Record<string, string[]>;
 }
 
 const config = {
@@ -109,6 +115,16 @@ function fakeRepo(options: RepoOptions = {}): string {
       join(root, "spec-sync.config.json"),
       JSON.stringify({
         ...config,
+        ...(options.profiles === undefined
+          ? {}
+          : {
+              gate: {
+                profiles: options.profiles,
+                phases: [...new Set(["lint", ...Object.values(options.profiles).flat()])].map(
+                  (name) => ({ name, cmd: `npm run ${name}` }),
+                ),
+              },
+            }),
         ...(options.review === undefined ? {} : { review: options.review }),
         ...(options.nightlyWorkflow === undefined
           ? {}
@@ -129,6 +145,10 @@ function fakeRepo(options: RepoOptions = {}): string {
     writeFileSync(join(root, "spec-pins.json"), content);
   }
   if (options.paused === true) writeFileSync(join(root, ".spec-sync-pause"), "");
+  for (const [file, content] of Object.entries(options.files ?? {})) {
+    mkdirSync(dirname(join(root, file)), { recursive: true });
+    writeFileSync(join(root, file), content);
+  }
   if (options.ledger !== undefined) {
     mkdirSync(join(root, ".spec-sync"), { recursive: true });
     writeFileSync(
@@ -842,5 +862,163 @@ describe("doctor — review block (SST-DESIGN-030 §Config)", () => {
       deps(fakeHome(), fakeTools({ git: { lsFiles: ["server/auth/login.ts"] } })),
     );
     expect(findingsOf(result.data)).toEqual([]);
+  });
+});
+
+describe("doctor — push flow of PROC-DEV-005", () => {
+  const warningsOf = (data: Record<string, unknown> | undefined): string[] =>
+    (data?.warnings ?? []) as string[];
+
+  const SOUND_PREPUSH = [
+    'import { spawnSync } from "node:child_process";',
+    "const preflight = spawnSync(",
+    '  "npx",',
+    '  ["spec-sync", "gate", "--profile", "merge", "--preflight"],',
+    '  { stdio: "inherit" },',
+    ");",
+    "if (preflight.status !== 0) process.exit(preflight.status ?? 1);",
+  ].join("\n");
+
+  /** The app repo shape: simple-git-hooks → a node script → `npm run verify`. */
+  const appRepo = (prePush: string, extra: RepoOptions = {}): string =>
+    fakeRepo({
+      workflows: ["ci.yml"],
+      nightlyWorkflow: "ci.yml",
+      profiles: { local: ["lint"], merge: ["lint", "unit-static"] },
+      ...extra,
+      files: {
+        "package.json": JSON.stringify({
+          scripts: { verify: "spec-sync gate --profile local" },
+          "simple-git-hooks": { "pre-push": "node scripts/prePush.mjs" },
+        }),
+        "scripts/prePush.mjs": prePush,
+        ".gitattributes": "* text=auto\n.spec-sync/drift-coverage.jsonl merge=union\n",
+        ...extra.files,
+      },
+    });
+
+  const run = (root: string) => runDoctor(context(root), deps(fakeHome(), fakeTools()));
+
+  it("is silent for a repo whose hook, attributes and merge profile follow the norm", async () => {
+    const result = await run(appRepo(SOUND_PREPUSH));
+    expect(findingsOf(result.data)).toEqual([]);
+    expect(warningsOf(result.data)).toEqual([]);
+    expect(result.exit).toBe(EXIT.OK);
+  });
+
+  it("names the delegated script and the line to add when the hook runs only verify", async () => {
+    const verifyOnly = [
+      'import { spawnSync } from "node:child_process";',
+      "// note: spec-sync gate --profile local runs inside verify",
+      'const verify = spawnSync("npm", ["run", "verify"], { stdio: "inherit" });',
+      "process.exit(verify.status ?? 1);",
+    ].join("\n");
+    const result = await run(appRepo(verifyOnly));
+    const findings = findingsOf(result.data);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toContain("pre-push: scripts/prePush.mjs does not run the merge pre-run");
+    expect(findings[0]).toContain(
+      'spawnSync("npx", ["spec-sync", "gate", "--profile", "merge", "--preflight"], { stdio: "inherit" })',
+    );
+    expect(result.exit).toBe(EXIT.FAILED);
+  });
+
+  it("reports a repo without any pre-push hook", async () => {
+    const root = fakeRepo({
+      workflows: ["ci.yml"],
+      nightlyWorkflow: "ci.yml",
+      profiles: { local: ["lint"], merge: ["lint", "unit-static"] },
+      files: { ".gitattributes": ".spec-sync/drift-coverage.jsonl merge=union\n" },
+    });
+    const findings = findingsOf((await run(root)).data);
+    expect(findings).toEqual([
+      expect.stringContaining(
+        "pre-push: no pre-push hook (.husky/pre-push, .githooks/pre-push or package.json",
+      ),
+    ]);
+  });
+
+  const line = "npx spec-sync gate --profile merge --preflight\n";
+  it.each<[string, Record<string, string>]>([
+    ["a husky hook", { ".husky/pre-push": `#!/bin/sh\n${line}` }],
+    ["a .githooks hook", { ".githooks/pre-push": `#!/bin/sh\nset -e\n${line}npm run verify\n` }],
+    [
+      "an npm-script indirection",
+      {
+        "package.json": JSON.stringify({
+          scripts: { prepush: "spec-sync gate --profile=merge --preflight && npm run verify" },
+          "simple-git-hooks": { "pre-push": "npm run prepush" },
+        }),
+      },
+    ],
+  ])("accepts %s", async (_name, files) => {
+    const root = fakeRepo({
+      workflows: ["ci.yml"],
+      nightlyWorkflow: "ci.yml",
+      profiles: { local: ["lint"], merge: ["lint", "unit-static"] },
+      files: { ".gitattributes": ".spec-sync/drift-coverage.jsonl merge=union\n", ...files },
+    });
+    expect(findingsOf((await run(root)).data)).toEqual([]);
+  });
+
+  it("names the shell hook and the plain line for a shell hook without the pre-run", async () => {
+    const root = appRepo(SOUND_PREPUSH, {
+      files: {
+        "package.json": "{}",
+        ".husky/pre-push": "#!/bin/sh\nnpm run verify\n",
+      },
+    });
+    expect(findingsOf((await run(root)).data)).toEqual([
+      "pre-push: .husky/pre-push does not run the merge pre-run — add `npx spec-sync gate --profile merge --preflight` and refuse the push on a non-zero exit (PROC-DEV-005)",
+    ]);
+  });
+
+  it("reports a missing coverage union attribute as a finding", async () => {
+    const root = appRepo(SOUND_PREPUSH, { files: { ".gitattributes": "* text=auto\n" } });
+    expect(findingsOf((await run(root)).data)).toEqual([
+      expect.stringContaining(
+        "gitattributes: .gitattributes lacks `.spec-sync/drift-coverage.jsonl merge=union`",
+      ),
+    ]);
+    const none = appRepo(SOUND_PREPUSH, { files: { ".gitattributes": "" } });
+    expect(findingsOf((await run(none)).data)).toHaveLength(1);
+  });
+
+  it("warns — without turning the exit red — when the merge profile has no unit-static phase", async () => {
+    const result = await run(
+      appRepo(SOUND_PREPUSH, { profiles: { local: ["lint"], merge: ["lint"] } }),
+    );
+    expect(findingsOf(result.data)).toEqual([]);
+    expect(warningsOf(result.data)).toEqual([
+      expect.stringContaining("unit-static: the merge profile has no `unit-static` phase"),
+    ]);
+    expect(result.exit).toBe(EXIT.OK);
+  });
+
+  it("skips the push-flow checks in a repo without workflows (no PR flow)", async () => {
+    const result = await run(fakeRepo());
+    expect(findingsOf(result.data)).toEqual([]);
+    expect(warningsOf(result.data)).toEqual([]);
+  });
+
+  it("invokesPreflight needs both --profile merge and --preflight on one spec-sync gate call", () => {
+    expect(invokesPreflight("npx spec-sync gate --profile merge --preflight")).toBe(true);
+    expect(invokesPreflight("spec-sync gate --preflight --profile=merge")).toBe(true);
+    expect(invokesPreflight('["spec-sync",\n "gate", "--profile", "merge", "--preflight"]')).toBe(
+      true,
+    );
+    expect(invokesPreflight("spec-sync gate --profile local")).toBe(false);
+    expect(invokesPreflight("spec-sync gate --profile merge")).toBe(false);
+    expect(
+      invokesPreflight("spec-sync gate --profile merge && spec-sync review pr 1 --preflight"),
+    ).toBe(false);
+  });
+
+  it("prePushSources follows the hook into the script it calls", () => {
+    const root = appRepo(SOUND_PREPUSH);
+    expect(prePushSources(root).map((source) => source.file)).toEqual([
+      "package.json",
+      "scripts/prePush.mjs",
+    ]);
   });
 });

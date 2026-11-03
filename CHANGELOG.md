@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.36.0
+
+PR flow with little CI rework (PROC-DEV-005, owner go register #1950).
+
+### Added
+
+- `repin --check` — read-only pre-push check: exit 0 when the committed `spec-pins.json` and
+  `.spec-sync/drift-coverage.jsonl` are what the push needs; exit 1 listing `stale` keys (moved,
+  already receipted, not pinned) and `uncommitted` files (pins or ledger differ from `HEAD`);
+  exit 2 when the spec server is unreachable and nothing local is stale (the hook passes on 2);
+  exit 4 without a pin file or with `--ids`. A moved key without a receipt is fresh drift, counted
+  in `uncovered`, never a red. Writes nothing.
+- `pr overlap <open-pr> --merged <merged-pr>` — after a merge, exit 1 when the open PR must be
+  updated (shares a non-generated file with the merged PR, or the merged PR touched visual
+  baselines, registries, translations or the schema), exit 0 otherwise; the reason in one line.
+  Globs in the new optional `overlap` block (`generated`, `visualBaselines`, `registries`,
+  `translations`, `schema`), each with its own default.
+- `queue --bundle` — proposes a bundle from the head of the sorted queue (order untouched): up to
+  `bundle.maxTickets` (3) adjacent tickets of one area label, each small (bug, polish or a
+  `bundle.smallLabels` label), not blocked, none keyed by `bundle.excludeKeywords` (schema,
+  migration, ratchet, baseline, measure, registry, visual). Payload `bundle`, `area`, `lineCap`
+  (`bundle.maxLines`, 300 — printed, enforced by the worker after building) and `excluded` with
+  the reason. `--bundle` with `--check` or `--health` → exit 4.
+- `doctor`, in a repo with workflows: finding when the pre-push hook (`.husky/pre-push`,
+  `.githooks/pre-push`, `simple-git-hooks`/`husky.hooks` in `package.json`, followed one step into
+  the script or npm script it calls) does not run `spec-sync gate --profile merge --preflight` —
+  naming the file and the line to add; finding when `.gitattributes` lacks
+  `.spec-sync/drift-coverage.jsonl merge=union`; **warning** (new `warnings` list, exit stays 0)
+  when the merge profile has no `unit-static` phase.
+
+### Unchanged, now tested
+
+- `review pr` reviews a draft PR like a ready one (it never read `isDraft`); a draft without
+  checks leaves `overrunMs` unset.
+
 ## 0.35.0
 
 ### Changed

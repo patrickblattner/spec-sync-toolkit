@@ -82,6 +82,65 @@ const healthSchema = z.object({
 });
 
 /**
+ * The `overlap` block (`PROC-DEV-005` §Update only on overlap): globs
+ * (picomatch) `pr overlap` reads. Each key defaults on its own, so a repo that
+ * overrides one keeps the defaults of the others.
+ */
+const overlapSchema = z.object({
+  /** Never counts as a shared file — merged as union or regenerated. */
+  generated: z.array(z.string().min(1)).default([".spec-sync/drift-coverage.jsonl"]),
+  /** A merged PR touching any of these forces the update on its own. */
+  visualBaselines: z
+    .array(z.string().min(1))
+    .default(["**/*-snapshots/**", "**/__screenshots__/**", "**/__image_snapshots__/**"]),
+  registries: z
+    .array(z.string().min(1))
+    .default(["**/*registry*", "**/*-manifest.json", "**/*-allowlist.json"]),
+  translations: z
+    .array(z.string().min(1))
+    .default(["**/i18n/**", "**/locales/**", "**/translations/**"]),
+  schema: z
+    .array(z.string().min(1))
+    .default([
+      "**/migrations/**",
+      "**/schema.sql",
+      "**/*_schema.sql",
+      "**/schema.prisma",
+      "**/data/schema.ts",
+      "**/db/schema.ts",
+    ]),
+});
+
+/**
+ * The `bundle` block (`PROC-DEV-005` §Bundled tickets): what `queue --bundle`
+ * reads. The bug and polish labels of `labels` always count as small.
+ */
+const bundleSchema = z.object({
+  maxTickets: z.number().int().min(1).default(3),
+  /** Printed only — the worker measures the diff after building. */
+  maxLines: z.number().int().positive().default(300),
+  /** A ticket's area is its one label with this prefix. */
+  areaPrefix: z.string().min(1).default("area: "),
+  /** Labels that mark a small ticket, on top of `labels.bug` and `labels.priority.polish`. */
+  smallLabels: z
+    .array(z.string().min(1))
+    .default(["bug", "fix", "i18n", "translation", "a11y", "accessibility"]),
+  /** Word-prefix keywords (case-insensitive) in a title or label that keep a ticket out. */
+  excludeKeywords: z
+    .array(z.string().min(1))
+    .default([
+      "schema",
+      "migration",
+      "ratchet",
+      "baseline",
+      "measure",
+      "registry",
+      "registries",
+      "visual",
+    ]),
+});
+
+/**
  * The `review` block (SST-DESIGN-030). Optional and non-strict: unknown keys
  * are stripped, so the legacy keys of the per-repo review scripts (`engine`,
  * `cmd`, `promptTemplate`, `batchLenses`, `uiLens`, `mark`) pass and are
@@ -167,6 +226,8 @@ const configSchema = z
     pinExclude: z.array(z.string().min(1)).optional(),
     review: reviewSchema.prefault({}),
     health: healthSchema.prefault({}),
+    overlap: overlapSchema.prefault({}),
+    bundle: bundleSchema.prefault({}),
   })
   .superRefine((config, ctx) => {
     // A profile may only name phases that exist — otherwise `gate --profile x`
@@ -188,6 +249,8 @@ const configSchema = z
 export type Config = z.infer<typeof configSchema>;
 export type GatePhase = z.infer<typeof phaseSchema>;
 export type ReviewConfig = z.infer<typeof reviewSchema>;
+export type OverlapConfig = z.infer<typeof overlapSchema>;
+export type BundleConfig = z.infer<typeof bundleSchema>;
 
 /**
  * Loads and validates the config. Every failure path — missing file, broken

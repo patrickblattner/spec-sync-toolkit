@@ -24,7 +24,7 @@ no attempt to be general. Outside that setup most of it will not make sense.
 
 ```bash
 spec-sync gate --profile local|merge|nightly [--changed] [--preflight]
-spec-sync queue [--check | --health]
+spec-sync queue [--check | --health | --bundle]
 spec-sync pack <issue>
 spec-sync merge <issue> --branch <name> [--dry-run]
 spec-sync lenses [--base main]
@@ -33,6 +33,8 @@ spec-sync doctor
 spec-sync budget [--session <id|path>] [--label <text>]
 spec-sync handover [--note <text>] [--reason <budget|done|red-2x|question-open|pause|unexpected>] [--session <id|path>]
 spec-sync repin [--ids <a,b>] [--server <url>]
+spec-sync repin --check [--server <url>]
+spec-sync pr overlap <open-pr> --merged <merged-pr>
 spec-sync map extract [<repo-root>] [--out <dir>] [--meaning <file>] [--project <id>]
 spec-sync map check [<repo-root>] [--meaning <file>] [--project <id>]
 spec-sync measure set <file> <pointer> <value> --register <n> [--server <url>]
@@ -72,6 +74,80 @@ An SPDX expression passes when it is satisfiable from `licenses` (`OR` needs one
 readable licence. It passes only while the package still reads exactly that (SPDX text compared up
 to case and whitespace); otherwise it is a finding `exception granted for <X>, package now <Y>`.
 An exception is the only way `UNLICENSED` or an unreadable licence passes.
+
+### Push flow with little CI rework (PROC-DEV-005)
+
+The pre-push hook of an app repo runs the merge pre-run and the pin check on the tree being
+pushed (Node hook script, as `simple-git-hooks` calls it):
+
+```js
+const preflight = spawnSync("npx", ["spec-sync", "gate", "--profile", "merge", "--preflight"], {
+  stdio: "inherit",
+});
+if (preflight.status !== 0) process.exit(preflight.status ?? 1);
+const pins = spawnSync("npx", ["spec-sync", "repin", "--check"], { stdio: "inherit" });
+if (pins.status === 2) console.error("• pre-push: spec server unreachable — pin check skipped");
+else if (pins.status !== 0) process.exit(pins.status ?? 1);
+```
+
+`repin --check` is read-only (no file and no server write). Exit 0: the committed
+`spec-pins.json` and `.spec-sync/drift-coverage.jsonl` are what this push needs. Exit 1, listing
+`stale` keys and `uncommitted` files: either file differs from `HEAD` (uncommitted or untracked),
+or a moved key already carries a valid receipt but is not pinned — `repin` would write it now, so
+it belongs in the same commit as the change. A moved key without a receipt is fresh server drift
+for the loop, not stale for the push: it is counted in `uncovered` and a note, never a red. Exit 2:
+the spec server is unreachable and nothing local is stale — the hook passes with a line. Exit 4:
+no pin file, or `--check` with `--ids`.
+
+`doctor` checks the push flow in a repo that lands through PRs (one with `.github/workflows`):
+the pre-push hook (`.husky/pre-push`, `.githooks/pre-push`, or `simple-git-hooks` / `husky.hooks`
+in `package.json`, followed one step into the script or npm script it calls) must run
+`spec-sync gate --profile merge --preflight` — otherwise a finding names the file and the line to
+add; `.gitattributes` must carry `.spec-sync/drift-coverage.jsonl merge=union` (finding); and the
+merge profile should carry a `unit-static` phase — a **warning**, listed under `warnings`, which
+never turns the exit red.
+
+`pr overlap <open-pr> --merged <merged-pr>` decides after a merge whether an open PR is put onto
+the new main. It reads both file lists (`gh pr diff --name-only`). Exit 1 (update): the PRs share
+a file that is not generated, or the merged PR touched visual baselines, registries, translations
+or the schema. Exit 0 (no update): neither. The reason is one line in `notes`. A lockfile counts
+like any other file — only when both PRs touch it; a generated file never counts. The globs
+(picomatch) live in an optional `overlap` block; each key defaults on its own:
+
+```jsonc
+"overlap": {
+  "generated": [".spec-sync/drift-coverage.jsonl"],
+  "visualBaselines": ["**/*-snapshots/**", "**/__screenshots__/**", "**/__image_snapshots__/**"],
+  "registries": ["**/*registry*", "**/*-manifest.json", "**/*-allowlist.json"],
+  "translations": ["**/i18n/**", "**/locales/**", "**/translations/**"],
+  "schema": ["**/migrations/**", "**/schema.sql", "**/*_schema.sql", "**/schema.prisma", "**/data/schema.ts", "**/db/schema.ts"]
+}
+```
+
+`queue --bundle` proposes a bundle from the head of the sorted queue; the order itself is
+untouched. Up to `maxTickets` tickets that stand next to each other, carry the same single area
+label (`areaPrefix`), are each small (the `labels.bug` or `labels.priority.polish` label, or one
+of `smallLabels`), are not blocked, and carry none of `excludeKeywords` (word prefix,
+case-insensitive) in title or labels. The first follower that fails ends the run and is listed in
+`excluded` with its reason; an unbundleable head stands alone with its reason. The payload carries
+`bundle` (ticket numbers, head first), `area`, `lineCap` and `excluded`. The ~300-line cap is
+printed, not enforced — the worker measures the diff after building and splits a bundle that
+grows past it; whether a ticket is an intended visual change beyond its keywords is also the
+worker's call. No nightly call, nothing written; with `--check` or `--health` exit 4. Optional
+`bundle` block, defaults as shown:
+
+```jsonc
+"bundle": {
+  "maxTickets": 3,
+  "maxLines": 300,
+  "areaPrefix": "area: ",
+  "smallLabels": ["bug", "fix", "i18n", "translation", "a11y", "accessibility"],
+  "excludeKeywords": ["schema", "migration", "ratchet", "baseline", "measure", "registry", "registries", "visual"]
+}
+```
+
+`review pr` reviews a draft PR exactly like a ready one — PRs open as drafts and Codex runs before
+ready; the pr-gate overrun is simply not measured while no check has run.
 
 `measure` changes a file a gate step measures against — size limits, coverage stock, hygiene
 ratchet — and binds the change to a register decision (SST-DESIGN-002, PROC-DEV-047). The file
