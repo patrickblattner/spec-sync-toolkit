@@ -28,6 +28,7 @@ import { measureCommand } from "./measure.js";
 import { reviewCommand } from "./review.js";
 import { licenceInventoryCommand } from "./licence-inventory.js";
 import { prCommand } from "./pr.js";
+import { ledgerCommand } from "./ledger.js";
 
 export const ALL_COMMANDS: readonly Command[] = [
   gateCommand,
@@ -47,4 +48,5 @@ export const ALL_COMMANDS: readonly Command[] = [
   reviewCommand,
   licenceInventoryCommand,
   prCommand,
+  ledgerCommand,
 ];

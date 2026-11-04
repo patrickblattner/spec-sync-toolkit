@@ -35,6 +35,7 @@ spec-sync handover [--note <text>] [--reason <budget|done|red-2x|question-open|p
 spec-sync repin [--ids <a,b>] [--server <url>]
 spec-sync repin --check [--server <url>]
 spec-sync pr overlap <open-pr> --merged <merged-pr>
+spec-sync ledger close <issue> --reason "<text>" [--dry-run]
 spec-sync map extract [<repo-root>] [--out <dir>] [--meaning <file>] [--project <id>]
 spec-sync map check [<repo-root>] [--meaning <file>] [--project <id>]
 spec-sync measure set <file> <pointer> <value> --register <n> [--server <url>]
@@ -154,6 +155,14 @@ worker's call. No nightly call, nothing written; with `--check` or `--health` ex
 
 `review pr` reviews a draft PR exactly like a ready one — PRs open as drafts and Codex runs before
 ready; the pr-gate overrun is simply not measured while no check has run.
+
+`ledger close <issue> --reason "<text>"` ends an orphaned `merge-started` by hand — one that
+`merge` cannot resume because its squash commit predates the current commit subject format. It
+appends exactly one `merge-completed` with `closedByHand: true`, the reason and `ok: false` (not
+a verified merge, so `budget` does not measure it); `doctor` and `handover` then see the ticket as
+closed. Exit 4 and nothing written unless the ledger holds a `merge-started` for the issue without
+a later `merge-completed`, `gh issue view <issue> --json state` says `CLOSED`, and the reason is
+non-empty. `--dry-run` writes nothing and returns the event it would append.
 
 `measure` changes a file a gate step measures against — size limits, coverage stock, hygiene
 ratchet — and binds the change to a register decision (SST-DESIGN-002, PROC-DEV-047). The file
