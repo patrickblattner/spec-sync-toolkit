@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.36.2
+
+### Added
+
+- `ledger close <issue> --reason "<text>" [--dry-run]` — ends an orphaned `merge-started` by hand
+  when `merge` cannot resume it (its squash commit predates the current commit subject format).
+  Appends exactly one `merge-completed` with `closedByHand: true`, the reason and `ok: false`, so
+  `doctor` and `handover` see the ticket as closed and `budget` does not measure it. Exit 4 and
+  nothing written unless the ledger holds a `merge-started` for the issue without a later
+  `merge-completed`, `gh issue view` says `CLOSED`, and the reason is non-empty.
+
+### Changed
+
+- `gate`: a phase that exits `75` (lock deadline expired, `EX_TEMPFAIL`, PROC-REL-040 rev 7) is a
+  non-run — exit 2 whatever its output says, never red; the note reads
+  `phase <name>: lock deadline expired (exit 75) — not run`.
+
 ## 0.36.1
 
 ### Changed
