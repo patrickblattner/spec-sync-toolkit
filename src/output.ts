@@ -18,13 +18,22 @@ export const EXIT = {
   OK: 0,
   /** red on the merits — gate failed, postcondition violated after execution */
   FAILED: 1,
-  /** unprovable — aborted under foreign load. Not green. Repeat, do not debug. */
+  /**
+   * unprovable — aborted under foreign load. Not green. Repeat, do not debug.
+   * Also a gate phase that exited 75 (lock deadline expired, PROC-REL-040) — a non-run, never red.
+   */
   UNPROVABLE: 2,
   /** ambiguous — the decision belongs to the model, not to the toolkit */
   AMBIGUOUS: 3,
   /** precondition violated — missing config, no branch, owner-hold, pause flag */
   PRECONDITION: 4,
 } as const;
+
+/**
+ * Exit code of a lock waiter whose deadline expired (`EX_TEMPFAIL`, PROC-REL-040 rev 7).
+ * Not a toolkit exit: a gate phase that ends with it was not run, so the gate maps it to 2.
+ */
+export const LOCK_DEADLINE_EXIT = 75;
 
 export type ExitCode = (typeof EXIT)[keyof typeof EXIT];
 

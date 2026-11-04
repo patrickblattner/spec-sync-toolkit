@@ -13,7 +13,7 @@
 
 import { spawn } from "node:child_process";
 import { decolor, truncateLine } from "../logs.js";
-import { EXIT, type ExitCode } from "../output.js";
+import { EXIT, LOCK_DEADLINE_EXIT, type ExitCode } from "../output.js";
 import { classifyFailures, verdict, type ReportedFailure } from "./saturation.js";
 
 export interface PhaseOutcome {
@@ -320,16 +320,21 @@ export function reportedFailure(output: string): string | undefined {
  * routes to "unprovable" (spec §4, `DECISION (exit-2-inherited)`) — a
  * timeout-only red that met a saturated box, or a red whose only cause is a
  * transient infrastructure signature, which does not consult the load at all.
+ * A phase that exited 75 is neither: its lock wait expired before it ran
+ * (PROC-REL-040 rev 7), so it is a non-run whatever its output says.
  */
 export function phaseExit({
+  code,
   output,
   signal,
   saturated,
 }: {
+  code: number;
   output: string;
   signal: NodeJS.Signals | null;
   saturated: boolean;
 }): ExitCode {
+  if (code === LOCK_DEADLINE_EXIT) return EXIT.UNPROVABLE;
   const messages = failureMessages(output);
   const runnerFailed = signal !== null;
 

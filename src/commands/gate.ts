@@ -40,7 +40,7 @@
 import { existsSync, realpathSync } from "node:fs";
 import { simpleGit } from "simple-git";
 import { basename, dirname, join } from "node:path";
-import { EXIT, ToolkitError, progress } from "../output.js";
+import { EXIT, LOCK_DEADLINE_EXIT, ToolkitError, progress } from "../output.js";
 import { appendEvent, ledgerPath, readLedger, LEDGER_FILE } from "../ledger.js";
 import { createLogDir, firstError, protectedLogDirs, writePhaseLog } from "../logs.js";
 import { phasesOfProfile, type GatePhase } from "../config.js";
@@ -453,7 +453,12 @@ async function runPhases({
     keep: protectedLogDirs(readLedger(ctx.repoRoot).events),
   });
   const reports: PhaseReport[] = [];
-  const failed: { name: string; output: string; signal: NodeJS.Signals | null }[] = [];
+  const failed: {
+    name: string;
+    code: number;
+    output: string;
+    signal: NodeJS.Signals | null;
+  }[] = [];
   /** The blocking phase that went red, once one has — every later phase is skipped. */
   let blockedBy: string | undefined;
 
@@ -508,7 +513,12 @@ async function runPhases({
     if (outcome.code !== 0) {
       // A red does not end the run — the full failure list is what saves the
       // next fix round. Only a phase marked `blocking` stops the walk.
-      failed.push({ name: phase.name, output: outcome.output, signal: outcome.signal });
+      failed.push({
+        name: phase.name,
+        code: outcome.code,
+        output: outcome.output,
+        signal: outcome.signal,
+      });
       if (phase.blocking === true) blockedBy = phase.name;
     }
   }
@@ -536,10 +546,25 @@ async function runPhases({
   // a finding to fix, whatever the load did to the rest (`SST-DESIGN-016` rev 6).
   const judged = failed.map((phase) => ({
     ...phase,
-    exit: phaseExit({ output: phase.output, signal: phase.signal, saturated: condition.saturated }),
+    exit: phaseExit({
+      code: phase.code,
+      output: phase.output,
+      signal: phase.signal,
+      saturated: condition.saturated,
+    }),
   }));
-  const unprovable = judged.filter((phase) => phase.exit === EXIT.UNPROVABLE);
-  const exit = unprovable.length === judged.length ? EXIT.UNPROVABLE : EXIT.FAILED;
+  const exit = judged.every((phase) => phase.exit === EXIT.UNPROVABLE)
+    ? EXIT.UNPROVABLE
+    : EXIT.FAILED;
+  // A phase whose lock wait expired never ran (PROC-REL-040 rev 7): its note
+  // names that, not load — the action is to look at the lock holder.
+  const notRun = judged.filter((phase) => phase.code === LOCK_DEADLINE_EXIT);
+  for (const phase of notRun) {
+    notes.push(`phase ${phase.name}: lock deadline expired (exit ${LOCK_DEADLINE_EXIT}) — not run`);
+  }
+  const unprovable = judged.filter(
+    (phase) => phase.exit === EXIT.UNPROVABLE && phase.code !== LOCK_DEADLINE_EXIT,
+  );
   if (unprovable.length > 0) {
     // The reasons themselves are long and belong in the log — the response says
     // what to DO about it (spec §4: repeat, do not diagnose). Which of the two
@@ -562,7 +587,7 @@ async function runPhases({
   // rather than passing a scanned line off as a runner verdict.
   const failures = judged.map((phase) => {
     const named = reportedFailure(phase.output);
-    if (named === undefined) {
+    if (named === undefined && phase.code !== LOCK_DEADLINE_EXIT) {
       notes.push(
         `${phase.name}: no failing test in the output — firstError is a line of the log, not a runner verdict`,
       );

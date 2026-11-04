@@ -658,6 +658,31 @@ describe("gate — phase order and the full failure list (SST-DESIGN-016 rev 6)"
     expect(note).toMatch(/^unprovable: lint, unit failed on a (quiet|saturated) box/);
   });
 
+  it("answers exit 2 for a phase that exited 75 — lock deadline expired, not run", async () => {
+    const root = makeRepo([
+      { name: "lint", cmd: "true" },
+      { name: "unit", cmd: "echo 'AssertionError: expected 1 to be 2'; exit 75" },
+    ]);
+    const result = await runGate(root);
+
+    expect(result.exit).toBe(EXIT.UNPROVABLE);
+    expect(result.notes).toContain("phase unit: lock deadline expired (exit 75) — not run");
+    // Not a load verdict and not a missing runner verdict.
+    expect(result.notes?.some((n) => n.startsWith("unprovable:"))).toBe(false);
+    expect(result.notes?.some((n) => n.startsWith("unit: no failing test"))).toBe(false);
+  });
+
+  it("answers exit 1 when a defect sits next to an exit-75 phase", async () => {
+    const root = makeRepo([
+      { name: "lint", cmd: "echo 'Error: boom'; exit 1" },
+      { name: "unit", cmd: "exit 75" },
+    ]);
+    const result = await runGate(root);
+
+    expect(result.exit).toBe(EXIT.FAILED);
+    expect(result.notes).toContain("phase unit: lock deadline expired (exit 75) — not run");
+  });
+
   it("leaves a green response as it was — no failures, no firstError", async () => {
     const root = makeRepo([{ name: "lint", cmd: "true" }]);
     const result = await runGate(root);

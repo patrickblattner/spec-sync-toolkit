@@ -207,7 +207,9 @@ ticket, the next run is a _first_ run of that ticket.
 A red phase does not end a run (SST-DESIGN-016 rev 6): every phase of the profile runs, and a red
 response carries `failures[]` — one `{ name, firstError }` per failed phase in run order — next to
 `firstError` (that of the first failed phase). The exit is `1` when at least one failed phase is a
-defect and `2` only when every failed phase is unprovable on its own. The one early end is a phase
+defect and `2` only when every failed phase is unprovable on its own. A phase that exits `75`
+(lock deadline expired, PROC-REL-040 rev 7) never ran: it is unprovable whatever it printed, never
+red, and the note says `phase <name>: lock deadline expired (exit 75) — not run`. The one early end is a phase
 marked `blocking`: once it is red, the phases behind it are skipped with
 `reason: "blocked by <phase>"`.
 

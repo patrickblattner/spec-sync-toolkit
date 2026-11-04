@@ -139,15 +139,21 @@ describe("phaseExit — 1 on the merits, 2 unprovable (spec §4, exit-2-inherite
   const contentOut = "FAIL src/a.test.ts\nAssertionError: expected 1 to be 2\n";
 
   it("a content failure is RED even on a saturated box — load never excuses a defect", () => {
-    expect(phaseExit({ output: contentOut, signal: null, saturated: true })).toBe(EXIT.FAILED);
+    expect(phaseExit({ code: 1, output: contentOut, signal: null, saturated: true })).toBe(
+      EXIT.FAILED,
+    );
   });
 
   it("timeouts on a QUIET box are a real finding", () => {
-    expect(phaseExit({ output: timeoutOnly, signal: null, saturated: false })).toBe(EXIT.FAILED);
+    expect(phaseExit({ code: 1, output: timeoutOnly, signal: null, saturated: false })).toBe(
+      EXIT.FAILED,
+    );
   });
 
   it("timeouts on a SATURATED box are unprovable — repeat, do not diagnose", () => {
-    expect(phaseExit({ output: timeoutOnly, signal: null, saturated: true })).toBe(EXIT.UNPROVABLE);
+    expect(phaseExit({ code: 1, output: timeoutOnly, signal: null, saturated: true })).toBe(
+      EXIT.UNPROVABLE,
+    );
   });
 
   // Owner decision 2026-07-27. Same load, same timeouts — but confined to one
@@ -157,13 +163,15 @@ describe("phaseExit — 1 on the merits, 2 unprovable (spec §4, exit-2-inherite
   // happened to sit beside it; alone it would have been excused and retried
   // forever.
   it("the same timeouts confined to ONE file are a hang, not the box", () => {
-    expect(phaseExit({ output: timeoutOneFile, signal: null, saturated: true })).toBe(EXIT.FAILED);
+    expect(phaseExit({ code: 1, output: timeoutOneFile, signal: null, saturated: true })).toBe(
+      EXIT.FAILED,
+    );
   });
 
   it("a timeout NEXT TO a content failure stays content — the mixed case", () => {
-    expect(phaseExit({ output: timeoutOnly + contentOut, signal: null, saturated: true })).toBe(
-      EXIT.FAILED,
-    );
+    expect(
+      phaseExit({ code: 1, output: timeoutOnly + contentOut, signal: null, saturated: true }),
+    ).toBe(EXIT.FAILED);
   });
 
   // `DECISION (infra-is-not-the-code)`: the second route to exit 2, and the one
@@ -176,38 +184,48 @@ describe("phaseExit — 1 on the merits, 2 unprovable (spec §4, exit-2-inherite
       "    at TLSWrap.onStreamRead (node:internal/stream_base_commons:218:20)\n";
 
     it("a reset connection is unprovable on a QUIET box", () => {
-      expect(phaseExit({ output: resetOut, signal: null, saturated: false })).toBe(EXIT.UNPROVABLE);
+      expect(phaseExit({ code: 1, output: resetOut, signal: null, saturated: false })).toBe(
+        EXIT.UNPROVABLE,
+      );
     });
 
     it("and confined to a single file, where the scatter guard does not apply", () => {
       // One file may simply be the only one doing network I/O — the shape that
       // identifies a hang says nothing about a network that named itself.
-      expect(phaseExit({ output: resetOut, signal: null, saturated: true })).toBe(EXIT.UNPROVABLE);
+      expect(phaseExit({ code: 1, output: resetOut, signal: null, saturated: true })).toBe(
+        EXIT.UNPROVABLE,
+      );
     });
 
     it("a socket hang up reads the same way", () => {
       const hangUp =
         "FAIL src/api.test.ts\n" +
         "FetchError: request to http://localhost:4100/api failed, reason: socket hang up\n";
-      expect(phaseExit({ output: hangUp, signal: null, saturated: false })).toBe(EXIT.UNPROVABLE);
+      expect(phaseExit({ code: 1, output: hangUp, signal: null, saturated: false })).toBe(
+        EXIT.UNPROVABLE,
+      );
     });
 
     it("a test ASSERTING on the signature stays a defect — the expensive direction", () => {
       const asserted = "FAIL src/retry.test.ts\nAssertionError: expected 'ECONNRESET' to be 'ok'\n";
-      expect(phaseExit({ output: asserted, signal: null, saturated: false })).toBe(EXIT.FAILED);
+      expect(phaseExit({ code: 1, output: asserted, signal: null, saturated: false })).toBe(
+        EXIT.FAILED,
+      );
     });
 
     it("a signature NEXT TO a real failure stays a defect", () => {
-      expect(phaseExit({ output: resetOut + contentOut, signal: null, saturated: false })).toBe(
-        EXIT.FAILED,
-      );
+      expect(
+        phaseExit({ code: 1, output: resetOut + contentOut, signal: null, saturated: false }),
+      ).toBe(EXIT.FAILED);
     });
 
     it("an unlisted errno is NOT excused — the list is closed on purpose", () => {
       // ECONNREFUSED means nothing is listening, which is a setup defect and a
       // finding. Widening the list is a spec change, never a code convenience.
       const refused = "FAIL src/api.test.ts\nError: connect ECONNREFUSED 127.0.0.1:4100\n";
-      expect(phaseExit({ output: refused, signal: null, saturated: false })).toBe(EXIT.FAILED);
+      expect(phaseExit({ code: 1, output: refused, signal: null, saturated: false })).toBe(
+        EXIT.FAILED,
+      );
     });
   });
 
@@ -227,13 +245,15 @@ describe("phaseExit — 1 on the merits, 2 unprovable (spec §4, exit-2-inherite
   ].join("\n");
 
   it("a vitest timeout run on a SATURATED box is unprovable, summary block and all", () => {
-    expect(phaseExit({ output: vitestTimeout, signal: null, saturated: true })).toBe(
+    expect(phaseExit({ code: 1, output: vitestTimeout, signal: null, saturated: true })).toBe(
       EXIT.UNPROVABLE,
     );
   });
 
   it("the same run on a QUIET box stays a finding — the distinction must survive", () => {
-    expect(phaseExit({ output: vitestTimeout, signal: null, saturated: false })).toBe(EXIT.FAILED);
+    expect(phaseExit({ code: 1, output: vitestTimeout, signal: null, saturated: false })).toBe(
+      EXIT.FAILED,
+    );
   });
 
   it("an assertion among those same lines is content — excluding noise excuses nothing", () => {
@@ -241,7 +261,9 @@ describe("phaseExit — 1 on the merits, 2 unprovable (spec §4, exit-2-inherite
       "Error: Test timed out in 34000ms.",
       "Error: Test timed out in 34000ms.\nAssertionError: expected 1 to be 2",
     );
-    expect(phaseExit({ output: withAssertion, signal: null, saturated: true })).toBe(EXIT.FAILED);
+    expect(phaseExit({ code: 1, output: withAssertion, signal: null, saturated: true })).toBe(
+      EXIT.FAILED,
+    );
   });
 
   // The reported run, reproduced line for line (production-cockpit#132): the
@@ -268,11 +290,15 @@ describe("phaseExit — 1 on the merits, 2 unprovable (spec §4, exit-2-inherite
   ].join("\n");
 
   it("a REAL vitest timeout run on a saturated box reaches exit 2 at last", () => {
-    expect(phaseExit({ output: vitestReal, signal: null, saturated: true })).toBe(EXIT.UNPROVABLE);
+    expect(phaseExit({ code: 1, output: vitestReal, signal: null, saturated: true })).toBe(
+      EXIT.UNPROVABLE,
+    );
   });
 
   it("the same real run on a quiet box is still a finding", () => {
-    expect(phaseExit({ output: vitestReal, signal: null, saturated: false })).toBe(EXIT.FAILED);
+    expect(phaseExit({ code: 1, output: vitestReal, signal: null, saturated: false })).toBe(
+      EXIT.FAILED,
+    );
   });
 
   it("an assertion inside the real run outweighs all of it", () => {
@@ -280,19 +306,40 @@ describe("phaseExit — 1 on the merits, 2 unprovable (spec §4, exit-2-inherite
       "Error: Test timed out in 34000ms.",
       "AssertionError: expected 1 to be 2",
     );
-    expect(phaseExit({ output: withAssertion, signal: null, saturated: true })).toBe(EXIT.FAILED);
-  });
-
-  it("a failure that said nothing at all is content — unexplained is not excusable", () => {
-    expect(phaseExit({ output: "", signal: null, saturated: true })).toBe(EXIT.FAILED);
-    expect(phaseExit({ output: "compiled 40 files\n", signal: null, saturated: true })).toBe(
+    expect(phaseExit({ code: 1, output: withAssertion, signal: null, saturated: true })).toBe(
       EXIT.FAILED,
     );
   });
 
+  it("a failure that said nothing at all is content — unexplained is not excusable", () => {
+    expect(phaseExit({ code: 1, output: "", signal: null, saturated: true })).toBe(EXIT.FAILED);
+    expect(
+      phaseExit({ code: 1, output: "compiled 40 files\n", signal: null, saturated: true }),
+    ).toBe(EXIT.FAILED);
+  });
+
   it("a process killed outright follows the same rule as a dead runner", () => {
-    expect(phaseExit({ output: "", signal: "SIGKILL", saturated: false })).toBe(EXIT.FAILED);
-    expect(phaseExit({ output: "", signal: "SIGKILL", saturated: true })).toBe(EXIT.UNPROVABLE);
+    expect(phaseExit({ code: 1, output: "", signal: "SIGKILL", saturated: false })).toBe(
+      EXIT.FAILED,
+    );
+    expect(phaseExit({ code: 1, output: "", signal: "SIGKILL", saturated: true })).toBe(
+      EXIT.UNPROVABLE,
+    );
+  });
+
+  // PROC-REL-040 rev 7: a lock waiter whose deadline expired exits 75 — the
+  // phase never ran, so nothing it printed can make it red.
+  it("exit 75 (lock deadline expired) is unprovable whatever the output says", () => {
+    const contentOut = "FAIL src/a.test.ts\nAssertionError: expected 1 to be 2\n";
+    expect(phaseExit({ code: 75, output: "", signal: null, saturated: false })).toBe(
+      EXIT.UNPROVABLE,
+    );
+    expect(phaseExit({ code: 75, output: contentOut, signal: null, saturated: false })).toBe(
+      EXIT.UNPROVABLE,
+    );
+    expect(phaseExit({ code: 75, output: contentOut, signal: null, saturated: true })).toBe(
+      EXIT.UNPROVABLE,
+    );
   });
 });
 
@@ -314,14 +361,16 @@ describe("runner prose — measured against the five runners of the phase lists"
 
   it("the reported case reaches exit 2 — the prose no longer counts as a cause", () => {
     expect(failureMessages(vitestUnhandled).filter((line) => !/ECONNRESET/.test(line))).toEqual([]);
-    expect(phaseExit({ output: vitestUnhandled, signal: null, saturated: false })).toBe(
+    expect(phaseExit({ code: 1, output: vitestUnhandled, signal: null, saturated: false })).toBe(
       EXIT.UNPROVABLE,
     );
   });
 
   it("a real defect BESIDE the prose is still a defect — the expensive direction", () => {
     const withDefect = `${vitestUnhandled}\nAssertionError: expected 1 to be 2\n`;
-    expect(phaseExit({ output: withDefect, signal: null, saturated: false })).toBe(EXIT.FAILED);
+    expect(phaseExit({ code: 1, output: withDefect, signal: null, saturated: false })).toBe(
+      EXIT.FAILED,
+    );
   });
 
   // The trap the spec names because it was already measured: the obvious rule
@@ -332,7 +381,7 @@ describe("runner prose — measured against the five runners of the phase lists"
     expect(failureMessages(eslint)).toContain(
       "7:11  error  Unexpected console statement                 no-console",
     );
-    expect(phaseExit({ output: eslint, signal: null, saturated: true })).toBe(EXIT.FAILED);
+    expect(phaseExit({ code: 1, output: eslint, signal: null, saturated: true })).toBe(EXIT.FAILED);
   });
 
   it.each([
@@ -344,8 +393,8 @@ describe("runner prose — measured against the five runners of the phase lists"
     ["playwright", EXIT.FAILED],
   ])("%s keeps its verdict — the rule is not signature-specific", (name, expected) => {
     const output = fixture(name);
-    expect(phaseExit({ output, signal: null, saturated: false })).toBe(expected);
-    expect(phaseExit({ output, signal: null, saturated: true })).toBe(expected);
+    expect(phaseExit({ code: 1, output, signal: null, saturated: false })).toBe(expected);
+    expect(phaseExit({ code: 1, output, signal: null, saturated: true })).toBe(expected);
   });
 
   it("leaves the timeout route open — vitest's timeout is still read as one", () => {
@@ -353,7 +402,9 @@ describe("runner prose — measured against the five runners of the phase lists"
     // timeouts on a saturated box stay unprovable.
     const scattered =
       fixture("vitest-timeout") + fixture("vitest-timeout").replace(/slow/g, "other");
-    expect(phaseExit({ output: scattered, signal: null, saturated: true })).toBe(EXIT.UNPROVABLE);
+    expect(phaseExit({ code: 1, output: scattered, signal: null, saturated: true })).toBe(
+      EXIT.UNPROVABLE,
+    );
   });
 
   it("drops the sentences by their shape, one by one", () => {
