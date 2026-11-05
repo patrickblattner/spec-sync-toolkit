@@ -12,12 +12,13 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { parseGateArgs, runGate as runGateWith } from "../src/commands/gate.js";
 import type { Environment } from "../src/gate/environment.js";
 import type { CapacityProbe } from "../src/gate/saturation.js";
@@ -25,6 +26,7 @@ import { loadConfig, type GatePhase } from "../src/config.js";
 import { latestGate, readLedger, ticketMetrics } from "../src/ledger.js";
 import { EXIT, ToolkitError, formatJson, type Response } from "../src/output.js";
 import type { CommandContext, CommandResult } from "../src/cli.js";
+import { BOX_DIR_ENV, WAITS_FILE } from "../src/gate/slots.js";
 
 function write(root: string, path: string, content: string): void {
   mkdirSync(dirname(join(root, path)), { recursive: true });
@@ -888,6 +890,86 @@ describe("gate — the mutex serialises runs on the machine (spec §7.1)", () =>
     );
     expect(queued).toHaveLength(1);
     expect(existsSync(join(root, ".spec-sync", "gate.lock"))).toBe(false);
+  });
+});
+
+/**
+ * The box slot behind gate.lock (PROC-REL-060): a gate run is a heavy local
+ * step, waits for one of the machine-wide slots, and names the wait.
+ */
+describe("box slot", () => {
+  // Each test fills a box of its own; the later describes get the file's box back.
+  const fileBox = process.env[BOX_DIR_ENV];
+  afterEach(() => {
+    process.env[BOX_DIR_ENV] = fileBox;
+  });
+  const holder = (run: string): string =>
+    `repository=o/other run=${run} started=${new Date().toISOString()} cap=35`;
+  const hold = (box: string, n: number, run: string): void =>
+    writeFileSync(
+      join(box, `slot-${n}.lock`),
+      `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), holder: holder(run), step: "gallery" })}\n`,
+    );
+
+  it("waits for a free slot and names the wait and its holders in the notes", async () => {
+    const box = mkdtempSync(join(tmpdir(), "spec-sync-gate-box-"));
+    process.env[BOX_DIR_ENV] = box;
+    hold(box, 1, "g1");
+    hold(box, 2, "g2");
+    setTimeout(() => rmSync(join(box, "slot-2.lock")), 300);
+    const root = makeRepo([{ name: "unit", cmd: "true" }]);
+
+    const result = await runGate(root, ["--profile", "local", "--run", "r-9"]);
+
+    expect(result.ok).toBe(true);
+    const note = (result.notes ?? []).find((n) => n.includes("for a box slot"));
+    expect(note).toMatch(
+      /^waited \d+\.\ds for a box slot behind repository=o\/other run=g1 .*; repository=o\/other run=g2 /,
+    );
+    const waits = readFileSync(join(box, WAITS_FILE), "utf8").trim().split("\n");
+    expect(JSON.parse(waits[waits.length - 1] ?? "{}")).toMatchObject({
+      step: "gate:local",
+      run: "r-9",
+      outcome: "acquired",
+    });
+    // Released with gate.lock: the slot it took is free again.
+    expect(existsSync(join(box, "slot-2.lock"))).toBe(false);
+    expect(existsSync(join(box, "slot-1.lock"))).toBe(true);
+  });
+
+  it("an expired slot wait is a non-run (exit 2, no-run) that names the holder and frees gate.lock", async () => {
+    const box = mkdtempSync(join(tmpdir(), "spec-sync-gate-box-"));
+    process.env[BOX_DIR_ENV] = box;
+    const old = new Date(Date.now() - 60 * 60_000).toISOString();
+    writeFileSync(
+      join(box, "slot-1.lock"),
+      `${JSON.stringify({ pid: process.pid, startedAt: old, holder: `repository=o/other run=hung started=${old} cap=35` })}\n`,
+    );
+    hold(box, 2, "fine");
+    const root = makeRepo([{ name: "unit", cmd: "true" }]);
+
+    const error = await runGate(root).catch((e: unknown) => e);
+
+    expect((error as ToolkitError).exit).toBe(EXIT.UNPROVABLE);
+    expect((error as ToolkitError).reason).toBe("no-run");
+    expect((error as Error).message).toMatch(
+      /lock deadline expired — slot-1 .*run=hung .*look at that holder/,
+    );
+    expect(existsSync(join(root, ".spec-sync", "gate.lock"))).toBe(false);
+  });
+
+  it("takes no box slot on a CI runner — the runner keeps its own machine lock", async () => {
+    const box = mkdtempSync(join(tmpdir(), "spec-sync-gate-box-"));
+    process.env[BOX_DIR_ENV] = box;
+    hold(box, 1, "g1");
+    hold(box, 2, "g2");
+    const root = makeRepo([{ name: "unit", cmd: "true" }]);
+    const ci: Environment = { ...onMains, isCiRunner: () => true };
+
+    const result = await runGateWith(context(root, ["--profile", "local"]), ci);
+
+    expect(result.ok).toBe(true);
+    expect(existsSync(join(box, WAITS_FILE))).toBe(false);
   });
 });
 

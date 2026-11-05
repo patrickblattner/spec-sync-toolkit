@@ -1,0 +1,250 @@
+/**
+ * Box slots (PROC-REL-060) with the waiter mechanics of PROC-REL-040 rev 7:
+ * two machine-wide slots, a third heavy step waits, prints one holder line per
+ * minute, and ends with exit 75 on an expired wait; every acquire is logged.
+ */
+
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  LOCK_CHAIN,
+  LOCK_EXPIRED,
+  LockWaitError,
+  judge,
+  parseHolder,
+  type Seen,
+} from "../src/gate/holder.js";
+import {
+  BOX_DIR_ENV,
+  BOX_SLOTS_ENV,
+  WAITS_FILE,
+  acquireBoxSlot,
+  lastWaits,
+  slotCount,
+  slotStates,
+  type SlotRequest,
+} from "../src/gate/slots.js";
+import { LOCK_DEADLINE_EXIT } from "../src/output.js";
+
+let box: string;
+beforeEach(() => {
+  box = mkdtempSync(join(tmpdir(), "spec-sync-box-test-"));
+  process.env[BOX_DIR_ENV] = box;
+});
+afterEach(() => {
+  vi.useRealTimers();
+  delete process.env[BOX_SLOTS_ENV];
+});
+
+const MIN = 60_000;
+const alive = new Set<number>();
+const request = (run: string, pid: number, extra: Partial<SlotRequest> = {}): SlotRequest => ({
+  repository: "o/r",
+  step: "gate:merge",
+  run,
+  cap: 10,
+  pid,
+  pollMs: 5,
+  isAlive: (p) => alive.has(p),
+  log: () => {},
+  ...extra,
+});
+
+/** Writes a slot record by hand — a holder as another process would have left it. */
+function holdSlot(n: number, pid: number, holder: string): void {
+  const startedAt = parseHolder(holder).started;
+  writeFileSync(
+    join(box, `slot-${n}.lock`),
+    `${JSON.stringify({ pid, startedAt: startedAt === undefined ? "" : new Date(startedAt).toISOString(), holder, step: "gallery" })}\n`,
+  );
+}
+
+const line = (run: string, started: number, cap: number): string =>
+  `repository=o/r run=${run} started=${new Date(started).toISOString()} cap=${cap}`;
+
+describe("box slots", () => {
+  it("lets two holders in and makes the third wait until one releases", async () => {
+    alive.clear();
+    [101, 102, 103].forEach((pid) => alive.add(pid));
+    const a = await acquireBoxSlot(request("a", 101));
+    const b = await acquireBoxSlot(request("b", 102));
+    expect([a.slot, b.slot]).toEqual(["slot-1", "slot-2"]);
+    expect(a.queued || b.queued).toBe(false);
+
+    let held = false;
+    const third = acquireBoxSlot(request("c", 103)).then((slot) => {
+      held = true;
+      return slot;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(held).toBe(false);
+
+    a.release();
+    const c = await third;
+    expect(c.slot).toBe("slot-1");
+    expect(c.queued).toBe(true);
+    expect(c.waitedBehind).toHaveLength(2);
+    expect(c.waitedBehind.join("\n")).toMatch(/run=a .*\n.*run=b /);
+    b.release();
+    c.release();
+    expect(slotStates().every((slot) => slot.free)).toBe(true);
+  });
+
+  it("takes over the slot of a dead pid and never lets the old holder release it", async () => {
+    alive.clear();
+    [202, 203].forEach((pid) => alive.add(pid));
+    const dead = await acquireBoxSlot(request("dead", 201));
+    const live = await acquireBoxSlot(request("live", 202));
+    const taker = await acquireBoxSlot(request("taker", 203));
+
+    expect(taker.slot).toBe("slot-1");
+    expect(taker.takenOver).toBe(true);
+    expect(taker.previousPid).toBe(201);
+    dead.release(); // the old holder finally notices — and must keep its hands off
+    expect(slotStates()[0]).toMatchObject({ free: false, pid: 203 });
+    live.release();
+    taker.release();
+  });
+
+  it("prints one line per minute naming every holder (fake timers)", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout"] });
+    alive.clear();
+    alive.add(1);
+    const now = Date.now();
+    holdSlot(1, 1, line("first", now, 10));
+    holdSlot(2, 1, line("second", now, 10));
+    const lines: string[] = [];
+    const waiting = acquireBoxSlot(
+      request("waiter", 2, { pollMs: 1_000, log: (text) => lines.push(text) }),
+    );
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("waiting 0m00s");
+    expect(lines[0]).toContain(`slot-1 pid 1: ${line("first", now, 10)}`);
+    expect(lines[0]).toContain(`slot-2 pid 1: ${line("second", now, 10)}`);
+    await vi.advanceTimersByTimeAsync(31_000);
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toContain("waiting 1m00s");
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(lines).toHaveLength(3);
+
+    rmSync(join(box, "slot-2.lock")); // the second holder releases
+    await vi.advanceTimersByTimeAsync(1_000);
+    const slot = await waiting;
+    expect(slot.slot).toBe("slot-2");
+    slot.release();
+  });
+
+  it("ends with exit 75 naming the holder that outlived its cap by more than 5 min", async () => {
+    alive.clear();
+    alive.add(1);
+    holdSlot(1, 1, line("hung", Date.now() - 16 * MIN, 10));
+    holdSlot(2, 1, line("fine", Date.now(), 10));
+    const error = await acquireBoxSlot(request("waiter", 2)).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(LockWaitError);
+    expect((error as LockWaitError).exit).toBe(LOCK_DEADLINE_EXIT);
+    expect((error as LockWaitError).reason).toBe(LOCK_EXPIRED);
+    expect((error as Error).message).toMatch(
+      /slot-1 pid 1: repository=o\/r run=hung .* outlived its cap .*look at that holder/,
+    );
+  });
+
+  it("ends a chain of compliant holders with exit 75 once the wait passes the allowance", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout"] });
+    alive.clear();
+    alive.add(1);
+    const entered = Date.now();
+    holdSlot(1, 1, line("one", entered, 10));
+    holdSlot(2, 1, line("two", entered, 10));
+    const waiting = acquireBoxSlot(request("waiter", 2, { pollMs: 1_000 })).catch(
+      (e: unknown) => e,
+    );
+
+    // Every eight minutes both slots pass to fresh holders, each inside its cap.
+    await vi.advanceTimersByTimeAsync(8 * MIN);
+    holdSlot(1, 1, line("three", Date.now(), 10));
+    holdSlot(2, 1, line("four", Date.now(), 10));
+    await vi.advanceTimersByTimeAsync(8 * MIN);
+    const error = await waiting;
+
+    expect((error as LockWaitError).exit).toBe(LOCK_DEADLINE_EXIT);
+    expect((error as LockWaitError).reason).toBe(LOCK_CHAIN);
+    expect((error as Error).message).toMatch(/chain: waited 15m0\ds, past the 15 min allowance/);
+    expect((error as Error).message).toMatch(/run=three .*run=four .*re-run$/);
+  });
+
+  it("appends one wait-log record per acquire and per expired wait", async () => {
+    alive.clear();
+    [301, 302, 303].forEach((pid) => alive.add(pid));
+    const a = await acquireBoxSlot(request("a", 301, { step: "gallery" }));
+    const b = await acquireBoxSlot(request("b", 302));
+    const third = acquireBoxSlot(request("c", 303, { step: "image-build" }));
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    b.release();
+    (await third).release();
+    a.release();
+
+    const records = lastWaits(10);
+    expect(records).toHaveLength(3);
+    expect(records[0]).toMatchObject({ step: "gallery", waited_s: 0, holders: [], slots: 2 });
+    expect(records[2]).toMatchObject({
+      repository: "o/r",
+      step: "image-build",
+      run: "c",
+      outcome: "acquired",
+      slots: 2,
+    });
+    expect(records[2]?.waited_s).toBeGreaterThan(0);
+    expect(records[2]?.holders).toHaveLength(2);
+    expect(Date.parse(records[2]?.at ?? "")).not.toBeNaN();
+    expect(records[2]?.at).toMatch(/Z$/);
+
+    holdSlot(1, 301, line("hung", Date.now() - 20 * MIN, 1));
+    holdSlot(2, 301, line("fine", Date.now(), 10));
+    await acquireBoxSlot(request("d", 304)).catch(() => {});
+    const raw = readFileSync(join(box, WAITS_FILE), "utf8").trim().split("\n");
+    expect(JSON.parse(raw[raw.length - 1] ?? "{}")).toMatchObject({
+      run: "d",
+      outcome: "expired",
+    });
+  });
+
+  it("reads the slot count from SPEC_SYNC_BOX_SLOTS, then <box>/config.json, else 2", () => {
+    expect(slotCount(box)).toBe(2);
+    writeFileSync(join(box, "config.json"), '{"slots": 3}');
+    expect(slotCount(box)).toBe(3);
+    process.env[BOX_SLOTS_ENV] = "1";
+    expect(slotCount(box)).toBe(1);
+    process.env[BOX_SLOTS_ENV] = "0";
+    expect(() => slotCount(box)).toThrow(/SPEC_SYNC_BOX_SLOTS/);
+    expect(existsSync(join(box, WAITS_FILE))).toBe(false);
+  });
+});
+
+describe("judge (PROC-REL-040 rev 7 waiter deadline)", () => {
+  const at = Date.parse("2026-11-05T10:00:00Z");
+  const seen = (holder: string, startedAt?: string): Seen => ({
+    label: "slot-1",
+    pid: 7,
+    holder,
+    ...(startedAt === undefined ? {} : { startedAt }),
+  });
+
+  it("waits while every holder is inside its cap plus five minutes", () => {
+    expect(judge([seen(line("x", at, 10))], at + 15 * MIN, at, 15).action).toBe("wait");
+    expect(judge([seen(line("x", at, 10))], at + 15 * MIN + 1, at, 99).action).toBe("expired");
+  });
+
+  it("prints an unreadable holder raw and falls back to 40 min from entry", () => {
+    expect(judge([seen("garbage")], at + 40 * MIN, at, 40).action).toBe("wait");
+    const verdict = judge([seen("garbage")], at + 40 * MIN + 1, at, 99);
+    expect(verdict).toMatchObject({ action: "expired" });
+    expect(verdict.action !== "wait" && verdict.message).toContain(
+      'holder line unreadable, 40 min fallback: "garbage"',
+    );
+  });
+});

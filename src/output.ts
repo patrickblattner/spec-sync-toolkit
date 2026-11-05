@@ -31,11 +31,19 @@ export const EXIT = {
 
 /**
  * Exit code of a lock waiter whose deadline expired (`EX_TEMPFAIL`, PROC-REL-040 rev 7).
- * Not a toolkit exit: a gate phase that ends with it was not run, so the gate maps it to 2.
+ * Not a gate exit: a gate phase that ends with it was not run, so the gate maps it to 2.
+ * `slot run` ends with it itself (PROC-REL-060).
  */
 export const LOCK_DEADLINE_EXIT = 75;
 
-export type ExitCode = (typeof EXIT)[keyof typeof EXIT];
+/** A wrapped command's own exit code, passed through unchanged by `slot run` (PROC-REL-060). */
+export type PassedExit = number & { readonly passedThrough: true };
+
+export function passedExit(code: number): PassedExit {
+  return code as PassedExit;
+}
+
+export type ExitCode = (typeof EXIT)[keyof typeof EXIT] | typeof LOCK_DEADLINE_EXIT | PassedExit;
 
 /** The minimum every response carries (spec §3). Commands add their own fields. */
 export interface BaseResponse {

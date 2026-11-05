@@ -11,5 +11,7 @@ export default defineConfig({
     // failure mode for *leftover* worktrees; live ones cause it just as well.
     include: ["test/**/*.test.ts"],
     exclude: ["**/node_modules/**", "**/dist/**", ".claude/**"],
+    // A box directory of its own per test file — never the machine's real slots.
+    setupFiles: ["test/setup-box.ts"],
   },
 });

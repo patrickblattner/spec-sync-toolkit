@@ -106,6 +106,12 @@ export function parseArgv(argv: string[]): ParsedArgv {
 
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i] as string;
+    // Everything behind `--` belongs to the command verbatim — `slot run` wraps
+    // a command line whose own flags must not be read as ours.
+    if (token === "--") {
+      args.push(...argv.slice(i));
+      break;
+    }
     if (FLAGS_WITH_VALUE.has(token)) {
       const value = argv[i + 1];
       if (value === undefined || value.startsWith("-")) {
@@ -222,7 +228,9 @@ function envelope(
 }
 
 /** `--human` has to be honoured even when argv parsing itself failed. */
-function isHumanFlag(argv: string[]): boolean {
+function isHumanFlag(all: string[]): boolean {
+  const end = all.indexOf("--");
+  const argv = end === -1 ? all : all.slice(0, end);
   const human = argv.lastIndexOf("--human");
   const json = argv.lastIndexOf("--json");
   return human !== -1 && human > json;

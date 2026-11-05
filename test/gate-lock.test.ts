@@ -4,15 +4,20 @@
  * taken over rather than waited on.
  */
 
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { LOCK_FILE, acquireGateLock, readLock } from "../src/gate/lock.js";
-import { EXIT, ToolkitError } from "../src/output.js";
+import { LOCK_DEADLINE_EXIT, ToolkitError } from "../src/output.js";
+import { LOCK_EXPIRED } from "../src/gate/holder.js";
 
-const repo = (): string => mkdtempSync(join(tmpdir(), "spec-sync-lock-"));
-const fast = { pollMs: 5, timeoutMs: 2_000 };
+const repo = (): string => {
+  const root = mkdtempSync(join(tmpdir(), "spec-sync-lock-"));
+  mkdirSync(join(root, ".spec-sync"));
+  return root;
+};
+const fast = { pollMs: 5, repository: "o/r" };
 
 describe("gate lock", () => {
   it("writes pid and timestamp, and removes the file on release", async () => {
@@ -91,19 +96,73 @@ describe("gate lock", () => {
     expect(existsSync(join(root, LOCK_FILE))).toBe(false);
   });
 
-  it("gives up with exit 4 rather than queueing forever behind a live holder", async () => {
+  it("writes the PROC-REL-040 holder line next to pid and startedAt", async () => {
     const root = repo();
-    await acquireGateLock(root, { ...fast, pid: 777 });
-    const error = await acquireGateLock(root, {
-      pollMs: 5,
-      timeoutMs: 30,
+    const lock = await acquireGateLock(root, {
+      ...fast,
+      pid: 4343,
+      repository: "o/r",
+      run: "run-7",
+      cap: 50,
+    });
+    const holder = readLock(join(root, LOCK_FILE));
+    // What a 0.36 reader reads stays where it was.
+    expect(holder?.pid).toBe(4343);
+    expect(holder?.startedAt).toMatch(/Z$/);
+    expect(holder?.holder).toBe(`repository=o/r run=run-7 started=${holder?.startedAt} cap=50`);
+    lock.release();
+  });
+
+  it("prints one waiter line naming the holder instead of waiting silently (#31)", async () => {
+    const root = repo();
+    const first = await acquireGateLock(root, { ...fast, pid: 777, repository: "o/r", run: "a" });
+    const lines: string[] = [];
+    const second = acquireGateLock(root, {
+      ...fast,
       pid: 778,
       isAlive: () => true,
-    }).catch((e: unknown) => e);
+      log: (line) => lines.push(line),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    first.release();
+    const lock = await second;
+
+    // Polled every 5 ms for 50 ms, yet one line: the waiter prints once a minute.
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(
+      /^gate\.lock: waiting 0m00s — gate\.lock pid 777: repository=o\/r run=a started=\S+Z cap=50$/,
+    );
+    expect(lock.waitedBehind).toEqual([expect.stringMatching(/^repository=o\/r run=a /)]);
+    lock.release();
+  });
+
+  it("ends with exit 75 naming the holder once it outlived its cap — not exit 4 after 30 min", async () => {
+    const root = repo();
+    const started = new Date(Date.now() - 7 * 60_000).toISOString();
+    writeFileSync(
+      join(root, LOCK_FILE),
+      `${JSON.stringify({ pid: 777, startedAt: started, holder: `repository=o/r run=hung started=${started} cap=1` })}\n`,
+    );
+    const error = await acquireGateLock(root, { ...fast, pid: 778, isAlive: () => true }).catch(
+      (e: unknown) => e,
+    );
 
     expect(error).toBeInstanceOf(ToolkitError);
-    expect((error as ToolkitError).exit).toBe(EXIT.PRECONDITION);
-    expect((error as ToolkitError).field).toBe(LOCK_FILE);
-    expect((error as Error).message).toMatch(/pid 777/);
+    expect((error as ToolkitError).exit).toBe(LOCK_DEADLINE_EXIT);
+    expect((error as ToolkitError).reason).toBe(LOCK_EXPIRED);
+    expect((error as Error).message).toMatch(/run=hung .*outlived its cap .*look at that holder/);
+  });
+
+  it("reads a 0.36 lock without a holder line: printed raw, 40 min from its startedAt", async () => {
+    const root = repo();
+    const started = new Date(Date.now() - 41 * 60_000).toISOString();
+    writeFileSync(join(root, LOCK_FILE), `${JSON.stringify({ pid: 777, startedAt: started })}\n`);
+    const error = await acquireGateLock(root, { ...fast, pid: 778, isAlive: () => true }).catch(
+      (e: unknown) => e,
+    );
+
+    expect((error as ToolkitError).exit).toBe(LOCK_DEADLINE_EXIT);
+    expect((error as Error).message).toContain("holder line unreadable, 40 min fallback");
+    expect((error as Error).message).toContain(`\\"startedAt\\":\\"${started}\\"`);
   });
 });

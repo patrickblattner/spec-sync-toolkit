@@ -44,7 +44,9 @@ import { EXIT, LOCK_DEADLINE_EXIT, ToolkitError, progress } from "../output.js";
 import { appendEvent, ledgerPath, readLedger, LEDGER_FILE } from "../ledger.js";
 import { createLogDir, firstError, protectedLogDirs, writePhaseLog } from "../logs.js";
 import { phasesOfProfile, type GatePhase } from "../config.js";
-import { acquireGateLock } from "../gate/lock.js";
+import { GATE_CAP_MIN, acquireGateLock } from "../gate/lock.js";
+import { LockWaitError, repositoryOf } from "../gate/holder.js";
+import { acquireBoxSlot, type BoxSlot } from "../gate/slots.js";
 import { changeSet, phaseRuns, type ChangeSet } from "../gate/changed.js";
 import {
   MachineProbe,
@@ -127,6 +129,16 @@ function realOrSpelled(path: string): string {
  */
 function notGateCapable(message: string): ToolkitError {
   return new ToolkitError(message, EXIT.UNPROVABLE, { reason: NO_RUN });
+}
+
+/**
+ * A lock wait that expired (exit 75, PROC-REL-040 rev 7) before the first
+ * phase: the run never started, so it is the same non-run as a phase that
+ * exited 75 — exit 2, `reason: "no-run"`, the holder named in the message.
+ */
+function noRunOnExpiredWait(error: unknown): never {
+  if (error instanceof LockWaitError) throw notGateCapable(`gate: ${error.message}`);
+  throw error;
 }
 
 export interface GateArgs {
@@ -334,14 +346,47 @@ export async function runGate(
   progress(
     `gate ${profile}${preflight ? " --preflight" : ""} — ${phases.length} phases${changed ? ", --changed" : ""}`,
   );
-  const lock = await acquireGateLock(ctx.repoRoot);
+  // The holder line both locks carry (PROC-REL-040 rev 7): the gate run's own
+  // `--run` where the driver gave one, else `<pid>@<checkout>`.
+  const repository = repositoryOf(ctx.repoRoot);
+  const holderRun = runId ?? `${process.pid}@${basename(ctx.repoRoot)}`;
+  const lock = await acquireGateLock(ctx.repoRoot, { repository, run: holderRun }).catch(
+    noRunOnExpiredWait,
+  );
   if (lock.queued) {
     notes.push(
-      `queued ${(lock.waitedMs / 1000).toFixed(1)}s behind the gate run of pid ${lock.previousPid ?? "?"}`,
+      `queued ${(lock.waitedMs / 1000).toFixed(1)}s behind the gate run of pid ${lock.previousPid ?? "?"}${lock.waitedBehind.length > 0 ? ` (${lock.waitedBehind.join("; ")})` : ""}`,
     );
   }
   if (lock.takenOver) {
     notes.push(`took over an orphaned gate.lock — pid ${lock.previousPid ?? "?"} no longer exists`);
+  }
+
+  // Behind the repo's own lock, the machine's (PROC-REL-060): a gate run is a
+  // heavy local step and holds a box slot for exactly as long as gate.lock. A
+  // CI runner keeps its machine lock from PROC-REL-040 instead — inside a job
+  // container the box directory would be the container's alone.
+  let slot: BoxSlot | undefined;
+  if (!environment.isCiRunner()) {
+    try {
+      slot = await acquireBoxSlot({
+        repository,
+        step: `gate:${profile}${preflight ? ":preflight" : ""}`,
+        run: holderRun,
+        cap: GATE_CAP_MIN,
+      });
+    } catch (error) {
+      lock.release();
+      noRunOnExpiredWait(error);
+    }
+    if (slot.queued) {
+      notes.push(
+        `waited ${(slot.waitedMs / 1000).toFixed(1)}s for a box slot behind ${slot.waitedBehind.join("; ")}`,
+      );
+    }
+    if (slot.takenOver) {
+      notes.push(`took over box ${slot.slot} — pid ${slot.previousPid ?? "?"} no longer exists`);
+    }
   }
 
   // The clock starts behind the lock: what the ledger calls the duration of a
@@ -365,6 +410,7 @@ export async function runGate(
     });
   } finally {
     wakeLock.release();
+    slot?.release();
     lock.release();
   }
 

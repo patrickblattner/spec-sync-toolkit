@@ -36,6 +36,8 @@ spec-sync repin [--ids <a,b>] [--server <url>]
 spec-sync repin --check [--server <url>]
 spec-sync pr overlap <open-pr> --merged <merged-pr>
 spec-sync ledger close <issue> --reason "<text>" [--dry-run]
+spec-sync slot run --step <name> --cap <minutes> [--run <id>] -- <cmd> [args…]
+spec-sync slot status [--last <n>]
 spec-sync map extract [<repo-root>] [--out <dir>] [--meaning <file>] [--project <id>]
 spec-sync map check [<repo-root>] [--meaning <file>] [--project <id>]
 spec-sync measure set <file> <pointer> <value> --register <n> [--server <url>]
@@ -163,6 +165,47 @@ a verified merge, so `budget` does not measure it); `doctor` and `handover` then
 closed. Exit 4 and nothing written unless the ledger holds a `merge-started` for the issue without
 a later `merge-completed`, `gh issue view <issue> --json state` says `CLOSED`, and the reason is
 non-empty. `--dry-run` writes nothing and returns the event it would append.
+
+### Box slots (PROC-REL-060)
+
+Every heavy local step on the dev Mac runs in one of N machine-wide slots (default 2): a third
+waits. The slots are lock files `slot-<n>.lock` in `~/.spec-sync/box/` (`SPEC_SYNC_BOX_DIR`
+overrides it), shared by all repos and worktrees; the count is `SPEC_SYNC_BOX_SLOTS`, else
+`{"slots": n}` in `<box>/config.json`, else 2. Each slot carries the holder's pid and the
+PROC-REL-040 holder line `repository=<owner/repo> run=<run id> started=<UTC ISO-8601> cap=<minutes>`.
+A waiter prints one line per minute to stderr naming every holder, takes over the slot of a dead
+pid, and ends with exit `75` when a holder outlived its cap by more than 5 min (look at that
+holder) or its own wait passed the allowance — the largest holder cap plus 5 min — behind a chain
+of holders (re-run). A holder line without a readable cap is printed raw and gets 40 min.
+
+Every acquire, and every expired wait, appends one line to `<box>/waits.jsonl`:
+
+```json
+{
+  "at": "2026-11-05T10:00:00.000Z",
+  "repository": "o/r",
+  "step": "gate:merge",
+  "run": "…",
+  "waited_s": 12.3,
+  "holders": ["repository=… run=… started=… cap=50"],
+  "slots": 2,
+  "outcome": "acquired"
+}
+```
+
+`gate` takes a slot right behind its `gate.lock` and holds it for exactly the phases (not on a CI
+runner); its cap is 50 min (`GATE_CAP_MIN`, derived in `src/gate/lock.ts`). A wait is named in the
+notes (`waited 12.3s for a box slot behind …`); an expired wait is a non-run — exit 2,
+`reason: "no-run"`, the holder named. The `gate.lock` waiter follows the same rules (one line per
+minute, exit 75 → gate exit 2) instead of a silent 30 min, and the lock carries the holder line
+next to `pid` and `startedAt`.
+
+`slot run` wraps any other heavy step (a gallery run, a pre-push build, an image build): it takes
+a slot, runs the command under its cap in its own process group, releases the slot and passes the
+command's exit code through. At the cap the command is killed — exit `124`; an expired wait is
+exit `75` and nothing runs. `--cap` is required. The command's stdout and stderr go to stderr;
+stdout carries only the response. `slot status` lists the slots (pid, alive, step, holder line)
+and the last `--last <n>` (default 5) wait records.
 
 `measure` changes a file a gate step measures against — size limits, coverage stock, hygiene
 ratchet — and binds the change to a register decision (SST-DESIGN-002, PROC-DEV-047). The file
