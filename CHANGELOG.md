@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.37.0
+
+Dev-box slots (PROC-REL-060, owner decision register #1960).
+
+### Added
+
+- Box slots: every heavy local step on the dev Mac takes one of N machine-wide slots (default 2;
+  `SPEC_SYNC_BOX_SLOTS`, else `{"slots": n}` in `<box>/config.json`) in `~/.spec-sync/box/`
+  (`SPEC_SYNC_BOX_DIR`). Waiter per PROC-REL-040 rev 7: holder line
+  `repository=… run=… started=… cap=…`, one stderr line per minute naming every holder, dead-pid
+  takeover, exit 75 when a holder outlived its cap by more than 5 min or the wait passed the
+  allowance (largest holder cap + 5) behind a chain; an unreadable holder line is printed raw
+  with a 40 min fallback. Every acquire and every expired wait appends one record to
+  `<box>/waits.jsonl` (`at`, `repository`, `step`, `run`, `waited_s`, `holders`, `slots`,
+  `outcome`).
+- `slot run --step <name> --cap <minutes> [--run <id>] -- <cmd> [args…]` — runs any heavy step
+  under a slot and its cap (own process group; killed at the cap, exit 124), passes the command's
+  exit code through, exit 75 on an expired wait. `slot status [--last <n>]` — holders and the
+  last wait records.
+
+### Changed
+
+- `gate` takes a box slot right behind `gate.lock`, for exactly the phases (not on a CI runner),
+  with a cap of 50 min (`GATE_CAP_MIN`: suite-ui merge, longest of the last five green runs
+  36.1 min + a third, rounded up). A wait is named in the notes; an expired wait is a non-run
+  (exit 2, `reason: "no-run"`, holder named) and releases `gate.lock`.
+- `gate.lock` waiter (#31): one line per minute naming the holder, exit 75 per PROC-REL-040
+  (→ gate exit 2, non-run) instead of a silent 30 min ending in exit 4. The lock record carries
+  the holder line next to `pid` and `startedAt`, which a 0.36 reader still reads; a 0.36 record
+  without a holder line is waited on with the 40 min fallback. Locks now appear atomically
+  (written aside, hard-linked into place), so no reader sees a half-written lock.
+- Arguments behind `--` reach the command verbatim (the dispatcher no longer reads `--repo`,
+  `--human` … there).
+
 ## 0.36.2
 
 ### Added
