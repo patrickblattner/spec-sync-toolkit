@@ -4,7 +4,7 @@
  * minute, and ends with exit 75 on an expired wait; every acquire is logged.
  */
 
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -25,6 +25,7 @@ import {
   acquireBoxSlot,
   lastWaits,
   loadCeiling,
+  queueStates,
   slotCount,
   slotStates,
   type SlotRequest,
@@ -343,6 +344,176 @@ describe("box load gate (PROC-REL-060, owner decision 06.11.)", () => {
     for (const bad of ["0", "-3", "abc", ""]) {
       process.env[BOX_LOAD_MAX_ENV] = bad;
       expect(() => loadCeiling()).toThrow(/SPEC_SYNC_BOX_LOAD_MAX must be a whole number ≥ 1/);
+    }
+  });
+});
+
+describe("box slot queue — first come, first served (PROC-REL-060 rev 4)", () => {
+  const queueFiles = (): string[] => readdirSync(box).filter((name) => name.startsWith("queue-"));
+  const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+  const track = <T>(promise: Promise<T>): { done: () => boolean; promise: Promise<T> } => {
+    let settled = false;
+    void promise.then(
+      () => (settled = true),
+      () => (settled = true),
+    );
+    return { done: () => settled, promise };
+  };
+  beforeEach(() => {
+    alive.clear();
+    [1, 11, 12, 13].forEach((pid) => alive.add(pid));
+  });
+
+  it("never lets a later arrival overtake an earlier waiter when one slot frees", async () => {
+    holdSlot(1, 1, line("one", Date.now(), 30));
+    holdSlot(2, 1, line("two", Date.now(), 30));
+    const lateLines: string[] = [];
+    // The earlier waiter polls slowly, the later one fast: without a queue the
+    // later one would win the freed slot.
+    const early = track(acquireBoxSlot(request("early", 11, { pollMs: 80 })));
+    await pause(20);
+    const late = track(
+      acquireBoxSlot(request("late", 12, { pollMs: 1, log: (text) => lateLines.push(text) })),
+    );
+    await pause(20);
+    expect(queueStates(box, (pid) => alive.has(pid)).map((one) => one.pid)).toEqual([11, 12]);
+    expect(lateLines[0]).toMatch(/waiting 0m00s, position 2 of 2 — slot-1 /);
+
+    rmSync(join(box, "slot-2.lock"));
+    const first = await early.promise;
+    await pause(30);
+    expect(first.slot).toBe("slot-2");
+    expect(late.done()).toBe(false);
+    rmSync(join(box, "slot-1.lock"));
+    const second = await late.promise;
+    expect(second.slot).toBe("slot-1");
+    first.release();
+    second.release();
+    expect(lastWaits(2).map((one) => [one.run, one.queue_position_at_entry])).toEqual([
+      ["early", 1],
+      ["late", 2],
+    ]);
+    expect(queueFiles()).toEqual([]);
+  });
+
+  it("gives two free slots to the two oldest waiters", async () => {
+    holdSlot(1, 1, line("one", Date.now(), 30));
+    holdSlot(2, 1, line("two", Date.now(), 30));
+    const a = track(acquireBoxSlot(request("a", 11, { pollMs: 40 })));
+    await pause(10);
+    const b = track(acquireBoxSlot(request("b", 12, { pollMs: 40 })));
+    await pause(10);
+    const c = track(acquireBoxSlot(request("c", 13, { pollMs: 1 })));
+    await pause(10);
+
+    rmSync(join(box, "slot-1.lock"));
+    rmSync(join(box, "slot-2.lock"));
+    const [first, second] = await Promise.all([a.promise, b.promise]);
+    await pause(30);
+    expect(c.done()).toBe(false);
+    first.release();
+    const third = await c.promise;
+    second.release();
+    third.release();
+    expect(queueFiles()).toEqual([]);
+  });
+
+  it("skips and removes the entry of a dead waiter", async () => {
+    const dead = "queue-000000000000001-0000000999-000001.json";
+    writeFileSync(
+      join(box, dead),
+      `${JSON.stringify({ pid: 999, holder: line("gone", 1, 10), step: "s", enqueuedAt: new Date(1).toISOString() })}\n`,
+    );
+    const slot = await acquireBoxSlot(request("next", 11));
+    slot.release();
+
+    expect(slot.queued).toBe(false);
+    expect(lastWaits(1)[0]?.queue_position_at_entry).toBe(1);
+    expect(queueFiles()).toEqual([]);
+  });
+
+  it("removes the entry on acquire and on an expired wait (75), and leaves no signal handler behind", async () => {
+    const before = process.listenerCount("SIGTERM");
+    const slot = await acquireBoxSlot(request("quick", 11));
+    expect(queueFiles()).toEqual([]);
+    expect(process.listenerCount("SIGTERM")).toBe(before);
+    slot.release();
+
+    holdSlot(1, 1, line("one", Date.now(), 30));
+    holdSlot(2, 1, line("two", Date.now(), 30));
+    const waiting = track(acquireBoxSlot(request("w", 12, { pollMs: 5 })));
+    await pause(20);
+    expect(queueFiles()).toHaveLength(1);
+    expect(process.listenerCount("SIGTERM")).toBe(before + 1);
+    expect(process.listenerCount("SIGINT")).toBeGreaterThan(0);
+    rmSync(join(box, "slot-1.lock"));
+    (await waiting.promise).release();
+    rmSync(join(box, "slot-2.lock"));
+
+    holdSlot(1, 1, line("hung", Date.now() - 40 * MIN, 10));
+    holdSlot(2, 1, line("fine", Date.now(), 10));
+    const error = await acquireBoxSlot(request("x", 13)).catch((e: unknown) => e);
+    expect((error as LockWaitError).exit).toBe(LOCK_DEADLINE_EXIT);
+    expect(queueFiles()).toEqual([]);
+    expect(process.listenerCount("SIGTERM")).toBe(before);
+  });
+
+  it("holds the queue head on load; after 15 min the head starts as overload and the order is kept", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout"] });
+    const ceilingBefore = process.env[BOX_LOAD_MAX_ENV];
+    delete process.env[BOX_LOAD_MAX_ENV];
+    try {
+      holdSlot(1, 1, line("long", Date.now(), 60));
+      const headLines: string[] = [];
+      const laterLines: string[] = [];
+      const head = track(
+        acquireBoxSlot(
+          request("head", 11, {
+            pollMs: 10_000,
+            loadavg: () => 162,
+            log: (text) => headLines.push(text),
+          }),
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(10_000);
+      const later = track(
+        acquireBoxSlot(
+          request("later", 12, {
+            pollMs: 10_000,
+            loadavg: () => 162,
+            log: (text) => laterLines.push(text),
+          }),
+        ),
+      );
+
+      await vi.advanceTimersByTimeAsync(10 * MIN);
+      expect(head.done() || later.done()).toBe(false);
+      expect(headLines[0]).toMatch(/on load — 1-min load 162 ≥ ceiling 50.* — position 1 of 1$/);
+      expect(headLines.at(-1)).toMatch(/waiting 10m00s on load .* — position 1 of 2$/);
+      expect(laterLines[0]).toMatch(/a slot is free, position 2 of 2 — waiting behind 1 earlier/);
+
+      await vi.advanceTimersByTimeAsync(5 * MIN + 20_000);
+      expect(head.done()).toBe(true);
+      expect(later.done()).toBe(false);
+      const headSlot = await head.promise;
+      expect(headSlot.slot).toBe("slot-2");
+      expect(lastWaits(1)[0]).toMatchObject({ run: "head", outcome: "acquired-overload" });
+
+      // The later waiter's load wait starts only once it heads the queue at a free slot.
+      rmSync(join(box, "slot-1.lock"));
+      await vi.advanceTimersByTimeAsync(14 * MIN);
+      expect(later.done()).toBe(false);
+      await vi.advanceTimersByTimeAsync(MIN + 20_000);
+      const laterSlot = await later.promise;
+      headSlot.release();
+      laterSlot.release();
+      const record = lastWaits(1)[0];
+      expect(record).toMatchObject({ run: "later", outcome: "acquired-overload" });
+      expect(record?.load_waited_s).toBeGreaterThanOrEqual(15 * 60);
+      expect(record?.load_waited_s).toBeLessThanOrEqual(15 * 60 + 20);
+    } finally {
+      if (ceilingBefore === undefined) delete process.env[BOX_LOAD_MAX_ENV];
+      else process.env[BOX_LOAD_MAX_ENV] = ceilingBefore;
     }
   });
 });

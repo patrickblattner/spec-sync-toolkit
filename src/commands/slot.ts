@@ -10,8 +10,9 @@
  * an expired wait ends with 75 and runs nothing. The command's stdout and
  * stderr both go to stderr — stdout carries only the response (SST-DESIGN-011).
  *
- * `status` names the current holders, the 1-min load against the load ceiling,
- * and the last records of the wait log.
+ * `status` names the current holders, the waiter queue in the order it takes
+ * free slots, the 1-min load against the load ceiling, and the last records of
+ * the wait log.
  */
 
 import { spawn } from "node:child_process";
@@ -27,6 +28,7 @@ import {
   currentLoad,
   lastWaits,
   loadCeiling,
+  queueStates,
   slotStates,
 } from "../gate/slots.js";
 
@@ -82,6 +84,7 @@ function status(own: string[]): CommandResult {
     data: {
       box: boxDir(),
       slots,
+      queue: queueStates(),
       load: currentLoad(),
       load_max: loadCeiling(),
       waits: lastWaits(Number(last)),

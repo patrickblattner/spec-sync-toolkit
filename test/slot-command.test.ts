@@ -4,13 +4,13 @@
  * 75 on an expired wait.
  */
 
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { parseArgv, type CommandContext } from "../src/cli.js";
 import { CAP_EXIT, runSlot } from "../src/commands/slot.js";
-import { BOX_DIR_ENV } from "../src/gate/slots.js";
+import { BOX_DIR_ENV, acquireBoxSlot } from "../src/gate/slots.js";
 import { EXIT, LOCK_DEADLINE_EXIT, ToolkitError } from "../src/output.js";
 
 let box: string;
@@ -124,5 +124,42 @@ describe("slot status", () => {
     ]);
     expect(result.data?.load).toEqual(expect.any(Number));
     expect(result.data?.load_max).toBe(1000000); // test/setup-box.ts opens the load gate wide
+  });
+
+  it("lists the waiter queue: position, holder line, waiting since", async () => {
+    const holder = `repository=o/r run=x started=${new Date().toISOString()} cap=60`;
+    for (const n of [1, 2]) {
+      writeFileSync(
+        join(box, `slot-${n}.lock`),
+        `${JSON.stringify({ pid: process.pid, startedAt: "", holder })}\n`,
+      );
+    }
+    const before = Date.now();
+    const waiting = acquireBoxSlot({
+      repository: "o/r",
+      step: "gallery",
+      run: "waiter",
+      cap: 20,
+      pollMs: 5,
+      log: () => {},
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    const result = await runSlot(ctx(["status"]));
+    const queue = result.data?.queue as { waiting_since: string }[];
+    expect(queue).toEqual([
+      {
+        position: 1,
+        pid: process.pid,
+        step: "gallery",
+        holder: expect.stringMatching(/^repository=o\/r run=waiter started=\S+Z cap=20$/),
+        waiting_since: expect.any(String),
+      },
+    ]);
+    expect(Date.parse(queue[0]?.waiting_since ?? "")).toBeGreaterThanOrEqual(before - 1);
+
+    rmSync(join(box, "slot-1.lock"));
+    (await waiting).release();
+    expect((await runSlot(ctx(["status"]))).data?.queue).toEqual([]);
   });
 });

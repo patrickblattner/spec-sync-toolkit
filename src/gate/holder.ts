@@ -194,6 +194,8 @@ export interface AcquireOptions {
    * PROC-REL-060). Time held back never counts toward the holders' deadlines.
    */
   admit?: (heldBackMs: number) => boolean;
+  /** Extra words for the waiter line, e.g. the queue position of a box slot waiter. */
+  detail?: () => string;
 }
 
 export interface Acquired {
@@ -332,11 +334,8 @@ export async function acquireOne(
       heldBackMs += Date.now() - heldBackAt;
       heldBackAt = undefined;
     }
-    if (
-      options.admit !== undefined &&
-      paths.some((path) => !existsSync(path)) &&
-      !options.admit(heldBackMs)
-    ) {
+    const anyFree = paths.some((path) => !existsSync(path));
+    if (options.admit !== undefined && anyFree && !options.admit(heldBackMs)) {
       heldBackAt = Date.now();
       await sleep(options.pollMs);
       continue;
@@ -344,7 +343,12 @@ export async function acquireOne(
     // Written fresh on every attempt: the holder line's `started` is when the
     // lock was taken, since waiters count the cap from there.
     const content = `${JSON.stringify(record(new Date()))}\n`;
-    const free = paths.find((path) => tryCreate(path, content));
+    // Under an admit gate a lock is taken only after admit said yes: one freed
+    // after the check waits for the next attempt, so it is never taken unasked.
+    const free =
+      options.admit !== undefined && !anyFree
+        ? undefined
+        : paths.find((path) => tryCreate(path, content));
     if (free !== undefined) {
       return {
         path: free,
@@ -399,7 +403,7 @@ export async function acquireOne(
     if (lastLineAt === undefined || now - lastLineAt >= WAIT_LINE_MS) {
       lastLineAt = now;
       log(
-        `${options.what}: waiting ${minutes(now - enteredAt)} — ${seen.map(describe).join("; ")}`,
+        `${options.what}: waiting ${minutes(now - enteredAt)}${options.detail === undefined ? "" : `, ${options.detail()}`} — ${seen.map(describe).join("; ")}`,
       );
     }
     await sleep(options.pollMs);

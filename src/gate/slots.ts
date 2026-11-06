@@ -16,9 +16,26 @@
  * 1-minute load is below the ceiling (`SPEC_SYNC_BOX_LOAD_MAX`, else 50). After
  * 15 minutes held back by load alone the slot is taken anyway — a step never
  * starves; the record says `acquired-overload`.
+ *
+ * First come, first served (PROC-REL-060 rev 4): every waiter enqueues one
+ * entry file `queue-<ms>-<pid>-<seq>.json` in the same directory, named so it
+ * sorts by enqueue time. A waiter may take a free slot only while its rank
+ * among the live entries is below the number of free slots — a later arrival
+ * never overtakes. Entries of dead pids are skipped and removed by whoever
+ * sees them; a waiter removes its own on acquire, on exit 75, on error and on
+ * SIGINT/SIGTERM. The load gate holds the head of the queue, so the overload
+ * start after 15 minutes keeps the order too.
  */
 
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir, loadavg } from "node:os";
 import { join } from "node:path";
 import { EXIT, ToolkitError, progress } from "../output.js";
@@ -49,6 +66,8 @@ export const BOX_LOAD_MAX_ENV = "SPEC_SYNC_BOX_LOAD_MAX";
 export const DEFAULT_LOAD_MAX = 50;
 /** Longest wait on load alone; then the free slot is taken anyway. */
 export const LOAD_WAIT_MAX_MS = 15 * 60_000;
+/** Signals on which a waiter leaves the queue before the process ends. */
+const LEAVE_ON: NodeJS.Signals[] = ["SIGINT", "SIGTERM"];
 
 export function boxDir(): string {
   return process.env[BOX_DIR_ENV] ?? join(homedir(), ".spec-sync", "box");
@@ -116,6 +135,8 @@ export interface WaitRecord {
   load?: number;
   /** Seconds a free slot was held back by the load gate (absent before 0.38). */
   load_waited_s?: number;
+  /** 1-based queue position when the wait began, 1 = nobody ahead (absent before 0.39). */
+  queue_position_at_entry?: number;
   /**
    * `acquired`; `acquired-overload` when the load stayed at or above the
    * ceiling for the whole load wait; or the lock deadline that ended the wait.
@@ -141,10 +162,76 @@ export interface BoxSlot extends Acquired {
   slot: string;
 }
 
+/** One waiter's entry in the slot queue. */
+export interface QueueEntry {
+  pid: number;
+  /** Holder line of the waiter, `started` = its enqueue time. */
+  holder: string;
+  step: string;
+  /** UTC, ISO-8601. */
+  enqueuedAt: string;
+}
+
+const QUEUE_PREFIX = "queue-";
+let queueSeq = 0;
+
+/** Writes this waiter's entry in one atomic rename; returns its path. */
+function enqueue(dir: string, entry: QueueEntry, at: number): string {
+  queueSeq += 1;
+  const name = `${QUEUE_PREFIX}${String(at).padStart(15, "0")}-${String(entry.pid).padStart(10, "0")}-${String(queueSeq).padStart(6, "0")}.json`;
+  const path = join(dir, name);
+  writeFileSync(`${path}.tmp`, `${JSON.stringify(entry)}\n`, "utf8");
+  renameSync(`${path}.tmp`, path);
+  return path;
+}
+
 /**
- * Takes a box slot for one heavy step, waiting while all are held. Ends an
- * expired wait with a `ToolkitError` of exit 75; the caller `release()`s the
- * slot in a `finally`.
+ * The live entries of the queue, oldest first. Entries of dead pids and
+ * unreadable ones are removed on sight; `own` is always live.
+ */
+function liveQueue(
+  dir: string,
+  isAlive: (pid: number) => boolean,
+  own?: string,
+): { path: string; entry: QueueEntry }[] {
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  return names
+    .filter((name) => name.startsWith(QUEUE_PREFIX) && name.endsWith(".json"))
+    .sort()
+    .flatMap((name) => {
+      const path = join(dir, name);
+      let entry: QueueEntry | undefined;
+      try {
+        const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<QueueEntry> | null;
+        if (typeof parsed?.pid === "number" && Number.isInteger(parsed.pid) && parsed.pid > 0) {
+          entry = {
+            pid: parsed.pid,
+            holder: typeof parsed.holder === "string" ? parsed.holder : "",
+            step: typeof parsed.step === "string" ? parsed.step : "",
+            enqueuedAt: typeof parsed.enqueuedAt === "string" ? parsed.enqueuedAt : "",
+          };
+        }
+      } catch {
+        // gone between the listing and the read, or unreadable
+      }
+      if (path === own && entry !== undefined) return [{ path, entry }];
+      if (entry === undefined || !isAlive(entry.pid)) {
+        if (path !== own) rmSync(path, { force: true });
+        return [];
+      }
+      return [{ path, entry }];
+    });
+}
+
+/**
+ * Takes a box slot for one heavy step, waiting while all are held or while
+ * earlier waiters are ahead in the queue. Ends an expired wait with a
+ * `ToolkitError` of exit 75; the caller `release()`s the slot in a `finally`.
  */
 export async function acquireBoxSlot(request: SlotRequest): Promise<BoxSlot> {
   const dir = boxDir();
@@ -156,27 +243,89 @@ export async function acquireBoxSlot(request: SlotRequest): Promise<BoxSlot> {
   const readLoad = request.loadavg;
   const load = (): number => currentLoad(readLoad);
   const print = request.log ?? progress;
+  const isAlive = request.isAlive ?? processAlive;
   const what = `box slot (${slots} slots, ${dir})`;
+
+  const ahead = liveQueue(dir, isAlive).length;
+  const own = enqueue(
+    dir,
+    {
+      pid,
+      holder: holderLine({
+        repository: request.repository,
+        run: request.run,
+        started: new Date(enteredAt),
+        cap: request.cap,
+      }),
+      step: request.step,
+      enqueuedAt: new Date(enteredAt).toISOString(),
+    },
+    enteredAt,
+  );
+  const leave = (): void => {
+    rmSync(own, { force: true });
+    for (const signal of LEAVE_ON) process.off(signal, onSignal);
+  };
+  // A waiter killed by a signal leaves the queue; the signal then does what it
+  // would have done without us, unless someone else handles it.
+  const onSignal = (signal: NodeJS.Signals): void => {
+    leave();
+    if (process.listenerCount(signal) === 0) process.kill(process.pid, signal);
+  };
+  for (const signal of LEAVE_ON) process.on(signal, onSignal);
+  const position = (): { rank: number; of: number; earlier: QueueEntry[] } => {
+    const queue = liveQueue(dir, isAlive, own);
+    const rank = queue.findIndex((one) => one.path === own);
+    return {
+      rank,
+      of: queue.length,
+      earlier: queue.slice(0, rank).map((one) => one.entry),
+    };
+  };
+  const detail = (): string => {
+    const { rank, of } = position();
+    return `position ${rank + 1} of ${of}`;
+  };
+
   let loadWaitedMs = 0;
   let overload = false;
   let lastLineAt: number | undefined;
+  // Time held back counts as load wait only while the load held this waiter
+  // back — not while earlier waiters were ahead of it.
+  let heldBackSeen = 0;
+  let heldByLoad = false;
+  const line = (text: string): void => {
+    const now = Date.now();
+    if (lastLineAt === undefined || now - lastLineAt >= WAIT_LINE_MS) {
+      lastLineAt = now;
+      print(text);
+    }
+  };
   const admit = (heldBackMs: number): boolean => {
-    loadWaitedMs = heldBackMs;
+    if (heldByLoad) loadWaitedMs += heldBackMs - heldBackSeen;
+    heldBackSeen = heldBackMs;
+    heldByLoad = false;
+    const free = slotPaths(dir, slots).filter((path) => readRecord(path).state === "gone").length;
+    const { rank, of, earlier } = position();
+    if (rank >= free) {
+      line(
+        `${what}: a slot is free, position ${rank + 1} of ${of} — waiting behind ${earlier.length} earlier waiter(s): ${earlier.map((one) => `pid ${one.pid}: ${one.holder}`).join("; ")}`,
+      );
+      return false;
+    }
     const now = load();
     if (now < ceiling) {
       overload = false;
       return true;
     }
-    if (heldBackMs >= LOAD_WAIT_MAX_MS) {
+    if (loadWaitedMs >= LOAD_WAIT_MAX_MS) {
       overload = true;
       return true;
     }
-    if (lastLineAt === undefined || heldBackMs - lastLineAt >= WAIT_LINE_MS) {
-      lastLineAt = heldBackMs;
-      print(
-        `${what}: a slot is free, waiting ${minutes(heldBackMs)} on load — 1-min load ${now} ≥ ceiling ${ceiling}; takes the slot anyway after ${LOAD_WAIT_MAX_MS / 60_000} min`,
-      );
-    }
+    heldByLoad = true;
+    line(
+      `${what}: a slot is free, waiting ${minutes(loadWaitedMs)} on load — 1-min load ${now} ≥ ceiling ${ceiling}; takes the slot anyway after ${LOAD_WAIT_MAX_MS / 60_000} min — position ${rank + 1} of ${of}`,
+    );
     return false;
   };
   const log = (outcome: WaitRecord["outcome"], holders: string[]): void => {
@@ -190,6 +339,7 @@ export async function acquireBoxSlot(request: SlotRequest): Promise<BoxSlot> {
       slots,
       load: load(),
       load_waited_s: Math.round(loadWaitedMs / 100) / 10,
+      queue_position_at_entry: ahead + 1,
       outcome,
     };
     appendFileSync(join(dir, WAITS_FILE), `${JSON.stringify(record)}\n`, "utf8");
@@ -214,7 +364,8 @@ export async function acquireBoxSlot(request: SlotRequest): Promise<BoxSlot> {
         pollMs: request.pollMs ?? SLOT_POLL_MS,
         what,
         admit,
-        ...(request.isAlive === undefined ? {} : { isAlive: request.isAlive }),
+        detail,
+        isAlive,
         ...(request.log === undefined ? {} : { log: request.log }),
       },
     );
@@ -223,6 +374,8 @@ export async function acquireBoxSlot(request: SlotRequest): Promise<BoxSlot> {
       log(error.reason === LOCK_CHAIN ? "chain" : "expired", error.waitedBehind);
     }
     throw error;
+  } finally {
+    leave();
   }
   log(overload ? "acquired-overload" : "acquired", slot.waitedBehind);
   return {
@@ -258,6 +411,30 @@ export function slotStates(dir: string = boxDir()): SlotState[] {
     const { pid, step, holder } = read.record;
     return { slot, free: false, pid, alive: processAlive(pid), ...(step ? { step } : {}), holder };
   });
+}
+
+/** One waiter as `slot status` reports it. */
+export interface QueueState {
+  /** 1 = next to take a free slot. */
+  position: number;
+  pid: number;
+  step: string;
+  holder: string;
+  waiting_since: string;
+}
+
+/** The live waiters, in the order they take free slots. */
+export function queueStates(
+  dir: string = boxDir(),
+  isAlive: (pid: number) => boolean = processAlive,
+): QueueState[] {
+  return liveQueue(dir, isAlive).map(({ entry }, index) => ({
+    position: index + 1,
+    pid: entry.pid,
+    step: entry.step,
+    holder: entry.holder,
+    waiting_since: entry.enqueuedAt,
+  }));
 }
 
 /** The last `count` records of the wait log, oldest first. */
