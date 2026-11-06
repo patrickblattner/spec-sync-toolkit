@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.38.0
+
+Load gate for the dev-box slots (PROC-REL-060, owner decision 06.11.).
+
+### Added
+
+- Box slots take a free slot only while the 1-minute load (`os.loadavg()[0]`) is below the load
+  ceiling: default 50, `SPEC_SYNC_BOX_LOAD_MAX` overrides it (a whole number ≥ 1, else exit 4
+  naming the variable). While a slot is free but the load is at or above the ceiling, the waiter
+  polls and prints one stderr line per minute naming the free slot, the load and the ceiling.
+  Applies to every caller: `gate` and `slot run`.
+- At most 15 min of waiting on load alone (time waiting for a busy slot does not count); then the
+  free slot is taken anyway — a step never starves. Load wait does not count toward the holders'
+  deadlines (PROC-REL-040 chain allowance).
+- `waits.jsonl` records carry `load` (1-min load at the record, one decimal) and `load_waited_s`;
+  `outcome` is `acquired-overload` when the 15 min ceiling was hit. Additive: older records lack
+  the two fields.
+- `slot status` reports the current 1-min `load` and the ceiling `load_max`.
+
 ## 0.37.0
 
 Dev-box slots (PROC-REL-060, owner decision register #1960).
