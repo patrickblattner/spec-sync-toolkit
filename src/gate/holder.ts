@@ -29,7 +29,15 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { linkSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  linkSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { LOCK_DEADLINE_EXIT, ToolkitError, EXIT, progress } from "../output.js";
 
 /** Minutes a holder may outlive its cap before its waiters give up on it. */
@@ -167,7 +175,7 @@ export function judge(
   return { action: "wait" };
 }
 
-function minutes(ms: number): string {
+export function minutes(ms: number): string {
   const total = Math.round(ms / 1000);
   return `${Math.floor(total / 60)}m${String(total % 60).padStart(2, "0")}s`;
 }
@@ -180,6 +188,12 @@ export interface AcquireOptions {
   isAlive?: (pid: number) => boolean;
   /** Where waiter lines go; stderr by default (stdout carries only the response). */
   log?: (line: string) => void;
+  /**
+   * Asked whenever a lock is free, right before taking it, with the time held
+   * back by it so far; false holds back for one poll (the box load gate of
+   * PROC-REL-060). Time held back never counts toward the holders' deadlines.
+   */
+  admit?: (heldBackMs: number) => boolean;
 }
 
 export interface Acquired {
@@ -310,8 +324,23 @@ export async function acquireOne(
   let takenOver = false;
   let previousPid: number | undefined;
   const waitedBehind: string[] = [];
+  let heldBackMs = 0;
+  let heldBackAt: number | undefined;
 
   for (;;) {
+    if (heldBackAt !== undefined) {
+      heldBackMs += Date.now() - heldBackAt;
+      heldBackAt = undefined;
+    }
+    if (
+      options.admit !== undefined &&
+      paths.some((path) => !existsSync(path)) &&
+      !options.admit(heldBackMs)
+    ) {
+      heldBackAt = Date.now();
+      await sleep(options.pollMs);
+      continue;
+    }
     // Written fresh on every attempt: the holder line's `started` is when the
     // lock was taken, since waiters count the cap from there.
     const content = `${JSON.stringify(record(new Date()))}\n`;
@@ -362,7 +391,7 @@ export async function acquireOne(
     queued = true;
 
     const now = Date.now();
-    const verdict = judge(seen, now, enteredAt, allowanceMin);
+    const verdict = judge(seen, now, enteredAt + heldBackMs, allowanceMin);
     if (verdict.action !== "wait") {
       log(`${options.what}: ${verdict.message}`);
       throw new LockWaitError(`${options.what}: ${verdict.message}`, verdict.reason, waitedBehind);

@@ -11,17 +11,24 @@
  *
  * The count is a configuration value, not code: `SPEC_SYNC_BOX_SLOTS`, else
  * `{"slots": n}` in `<box>/config.json`, else 2.
+ *
+ * Load gate (owner decision 06.11.): a free slot is taken only while the
+ * 1-minute load is below the ceiling (`SPEC_SYNC_BOX_LOAD_MAX`, else 50). After
+ * 15 minutes held back by load alone the slot is taken anyway — a step never
+ * starves; the record says `acquired-overload`.
  */
 
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, loadavg } from "node:os";
 import { join } from "node:path";
-import { EXIT, ToolkitError } from "../output.js";
+import { EXIT, ToolkitError, progress } from "../output.js";
 import {
   LOCK_CHAIN,
   LockWaitError,
+  WAIT_LINE_MS,
   acquireOne,
   holderLine,
+  minutes,
   processAlive,
   readRecord,
   type Acquired,
@@ -36,6 +43,12 @@ export const DEFAULT_SLOTS = 2;
 export const WAITS_FILE = "waits.jsonl";
 /** A slot waiter re-checks once a second: a stat of N local files. */
 export const SLOT_POLL_MS = 1_000;
+/** Overrides the load ceiling. */
+export const BOX_LOAD_MAX_ENV = "SPEC_SYNC_BOX_LOAD_MAX";
+/** A free slot is taken only below this 1-minute load (owner decision 06.11.). */
+export const DEFAULT_LOAD_MAX = 50;
+/** Longest wait on load alone; then the free slot is taken anyway. */
+export const LOAD_WAIT_MAX_MS = 15 * 60_000;
 
 export function boxDir(): string {
   return process.env[BOX_DIR_ENV] ?? join(homedir(), ".spec-sync", "box");
@@ -59,6 +72,16 @@ export function slotCount(dir: string = boxDir()): number {
       field: join(dir, "config.json"),
     });
   }
+}
+
+export function loadCeiling(): number {
+  const fromEnv = process.env[BOX_LOAD_MAX_ENV];
+  return fromEnv === undefined ? DEFAULT_LOAD_MAX : positive(fromEnv, BOX_LOAD_MAX_ENV);
+}
+
+/** The 1-minute load average, rounded to one decimal. */
+export function currentLoad(read: () => number = () => loadavg()[0] ?? 0): number {
+  return Math.round(read() * 10) / 10;
 }
 
 function positive(value: string, field: string): number {
@@ -89,8 +112,15 @@ export interface WaitRecord {
   /** Holder lines of the live holders waited behind. */
   holders: string[];
   slots: number;
-  /** `acquired`, or the lock deadline that ended the wait. */
-  outcome: "acquired" | "expired" | "chain";
+  /** 1-minute load when the record was written (absent before 0.38). */
+  load?: number;
+  /** Seconds a free slot was held back by the load gate (absent before 0.38). */
+  load_waited_s?: number;
+  /**
+   * `acquired`; `acquired-overload` when the load stayed at or above the
+   * ceiling for the whole load wait; or the lock deadline that ended the wait.
+   */
+  outcome: "acquired" | "acquired-overload" | "expired" | "chain";
 }
 
 export interface SlotRequest {
@@ -102,6 +132,8 @@ export interface SlotRequest {
   pollMs?: number;
   isAlive?: (pid: number) => boolean;
   log?: (line: string) => void;
+  /** The raw 1-minute load average; `os.loadavg()[0]` by default. */
+  loadavg?: () => number;
 }
 
 export interface BoxSlot extends Acquired {
@@ -120,6 +152,33 @@ export async function acquireBoxSlot(request: SlotRequest): Promise<BoxSlot> {
   const slots = slotCount(dir);
   const pid = request.pid ?? process.pid;
   const enteredAt = Date.now();
+  const ceiling = loadCeiling();
+  const readLoad = request.loadavg;
+  const load = (): number => currentLoad(readLoad);
+  const print = request.log ?? progress;
+  const what = `box slot (${slots} slots, ${dir})`;
+  let loadWaitedMs = 0;
+  let overload = false;
+  let lastLineAt: number | undefined;
+  const admit = (heldBackMs: number): boolean => {
+    loadWaitedMs = heldBackMs;
+    const now = load();
+    if (now < ceiling) {
+      overload = false;
+      return true;
+    }
+    if (heldBackMs >= LOAD_WAIT_MAX_MS) {
+      overload = true;
+      return true;
+    }
+    if (lastLineAt === undefined || heldBackMs - lastLineAt >= WAIT_LINE_MS) {
+      lastLineAt = heldBackMs;
+      print(
+        `${what}: a slot is free, waiting ${minutes(heldBackMs)} on load — 1-min load ${now} ≥ ceiling ${ceiling}; takes the slot anyway after ${LOAD_WAIT_MAX_MS / 60_000} min`,
+      );
+    }
+    return false;
+  };
   const log = (outcome: WaitRecord["outcome"], holders: string[]): void => {
     const record: WaitRecord = {
       at: new Date().toISOString(),
@@ -129,6 +188,8 @@ export async function acquireBoxSlot(request: SlotRequest): Promise<BoxSlot> {
       waited_s: Math.round((Date.now() - enteredAt) / 100) / 10,
       holders,
       slots,
+      load: load(),
+      load_waited_s: Math.round(loadWaitedMs / 100) / 10,
       outcome,
     };
     appendFileSync(join(dir, WAITS_FILE), `${JSON.stringify(record)}\n`, "utf8");
@@ -151,7 +212,8 @@ export async function acquireBoxSlot(request: SlotRequest): Promise<BoxSlot> {
       }),
       {
         pollMs: request.pollMs ?? SLOT_POLL_MS,
-        what: `box slot (${slots} slots, ${dir})`,
+        what,
+        admit,
         ...(request.isAlive === undefined ? {} : { isAlive: request.isAlive }),
         ...(request.log === undefined ? {} : { log: request.log }),
       },
@@ -162,7 +224,7 @@ export async function acquireBoxSlot(request: SlotRequest): Promise<BoxSlot> {
     }
     throw error;
   }
-  log("acquired", slot.waitedBehind);
+  log(overload ? "acquired-overload" : "acquired", slot.waitedBehind);
   return {
     ...slot,
     slot:

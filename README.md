@@ -178,7 +178,15 @@ pid, and ends with exit `75` when a holder outlived its cap by more than 5 min (
 holder) or its own wait passed the allowance — the largest holder cap plus 5 min — behind a chain
 of holders (re-run). A holder line without a readable cap is printed raw and gets 40 min.
 
-Every acquire, and every expired wait, appends one line to `<box>/waits.jsonl`:
+Load gate (owner decision 06.11.): a free slot is taken only while the 1-minute load
+(`os.loadavg()[0]`) is below the ceiling — `SPEC_SYNC_BOX_LOAD_MAX` (a whole number ≥ 1), else 50.
+While a slot is free but the load is at or above it, the waiter prints one line per minute
+(`a slot is free, waiting … on load — 1-min load … ≥ ceiling …`) and polls. After 15 min held back
+by load alone (time waiting for a busy slot does not count, and load wait does not count toward
+the holders' deadlines) it takes the slot anyway: outcome `acquired-overload`.
+
+Every acquire, and every expired wait, appends one line to `<box>/waits.jsonl` (`load` and
+`load_waited_s` since 0.38; `outcome` is `acquired`, `acquired-overload`, `expired` or `chain`):
 
 ```json
 {
@@ -189,6 +197,8 @@ Every acquire, and every expired wait, appends one line to `<box>/waits.jsonl`:
   "waited_s": 12.3,
   "holders": ["repository=… run=… started=… cap=50"],
   "slots": 2,
+  "load": 31.4,
+  "load_waited_s": 0,
   "outcome": "acquired"
 }
 ```
@@ -204,8 +214,8 @@ next to `pid` and `startedAt`.
 a slot, runs the command under its cap in its own process group, releases the slot and passes the
 command's exit code through. At the cap the command is killed — exit `124`; an expired wait is
 exit `75` and nothing runs. `--cap` is required. The command's stdout and stderr go to stderr;
-stdout carries only the response. `slot status` lists the slots (pid, alive, step, holder line)
-and the last `--last <n>` (default 5) wait records.
+stdout carries only the response. `slot status` lists the slots (pid, alive, step, holder line),
+the current 1-min `load` against `load_max`, and the last `--last <n>` (default 5) wait records.
 
 `measure` changes a file a gate step measures against — size limits, coverage stock, hygiene
 ratchet — and binds the change to a register decision (SST-DESIGN-002, PROC-DEV-047). The file

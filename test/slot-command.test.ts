@@ -122,5 +122,7 @@ describe("slot status", () => {
     expect(result.data?.waits).toEqual([
       expect.objectContaining({ step: "s", outcome: "acquired" }),
     ]);
+    expect(result.data?.load).toEqual(expect.any(Number));
+    expect(result.data?.load_max).toBe(1000000); // test/setup-box.ts opens the load gate wide
   });
 });

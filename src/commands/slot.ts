@@ -10,7 +10,8 @@
  * an expired wait ends with 75 and runs nothing. The command's stdout and
  * stderr both go to stderr — stdout carries only the response (SST-DESIGN-011).
  *
- * `status` names the current holders and the last records of the wait log.
+ * `status` names the current holders, the 1-min load against the load ceiling,
+ * and the last records of the wait log.
  */
 
 import { spawn } from "node:child_process";
@@ -20,7 +21,14 @@ import type { Command, CommandContext, CommandResult } from "../cli.js";
 import { EXIT, ToolkitError, passedExit, progress } from "../output.js";
 import { checkFlags, positionals, valueFlag } from "../pack/args.js";
 import { repositoryOf } from "../gate/holder.js";
-import { acquireBoxSlot, boxDir, lastWaits, slotStates } from "../gate/slots.js";
+import {
+  acquireBoxSlot,
+  boxDir,
+  currentLoad,
+  lastWaits,
+  loadCeiling,
+  slotStates,
+} from "../gate/slots.js";
 
 const RUN_USAGE =
   "usage: spec-sync slot run --step <name> --cap <minutes> [--run <id>] -- <cmd> [args…]";
@@ -69,7 +77,16 @@ function status(own: string[]): CommandResult {
     throw new ToolkitError(STATUS_USAGE, EXIT.PRECONDITION, { field: "--last" });
   }
   const slots = slotStates();
-  return { ok: true, data: { box: boxDir(), slots, waits: lastWaits(Number(last)) } };
+  return {
+    ok: true,
+    data: {
+      box: boxDir(),
+      slots,
+      load: currentLoad(),
+      load_max: loadCeiling(),
+      waits: lastWaits(Number(last)),
+    },
+  };
 }
 
 async function runUnderSlot(

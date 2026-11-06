@@ -18,10 +18,13 @@ import {
 } from "../src/gate/holder.js";
 import {
   BOX_DIR_ENV,
+  BOX_LOAD_MAX_ENV,
   BOX_SLOTS_ENV,
+  DEFAULT_LOAD_MAX,
   WAITS_FILE,
   acquireBoxSlot,
   lastWaits,
+  loadCeiling,
   slotCount,
   slotStates,
   type SlotRequest,
@@ -222,6 +225,125 @@ describe("box slots", () => {
     process.env[BOX_SLOTS_ENV] = "0";
     expect(() => slotCount(box)).toThrow(/SPEC_SYNC_BOX_SLOTS/);
     expect(existsSync(join(box, WAITS_FILE))).toBe(false);
+  });
+});
+
+describe("box load gate (PROC-REL-060, owner decision 06.11.)", () => {
+  let ceilingBefore: string | undefined;
+  beforeEach(() => {
+    ceilingBefore = process.env[BOX_LOAD_MAX_ENV];
+    delete process.env[BOX_LOAD_MAX_ENV]; // the default ceiling of 50
+    alive.clear();
+    alive.add(1);
+  });
+  afterEach(() => {
+    if (ceilingBefore === undefined) delete process.env[BOX_LOAD_MAX_ENV];
+    else process.env[BOX_LOAD_MAX_ENV] = ceilingBefore;
+  });
+
+  it("takes a free slot at once while the load is below the ceiling", async () => {
+    const lines: string[] = [];
+    const slot = await acquireBoxSlot(
+      request("calm", 2, { loadavg: () => 49.94, log: (text) => lines.push(text) }),
+    );
+    slot.release();
+
+    expect(slot.queued).toBe(false);
+    expect(lines).toEqual([]);
+    expect(lastWaits(1)[0]).toMatchObject({
+      outcome: "acquired",
+      load: 49.9,
+      load_waited_s: 0,
+      waited_s: 0,
+    });
+  });
+
+  it("holds a free slot back while the load is at or above the ceiling, then takes it when the load drops", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout"] });
+    let load = 50;
+    const lines: string[] = [];
+    let held = false;
+    const waiting = acquireBoxSlot(
+      request("busy", 2, { pollMs: 1_000, loadavg: () => load, log: (text) => lines.push(text) }),
+    ).then((slot) => {
+      held = true;
+      return slot;
+    });
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(held).toBe(false);
+    expect(slotStates().every((slot) => slot.free)).toBe(true);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/a slot is free, waiting 0m00s on load — 1-min load 50 ≥ ceiling 50/);
+    await vi.advanceTimersByTimeAsync(31_000);
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toContain("waiting 1m00s on load");
+
+    load = 12.34;
+    await vi.advanceTimersByTimeAsync(1_000);
+    const slot = await waiting;
+    expect(held).toBe(true);
+    slot.release();
+    const record = lastWaits(1)[0];
+    expect(record).toMatchObject({ outcome: "acquired", load: 12.3, holders: [] });
+    expect(record?.load_waited_s).toBeGreaterThanOrEqual(61);
+    expect(record?.load_waited_s).toBeLessThanOrEqual(62);
+  });
+
+  it("does not count the wait for a busy slot as load wait", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout"] });
+    const now = Date.now();
+    holdSlot(1, 1, line("first", now, 30));
+    holdSlot(2, 1, line("second", now, 30));
+    let load = 80;
+    const waiting = acquireBoxSlot(request("waiter", 2, { pollMs: 1_000, loadavg: () => load }));
+
+    await vi.advanceTimersByTimeAsync(20 * MIN); // all slots held: a slot wait, not a load wait
+    rmSync(join(box, "slot-2.lock"));
+    await vi.advanceTimersByTimeAsync(2 * MIN); // a free slot, held back by load
+    load = 3;
+    await vi.advanceTimersByTimeAsync(1_000);
+    (await waiting).release();
+
+    const record = lastWaits(1)[0];
+    expect(record?.outcome).toBe("acquired");
+    expect(record?.load_waited_s).toBeGreaterThanOrEqual(120);
+    expect(record?.load_waited_s).toBeLessThanOrEqual(122);
+    expect(record?.waited_s).toBeGreaterThanOrEqual(22 * 60);
+  });
+
+  it("takes the free slot anyway after 15 min on load alone, as acquired-overload", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout"] });
+    const lines: string[] = [];
+    const waiting = acquireBoxSlot(
+      request("stuck", 2, { pollMs: 1_000, loadavg: () => 162, log: (text) => lines.push(text) }),
+    );
+
+    await vi.advanceTimersByTimeAsync(15 * MIN - 2_000);
+    expect(slotStates().every((slot) => slot.free)).toBe(true);
+    await vi.advanceTimersByTimeAsync(3_000);
+    const slot = await waiting;
+    slot.release();
+
+    expect(lines).toHaveLength(15);
+    const record = lastWaits(1)[0];
+    expect(record).toMatchObject({ outcome: "acquired-overload", load: 162, holders: [] });
+    expect(record?.load_waited_s).toBeGreaterThanOrEqual(15 * 60);
+    expect(record?.load_waited_s).toBeLessThanOrEqual(15 * 60 + 1);
+  });
+
+  it("reads the ceiling from SPEC_SYNC_BOX_LOAD_MAX, else 50", async () => {
+    expect(loadCeiling()).toBe(DEFAULT_LOAD_MAX);
+    expect(DEFAULT_LOAD_MAX).toBe(50);
+    process.env[BOX_LOAD_MAX_ENV] = "24";
+    expect(loadCeiling()).toBe(24);
+    const slot = await acquireBoxSlot(request("low", 2, { loadavg: () => 23.9 }));
+    slot.release();
+    expect(lastWaits(1)[0]).toMatchObject({ outcome: "acquired", load_waited_s: 0 });
+    for (const bad of ["0", "-3", "abc", ""]) {
+      process.env[BOX_LOAD_MAX_ENV] = bad;
+      expect(() => loadCeiling()).toThrow(/SPEC_SYNC_BOX_LOAD_MAX must be a whole number ≥ 1/);
+    }
   });
 });
 
