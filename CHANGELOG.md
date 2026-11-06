@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.39.0
+
+First come, first served for the dev-box slots (PROC-REL-060 rev 4).
+
+### Changed
+
+- Box slot waiters form a queue: each waiter writes one entry `queue-<ms>-<pid>-<seq>.json` in the
+  box directory (pid, holder line, step, enqueue time) and takes a free slot only while its rank
+  among the live entries is below the number of free slots — a later arrival never takes a slot
+  while an earlier waiter is still waiting; two free slots go to the two oldest. Entries of dead
+  pids (and unreadable ones) are skipped and removed by whoever sees them. A waiter removes its
+  own entry on acquire, on exit 75, on error and on SIGINT/SIGTERM. Applies to `gate` and
+  `slot run`.
+- The load gate holds the head of the queue: load wait counts only while a waiter is next in line
+  for a free slot, so the overload start after 15 min keeps the order. Slot count, caps,
+  deadlines and exit-75 semantics are unchanged; a waiter's deadline still starts at its entry.
+- The waiter line (once per minute) names the queue position (`position 2 of 3`); a waiter held
+  back behind earlier waiters at a free slot says so and names them.
+
+### Added
+
+- `slot status` lists the `queue`: `position`, `pid`, `step`, `holder`, `waiting_since`.
+- `waits.jsonl` records carry `queue_position_at_entry` (1 = nobody ahead). Additive: older
+  records lack it.
+
 ## 0.38.0
 
 Load gate for the dev-box slots (PROC-REL-060, owner decision 06.11.).
