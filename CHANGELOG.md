@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.42.0
+
+No push onto a running or green ready PR (PROC-DEV-005 rev 8, register #1992).
+
+### Added
+
+- `spec-sync prepush` checks every pushed branch (not tags or deletes) before the preflight: it
+  asks `gh pr list --head <branch> --state open --json number,isDraft`, and for an open non-draft
+  PR reads its required checks with `gh pr checks <n> --required --json name,bucket` (the checks
+  branch protection requires). Running (`pending`) or green (all `pass`/`skipping`) refuses the
+  push with exit 4 and a message naming the PR and the escapes (`gh pr ready <n> --undo`, or
+  `SPEC_SYNC_REGATE=1 git push` for an overlap update).
+- Let through, each with one line: a red last verdict (any `fail`/`cancel`), a push whose every
+  changed path is an existing PNG with status M, `SPEC_SYNC_REGATE=1` (how `--regate` reaches the
+  hook — git passes it no flags), and a `gh` that fails, times out (20 s) or reports no required
+  check. Draft PRs and branches without a PR are never refused. The 10 min cap is unchanged.
+
+### How to adopt (app repos)
+
+Pin bump only. A push for an overlap update onto a ready PR goes as `SPEC_SYNC_REGATE=1 git push`.
+
 ## 0.41.0
 
 Review verdict `accepted collected <c>` (SST-DESIGN-030 rev 6, register #1983).
