@@ -876,10 +876,15 @@ describe("review verdict", () => {
 
 describe("review growth (SST-DESIGN-040)", () => {
   const METRICS = {
-    schemaVersion: 1,
     week: "2026-W45",
+    previous_week: null,
+    gap_reason: "first run",
     chunks: [{ name: "index", bytes: 2048, previous: 1024, delta: 1024 }],
-    targets: [{ file: "src/a.ts", reason: "hotspot" }, "server/auth/x.ts"],
+    ratchet: { "max-lines": 3 },
+    targets: [
+      { path: "src/a.ts", reason: "hotspot" },
+      { path: "server/auth/x.ts", reason: "grew +40 %" },
+    ],
   };
 
   function growthRepo(metrics: unknown = METRICS): Repo {
@@ -943,8 +948,10 @@ describe("review growth (SST-DESIGN-040)", () => {
     expect(call?.input).toContain('"week":"2026-W45"');
     expect(call?.input).toContain("feat: add b");
     expect(call?.input).toContain("src/b.ts");
-    expect(call?.input).toContain("- src/a.ts");
-    expect(call?.input).toContain("- server/auth/x.ts");
+    expect(call?.input).toContain("- src/a.ts — hotspot");
+    expect(call?.input).toContain("- server/auth/x.ts — grew +40 %");
+    expect(call?.input).toContain('"gap_reason":"first run"');
+    expect(call?.input).toContain('"ratchet":{"max-lines":3}');
     expect(call?.input).toContain("since 2026-11-01");
 
     const out = JSON.parse(
@@ -1077,6 +1084,21 @@ describe("review growth (SST-DESIGN-040)", () => {
       ["--metrics", ".spec-sync/growth/2026-11-08.json"],
       { week: "2026-W45", targets: [1] },
     ],
+    [
+      "a target without a path",
+      ["--metrics", ".spec-sync/growth/2026-11-08.json"],
+      { week: "2026-W45", targets: [{ reason: "hotspot" }] },
+    ],
+    [
+      "metrics without a week, even with --since",
+      ["--metrics", ".spec-sync/growth/2026-11-08.json", "--since", "2026-11-01"],
+      { targets: [] },
+    ],
+    [
+      "a week that is not ISO",
+      ["--metrics", ".spec-sync/growth/2026-11-08.json"],
+      { week: "2026-11-08", targets: [] },
+    ],
     ["metrics that are an array", ["--metrics", ".spec-sync/growth/2026-11-08.json"], [METRICS]],
     [
       "a bad --since",
@@ -1093,13 +1115,16 @@ describe("review growth (SST-DESIGN-040)", () => {
     expect(codex.calls()).toEqual([]);
   });
 
-  it("metrics without a week or date need --since", async () => {
-    const r = repo();
-    writeFileSync(join(r.root, "m.json"), JSON.stringify({ targets: [] }));
+  it("an empty target list is valid", async () => {
+    const r = growthRepo({ week: "2026-W45", targets: [] });
     const codex = fakeCodex({ answers: [growthAnswer([], [])] });
-    await precondition(growth(r, ["--metrics", "m.json"], codex.env));
-    const { result } = await growth(r, ["--metrics", "m.json", "--since", "2026-11-01"], codex.env);
+    const { result } = await growth(
+      r,
+      ["--metrics", ".spec-sync/growth/2026-11-08.json"],
+      codex.env,
+    );
     expect(result.exit).toBe(EXIT.OK);
+    expect(codex.calls()[0]?.input).toContain("Target files:\n(none)");
   });
 });
 

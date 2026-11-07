@@ -3,11 +3,11 @@
  * audit (SST-DESIGN-040, PROC-REL-080): prompt, result schema, strict parse,
  * ID assignment, and the defensive read of the metrics file.
  *
- * The metrics schema is not final in the app repos yet, so only what the
- * prompt needs is read: a target list (`targets`, entries a path string or an
- * object with `file`, `path` or `module`) and the week the file measures
- * (`week` "YYYY-Www", or a `date`/`generatedAt`/`measuredAt` date, or a date in
- * the file name). Anything else is passed to Codex as it is.
+ * Of the metrics file the runner reads only the two required fields, `week`
+ * (ISO, "YYYY-Www") and `targets[]` (path + reason). The other common fields
+ * (`previous_week`/`gap_reason`, `chunks`, `ratchet`, `raises`, `dependencies`,
+ * `modules`, `fta`, `complexity`, `cleanness`, `hotspots`, `cycles`,
+ * `check_times`) reach the prompt as they are.
  */
 
 export const GROWTH_CATEGORIES = [
@@ -230,10 +230,17 @@ export function assignGrowth(
 
 // ---------------------------------------------------------------- metrics
 
+export interface Target {
+  path: string;
+  reason: string;
+}
+
 export interface Metrics {
-  targets: string[];
-  /** The day the file measures (UTC midnight), when it says. */
-  measured?: Date;
+  /** ISO week the file measures, `YYYY-Www`. */
+  week: string;
+  /** The Sunday of that week (UTC midnight) — the day the weekly run measures. */
+  measured: Date;
+  targets: Target[];
 }
 
 const DAY_MS = 86_400_000;
@@ -243,17 +250,6 @@ function isoWeekMonday(year: number, week: number): Date {
   const jan4 = Date.UTC(year, 0, 4);
   const jan4Day = (new Date(jan4).getUTCDay() + 6) % 7; // Monday = 0
   return new Date(jan4 - jan4Day * DAY_MS + (week - 1) * 7 * DAY_MS);
-}
-
-/** ISO year and week of `date`, as `YYYY-Www`. */
-export function isoWeekLabel(date: Date): string {
-  const day = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-  const weekday = (day.getUTCDay() + 6) % 7;
-  const thursday = new Date(day.getTime() + (3 - weekday) * DAY_MS);
-  const year = thursday.getUTCFullYear();
-  const week =
-    Math.round((thursday.getTime() - isoWeekMonday(year, 1).getTime()) / (7 * DAY_MS)) + 1;
-  return `${year}-W${String(week).padStart(2, "0")}`;
 }
 
 /** `YYYY-MM-DD` at the start of a string → that UTC day, if it is a real date. */
@@ -274,46 +270,26 @@ function weekSunday(text: string): Date | undefined {
 }
 
 /**
- * The fields the prompt needs, or the reason the file is invalid. `fileName`
- * is the last fallback for the week (`2026-11-08.json`, `growth-2026-W45.json`).
+ * The two fields the runner needs — `week` and `targets[]` (path + reason) —
+ * or the reason the file is invalid. Every other field reaches the prompt as is.
  */
-export function readMetrics(data: unknown, fileName: string): Metrics | string {
+export function readMetrics(data: unknown): Metrics | string {
   if (!isObject(data)) return "the root is not an object";
+  if (typeof data.week !== "string") return "no `week`";
+  const measured = weekSunday(data.week);
+  if (measured === undefined) return "`week` is not an ISO week (YYYY-Www)";
   if (!Array.isArray(data.targets)) return "no target list (`targets` array)";
-  const targets: string[] = [];
+  const targets: Target[] = [];
   for (const entry of data.targets) {
-    const target =
-      typeof entry === "string"
-        ? entry
-        : isObject(entry)
-          ? [entry.file, entry.path, entry.module].find((value) => typeof value === "string")
-          : undefined;
-    if (typeof target !== "string" || target.trim() === "") {
-      return "a target is neither a path nor an object with `file`, `path` or `module`";
+    if (!isObject(entry) || typeof entry.path !== "string" || entry.path.trim() === "") {
+      return "a target has no `path`";
     }
-    targets.push(target as string);
+    targets.push({
+      path: entry.path,
+      reason: typeof entry.reason === "string" ? entry.reason : "",
+    });
   }
-  let measured: Date | undefined;
-  if (typeof data.week === "string") {
-    measured = weekSunday(data.week);
-    if (measured === undefined) return "`week` is not YYYY-Www";
-  } else {
-    for (const key of ["date", "generatedAt", "measuredAt"]) {
-      const value = data[key];
-      if (typeof value === "string") {
-        measured = parseDay(value);
-        if (measured === undefined) return `\`${key}\` is not a date`;
-        break;
-      }
-    }
-  }
-  if (measured === undefined) {
-    const day = /(\d{4}-\d{2}-\d{2})/.exec(fileName)?.[1];
-    const week = /(\d{4}-W\d{2})/.exec(fileName)?.[1];
-    measured =
-      day !== undefined ? parseDay(day) : week !== undefined ? weekSunday(week) : undefined;
-  }
-  return measured === undefined ? { targets } : { targets, measured };
+  return { week: data.week, measured, targets };
 }
 
 /** The default `--since`: one week before the measured day. */

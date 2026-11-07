@@ -21,7 +21,7 @@
  */
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { Command, CommandContext, CommandResult } from "../cli.js";
 import type { Config, ReviewConfig } from "../config.js";
 import { appendEvent, readLedger } from "../ledger.js";
@@ -64,7 +64,6 @@ import { moveMarker, readMarker } from "../review/marker.js";
 import {
   assignGrowth,
   GROWTH_SCHEMA,
-  isoWeekLabel,
   parseDay,
   parseGrowthResult,
   previousWeek,
@@ -888,17 +887,13 @@ async function runGrowth(run: Run, pos: string[]): Promise<CommandResult> {
   } catch {
     invalid("not valid JSON");
   }
-  const metrics = readMetrics(data, basename(metricsFile));
+  const metrics = readMetrics(data);
   if (typeof metrics === "string") invalid(metrics);
-  const { targets, measured } = metrics as Exclude<typeof metrics, string>;
+  const { week, measured, targets } = metrics as Exclude<typeof metrics, string>;
 
   const sinceArg = valueFlag(ctx.args, "--since");
   if (sinceArg !== undefined && parseDay(sinceArg) === undefined) usage(GROWTH_FORM, "--since");
-  if (sinceArg === undefined && measured === undefined) {
-    invalid("no `week` or date to derive --since from; pass --since <YYYY-MM-DD>");
-  }
-  const since = sinceArg ?? previousWeek(measured as Date);
-  const week = isoWeekLabel(measured ?? new Date());
+  const since = sinceArg ?? previousWeek(measured);
   const out = valueFlag(ctx.args, "--out") ?? `.spec-sync/growth/review-${week}.json`;
   const model = review.models.size;
   const effort = review.effort.risk;
@@ -923,7 +918,12 @@ async function runGrowth(run: Run, pos: string[]): Promise<CommandResult> {
   const prompt = renderGrowthPrompt({
     REPO: run.config.project,
     SINCE: since,
-    TARGETS: targets.length > 0 ? targets.map((target) => `- ${target}`).join("\n") : "(none)",
+    TARGETS:
+      targets.length > 0
+        ? targets
+            .map((t) => (t.reason === "" ? `- ${t.path}` : `- ${t.path} — ${t.reason}`))
+            .join("\n")
+        : "(none)",
     METRICS: metricsText.trim(),
     LOG: log === "" ? "(no commits)" : log,
   });

@@ -264,9 +264,10 @@ critical or high finding is open. Configuration lives in the optional `review` b
 `review growth` (SST-DESIGN-040, PROC-REL-080) is the Monday first opinion on the weekly growth
 metrics: no triage, always `models.size` at `effort.risk`. The prompt carries the metrics file,
 `git log --stat` since `--since` (default: one week before the day the metrics measure) and the
-target list; Codex reads the targets itself. It reads only `targets` (paths, or objects with
-`file`/`path`/`module`) and the week (`week` `YYYY-Www`, a `date`/`generatedAt`/`measuredAt` date,
-or a date in the file name); any other shape is exit 4. The result — growth items `G1…` with
+target list; Codex reads the targets itself. It requires `week` (ISO, `YYYY-Www`) and `targets[]`
+(objects with `path` and `reason`) — either missing or malformed is exit 4 — and hands every other
+field (`previous_week`/`gap_reason`, `chunks`, `ratchet`, `raises`, `dependencies`, `modules`,
+`fta`, `complexity`, `cleanness`, `hotspots`, `cycles`, `check_times`) to the prompt as is. The result — growth items `G1…` with
 cause, evidence and `avoidable`, cleanness items `K1…`, items without evidence listed as
 `dropped` — goes to `--out` (default `.spec-sync/growth/review-<ISO-year>-W<week>.json`), a skip
 writes its class there too. No comment, no issue, no label; exit 0 ran or skipped.
