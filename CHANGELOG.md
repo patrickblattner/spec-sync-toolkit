@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.43.0
+
+Codex first opinion on the weekly growth audit (SST-DESIGN-040 rev 2, PROC-REL-080, register
+#1999).
+
+### Added
+
+- `spec-sync review growth --metrics <file.json> [--since <date>] [--out <file>] [--dry-run]`:
+  no triage, always `models.size` (Sol) at `effort.risk` (high), through the same engine as every
+  review mode (read-only sandbox, `-m` and effort always passed, prompt on stdin, strict schema,
+  failure classes → skipped, one ledger event, no Claude fallback). The prompt carries the metrics
+  file, `git log --stat` since `--since` (default: one week before the day the metrics measure)
+  and the target list.
+- Result schema `growth[]` (item, cause, evidence, avoidable yes|no) and `cleanness[]` (file,
+  line, category over-engineered|reinvented|long-winded|inconsistent|needless-defence, claim,
+  evidence, fix). The runner assigns `G1…`/`K1…`; an item without evidence is dropped and listed
+  under `dropped`.
+- Output: JSON to `--out` (default `.spec-sync/growth/review-<ISO-year>-W<week>.json`; a skip
+  writes its class there) and one summary line. No comment, no issue, no label. Exit 0 ran or
+  skipped; 4 when the metrics file is missing, not JSON or of an unknown shape.
+- Metrics read defensively: only `targets` (paths, or objects with `file`/`path`/`module`) and the
+  week (`week` `YYYY-Www`, a `date`/`generatedAt`/`measuredAt` date, or a date in the file name).
+  Without a week, `--since` is required.
+
+### How to adopt (app repos)
+
+Pin bump only. The Monday step calls `npx spec-sync review growth --metrics <this week's file>`
+once the weekly metrics run writes a file with a `targets` list and a `week` or date.
+
 ## 0.42.0
 
 No push onto a running or green ready PR (PROC-DEV-005 rev 8, register #1992).
