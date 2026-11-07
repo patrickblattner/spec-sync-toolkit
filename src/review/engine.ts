@@ -35,6 +35,8 @@ export interface EngineRequest {
   name?: string;
   /** Environment of the child (tests put a fake `codex` on PATH). Defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
+  /** `--output-schema` of the mode; defaults to the diff review schema. */
+  schema?: object;
 }
 
 export type EngineResult =
@@ -78,7 +80,11 @@ export function runCodex(request: EngineRequest): EngineResult {
   const name = request.name ?? "codex";
   const schemaFile = join(request.logDir, `${name}-schema.json`);
   const outFile = join(request.logDir, `${name}-last.json`);
-  writeFileSync(schemaFile, `${JSON.stringify(RESULT_SCHEMA, null, 2)}\n`, "utf8");
+  writeFileSync(
+    schemaFile,
+    `${JSON.stringify(request.schema ?? RESULT_SCHEMA, null, 2)}\n`,
+    "utf8",
+  );
   writeFileSync(join(request.logDir, `${name}-prompt.txt`), request.prompt, "utf8");
 
   const startedAt = Date.now();

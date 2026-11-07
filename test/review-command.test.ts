@@ -872,6 +872,237 @@ describe("review verdict", () => {
   });
 });
 
+// ----------------------------------------------------------------- growth
+
+describe("review growth (SST-DESIGN-040)", () => {
+  const METRICS = {
+    schemaVersion: 1,
+    week: "2026-W45",
+    chunks: [{ name: "index", bytes: 2048, previous: 1024, delta: 1024 }],
+    targets: [{ file: "src/a.ts", reason: "hotspot" }, "server/auth/x.ts"],
+  };
+
+  function growthRepo(metrics: unknown = METRICS): Repo {
+    const r = repo();
+    commit(r.root, { "src/b.ts": "export const b = 2;\n" }, "feat: add b");
+    mkdirSync(join(r.root, ".spec-sync/growth"), { recursive: true });
+    writeFileSync(
+      join(r.root, ".spec-sync/growth/2026-11-08.json"),
+      typeof metrics === "string" ? metrics : JSON.stringify(metrics),
+    );
+    return r;
+  }
+
+  const growthItem = {
+    item: "chunk index +1024 B",
+    cause: "whole-library import",
+    evidence: "src/b.ts:1 imports all of lodash",
+    avoidable: "yes",
+  };
+  const cleanItem = {
+    file: "src/a.ts",
+    line: 1,
+    category: "over-engineered",
+    claim: "unused extension point",
+    evidence: "no caller passes options",
+    fix: "drop the options parameter",
+  };
+  const growthAnswer = (growth: unknown[], cleanness: unknown[]): string =>
+    JSON.stringify({ growth, cleanness });
+
+  async function growth(r: Repo, args: string[], codexEnv?: NodeJS.ProcessEnv, dryRun = false) {
+    const { tools: t, gh } = tools(r.root, {});
+    const result = await runReview(context(r.root, ["growth", ...args], dryRun), {
+      tools: t,
+      codexEnv,
+    });
+    return { result, gh };
+  }
+
+  it("calls codex read-only with Sol at high effort, prompt on stdin, writes the week's JSON with IDs", async () => {
+    const r = growthRepo();
+    const codex = fakeCodex({ answers: [growthAnswer([growthItem], [cleanItem])] });
+    const { result, gh } = await growth(
+      r,
+      ["--metrics", ".spec-sync/growth/2026-11-08.json"],
+      codex.env,
+    );
+
+    expect(result.exit).toBe(EXIT.OK);
+    const [call] = codex.calls();
+    expect(call?.args.slice(0, 7)).toEqual([
+      "exec",
+      "--sandbox",
+      "read-only",
+      "-m",
+      "gpt-5.6-sol",
+      "-c",
+      "model_reasoning_effort=high",
+    ]);
+    expect(call?.args.at(-1)).toBe("-");
+    expect(call?.input).toContain('"week":"2026-W45"');
+    expect(call?.input).toContain("feat: add b");
+    expect(call?.input).toContain("src/b.ts");
+    expect(call?.input).toContain("- src/a.ts");
+    expect(call?.input).toContain("- server/auth/x.ts");
+    expect(call?.input).toContain("since 2026-11-01");
+
+    const out = JSON.parse(
+      readFileSync(join(r.root, ".spec-sync/growth/review-2026-W45.json"), "utf8"),
+    ) as Record<string, unknown>;
+    expect(out).toMatchObject({
+      outcome: "findings",
+      week: "2026-W45",
+      since: "2026-11-01",
+      model: "gpt-5.6-sol",
+      effort: "high",
+      growth: [{ id: "G1", ...growthItem }],
+      cleanness: [{ id: "K1", ...cleanItem }],
+      dropped: [],
+    });
+    expect(result.data).toMatchObject({ outcome: "findings", growth: 1, cleanness: 1 });
+    expect(gh.calls).toEqual([]);
+    expect(reviewEvents(r.root)).toEqual([
+      expect.objectContaining({
+        mode: "growth",
+        outcome: "findings",
+        model: "gpt-5.6-sol",
+        effort: "high",
+      }),
+    ]);
+  });
+
+  it("drops an item without evidence and lists it as dropped; --since and --out win", async () => {
+    const r = growthRepo();
+    const codex = fakeCodex({
+      answers: [growthAnswer([{ ...growthItem, evidence: " " }, growthItem], [cleanItem])],
+    });
+    const { result } = await growth(
+      r,
+      [
+        "--metrics",
+        ".spec-sync/growth/2026-11-08.json",
+        "--since",
+        "2026-10-20",
+        "--out",
+        "out/growth.json",
+      ],
+      codex.env,
+    );
+    expect(result.exit).toBe(EXIT.OK);
+    expect(codex.calls()[0]?.input).toContain("since 2026-10-20");
+    const out = JSON.parse(readFileSync(join(r.root, "out/growth.json"), "utf8")) as Record<
+      string,
+      unknown
+    >;
+    expect(out).toMatchObject({
+      since: "2026-10-20",
+      growth: [{ id: "G1", item: growthItem.item }],
+      dropped: [{ kind: "growth", item: growthItem.item, reason: "no evidence" }],
+    });
+  });
+
+  it("an empty result is clean", async () => {
+    const r = growthRepo();
+    const codex = fakeCodex({ answers: [growthAnswer([], [])] });
+    const { result } = await growth(
+      r,
+      ["--metrics", ".spec-sync/growth/2026-11-08.json"],
+      codex.env,
+    );
+    expect(result.data).toMatchObject({ outcome: "clean" });
+    expect(reviewEvents(r.root)).toEqual([expect.objectContaining({ outcome: "clean" })]);
+  });
+
+  it.each<[string, CodexBehaviour, { install?: boolean }, Record<string, unknown>]>([
+    ["unreachable", {}, { install: false }, {}],
+    ["timeout", { sleepMs: 3000 }, {}, { timeoutMs: 300 }],
+    ["limit", { exit: 1, noOutput: true, stderr: "ERROR: usage_limit_reached" }, {}, {}],
+    ["model-switch", { headerModel: "gpt-4-other" }, {}, {}],
+    ["effort-mismatch", { headerEffort: "medium" }, {}, {}],
+    ["unparsable", { answers: ['{"growth":[],"cleanness":[],"extra":1}'] }, {}, {}],
+    [
+      "unparsable",
+      { answers: [growthAnswer([{ ...growthItem, avoidable: "maybe" }], [])] },
+      {},
+      {},
+    ],
+  ])(
+    "%s → skipped, exit 0, a ledger line, no second model",
+    async (cls, behaviour, opts, extra) => {
+      const r = repo(extra);
+      commit(r.root, { "src/b.ts": "b\n" }, "feat: b");
+      mkdirSync(join(r.root, ".spec-sync/growth"), { recursive: true });
+      writeFileSync(join(r.root, ".spec-sync/growth/m.json"), JSON.stringify(METRICS));
+      const codex = fakeCodex(behaviour, opts);
+      const { result, gh } = await growth(r, ["--metrics", ".spec-sync/growth/m.json"], codex.env);
+
+      expect(result.exit).toBe(EXIT.OK);
+      expect(result.data).toMatchObject({ outcome: "skipped", class: cls });
+      expect(codex.calls().length).toBeLessThanOrEqual(1);
+      expect(codex.calls().every((c) => c.args.includes("gpt-5.6-sol"))).toBe(true);
+      expect(gh.calls).toEqual([]);
+      expect(reviewEvents(r.root)).toEqual([
+        expect.objectContaining({ mode: "growth", outcome: "skipped", class: cls }),
+      ]);
+    },
+  );
+
+  it("a dry run makes no codex call and writes nothing", async () => {
+    const r = growthRepo();
+    const codex = fakeCodex({});
+    const { result } = await growth(
+      r,
+      ["--metrics", ".spec-sync/growth/2026-11-08.json"],
+      codex.env,
+      true,
+    );
+    expect(result.data).toMatchObject({ outcome: "dry-run", week: "2026-W45" });
+    expect(codex.calls()).toEqual([]);
+    expect(existsSync(join(r.root, ".spec-sync/growth/review-2026-W45.json"))).toBe(false);
+    expect(reviewEvents(r.root)).toEqual([]);
+  });
+
+  it.each<[string, string[], unknown]>([
+    ["no --metrics", [], METRICS],
+    ["a missing metrics file", ["--metrics", ".spec-sync/growth/none.json"], METRICS],
+    ["metrics that are not JSON", ["--metrics", ".spec-sync/growth/2026-11-08.json"], "{nope"],
+    [
+      "metrics without a target list",
+      ["--metrics", ".spec-sync/growth/2026-11-08.json"],
+      { week: "2026-W45" },
+    ],
+    [
+      "a target list of numbers",
+      ["--metrics", ".spec-sync/growth/2026-11-08.json"],
+      { week: "2026-W45", targets: [1] },
+    ],
+    ["metrics that are an array", ["--metrics", ".spec-sync/growth/2026-11-08.json"], [METRICS]],
+    [
+      "a bad --since",
+      ["--metrics", ".spec-sync/growth/2026-11-08.json", "--since", "last week"],
+      METRICS,
+    ],
+  ])("%s → exit 4 with the usage line, no codex call", async (_name, args, metrics) => {
+    const r = growthRepo(metrics);
+    const codex = fakeCodex({});
+    const error = await precondition(growth(r, args, codex.env));
+    expect(error.message).toContain(
+      "spec-sync review growth --metrics <file.json> [--since <date>] [--out <file>] [--dry-run]",
+    );
+    expect(codex.calls()).toEqual([]);
+  });
+
+  it("metrics without a week or date need --since", async () => {
+    const r = repo();
+    writeFileSync(join(r.root, "m.json"), JSON.stringify({ targets: [] }));
+    const codex = fakeCodex({ answers: [growthAnswer([], [])] });
+    await precondition(growth(r, ["--metrics", "m.json"], codex.env));
+    const { result } = await growth(r, ["--metrics", "m.json", "--since", "2026-11-01"], codex.env);
+    expect(result.exit).toBe(EXIT.OK);
+  });
+});
+
 it("an unknown subcommand → exit 4", async () => {
   const r = repo();
   const { tools: t } = tools(r.root, {});

@@ -47,6 +47,7 @@ spec-sync review pr <n> [--issue <t>] [--recheck]
 spec-sync review batch [--dry-run]
 spec-sync review tag <from>..<to>
 spec-sync review verdict <pr|issue> <n> <id> (accepted (fixed|ticket <t>|collected <c>) | rejected "<reason>") [--source claude:<lens>]
+spec-sync review growth --metrics <file.json> [--since <date>] [--out <file>] [--dry-run]
 spec-sync licence-inventory [--allowlist <file>]
 ```
 
@@ -259,6 +260,16 @@ a PR comment (`pr`), as deduplicated issues (`batch`, over `review/last..origin/
 per tag (`tag`). Every engine failure is a skip with exit 0 — never another model. Exit 1 means a
 critical or high finding is open. Configuration lives in the optional `review` block of
 `spec-sync.config.json`.
+
+`review growth` (SST-DESIGN-040, PROC-REL-080) is the Monday first opinion on the weekly growth
+metrics: no triage, always `models.size` at `effort.risk`. The prompt carries the metrics file,
+`git log --stat` since `--since` (default: one week before the day the metrics measure) and the
+target list; Codex reads the targets itself. It reads only `targets` (paths, or objects with
+`file`/`path`/`module`) and the week (`week` `YYYY-Www`, a `date`/`generatedAt`/`measuredAt` date,
+or a date in the file name); any other shape is exit 4. The result — growth items `G1…` with
+cause, evidence and `avoidable`, cleanness items `K1…`, items without evidence listed as
+`dropped` — goes to `--out` (default `.spec-sync/growth/review-<ISO-year>-W<week>.json`), a skip
+writes its class there too. No comment, no issue, no label; exit 0 ran or skipped.
 
 `--reason budget` is bound to the measurement: it is only written when the writing session's
 own context level reaches at least 75 % of the configured context budget —
