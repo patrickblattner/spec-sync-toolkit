@@ -46,7 +46,7 @@ spec-sync measure remove <file> <pointer> --register <n> [--server <url>]
 spec-sync review pr <n> [--issue <t>] [--recheck]
 spec-sync review batch [--dry-run]
 spec-sync review tag <from>..<to>
-spec-sync review verdict <pr|issue> <n> <id> (accepted (fixed|ticket <t>) | rejected "<reason>") [--source claude:<lens>]
+spec-sync review verdict <pr|issue> <n> <id> (accepted (fixed|ticket <t>|collected <c>) | rejected "<reason>") [--source claude:<lens>]
 spec-sync licence-inventory [--allowlist <file>]
 ```
 

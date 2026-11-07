@@ -4,7 +4,7 @@
  *   spec-sync review pr <n> [--issue <t>] [--recheck]
  *   spec-sync review batch [--dry-run]
  *   spec-sync review tag <from>..<to>
- *   spec-sync review verdict <pr|issue> <n> <id> (accepted (fixed|ticket <t>) | rejected "<reason>") [--source claude:<lens>]
+ *   spec-sync review verdict <pr|issue> <n> <id> (accepted (fixed|ticket <t>|collected <c>) | rejected "<reason>") [--source claude:<lens>]
  *
  * The only way any repo calls Codex. It triages, calls `codex exec` read-only,
  * parses a strict result, posts it, and logs one ledger event. It never edits
@@ -778,7 +778,7 @@ async function runVerdict(run: Run, pos: string[]): Promise<CommandResult> {
   const { ctx, deps } = run;
   checkFlags(ctx.args, ["--source"]);
   const form =
-    'review verdict <pr|issue> <n> <id> (accepted (fixed|ticket <t>) | rejected "<reason>") [--source claude:<lens>]';
+    'review verdict <pr|issue> <n> <id> (accepted (fixed|ticket <t>|collected <c>) | rejected "<reason>") [--source claude:<lens>]';
   const [, target, numberText, finding, word, ...rest] = pos;
   if (target !== "pr" && target !== "issue") usage(form, "target");
   const number = positiveInt(numberText, "number");
@@ -789,6 +789,16 @@ async function runVerdict(run: Run, pos: string[]): Promise<CommandResult> {
     verdict = { verdict: "accepted", resolution: "fixed" };
   } else if (word === "accepted" && rest.length === 2 && rest[0] === "ticket") {
     verdict = { verdict: "accepted", resolution: "ticket", ticket: positiveInt(rest[1], "ticket") };
+  } else if (
+    word === "accepted" &&
+    rest.length === 2 &&
+    rest[0] === "collected" &&
+    /^\d+$/.test(rest[1] ?? "") &&
+    Number(rest[1]) >= 1
+  ) {
+    // A finding-collector row id (SMCP-DESIGN-019): only recorded, never sent to
+    // the spec server; like `ticket`, it does not hold a merge.
+    verdict = { verdict: "accepted", resolution: "collected", collected: Number(rest[1]) };
   } else if (word === "rejected" && rest.length === 1 && (rest[0] ?? "").trim() !== "") {
     verdict = { verdict: "rejected", reason: (rest[0] as string).trim() };
   } else {

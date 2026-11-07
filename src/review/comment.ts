@@ -204,6 +204,7 @@ export function renderSkipLine(cls: FailureClass, model: string): string {
 export type Verdict =
   | { verdict: "accepted"; resolution: "fixed" }
   | { verdict: "accepted"; resolution: "ticket"; ticket: number }
+  | { verdict: "accepted"; resolution: "collected"; collected: number }
   | { verdict: "rejected"; reason: string };
 
 export interface VerdictInput {
@@ -229,7 +230,9 @@ export function renderVerdictComment(input: VerdictInput): string {
       ? `rejected — ${v.reason}`
       : v.resolution === "fixed"
         ? "accepted (fixed)"
-        : `accepted (ticket #${v.ticket})`;
+        : v.resolution === "ticket"
+          ? `accepted (ticket #${v.ticket})`
+          : `accepted (collected #${v.collected})`;
   return [
     `<!-- ${VERDICT_MARKER} ${markerJson(marker)} -->`,
     `Review verdict · ${input.finding} · ${summary} · source ${input.source}`,

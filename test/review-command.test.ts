@@ -831,6 +831,34 @@ describe("review verdict", () => {
     expect(rejected.gh.bodies[0]).toContain('"reason":"guarded upstream"');
   });
 
+  it("records accepted collected <c> without holding the merge (SST-DESIGN-030 rev 6)", async () => {
+    const { result, gh } = await verdict(["pr", "12", "CX3", "accepted", "collected", "77"]);
+    expect(result.exit).toBe(EXIT.OK);
+    expect(gh.calls).toHaveLength(1);
+    expect(gh.calls[0]?.slice(0, 3)).toEqual(["pr", "comment", "12"]);
+    expect(gh.bodies[0]).toMatch(
+      /^<!-- review-verdict \{.*"verdict":"accepted","resolution":"collected","collected":77\} -->/,
+    );
+    expect(gh.bodies[0]).toContain(
+      "Review verdict · CX3 · accepted (collected #77) · source codex",
+    );
+  });
+
+  it.each([
+    [["pr", "12", "CX1", "accepted", "collected"]],
+    [["pr", "12", "CX1", "accepted", "collected", "abc"]],
+    [["pr", "12", "CX1", "accepted", "collected", "0"]],
+    [["pr", "12", "CX1", "accepted", "collected", "7", "8"]],
+  ])("rejects %j with the usage line", async (args) => {
+    const r = repo();
+    const { tools: t, gh } = tools(r.root, {});
+    const err = await precondition(runReview(context(r.root, ["verdict", ...args]), { tools: t }));
+    expect(err.message).toContain(
+      "usage: spec-sync review verdict <pr|issue> <n> <id> (accepted (fixed|ticket <t>|collected <c>)",
+    );
+    expect(gh.calls).toHaveLength(0);
+  });
+
   it.each([
     [["pr", "12", "CX1", "accepted"]],
     [["pr", "12", "CX1", "accepted", "ticket"]],
