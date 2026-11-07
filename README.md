@@ -38,6 +38,7 @@ spec-sync pr overlap <open-pr> --merged <merged-pr>
 spec-sync ledger close <issue> --reason "<text>" [--dry-run]
 spec-sync slot run --step <name> --cap <minutes> [--run <id>] -- <cmd> [args…]
 spec-sync slot status [--last <n>]
+<pre-push stdin> | spec-sync prepush [--cap-min <minutes>]
 spec-sync map extract [<repo-root>] [--out <dir>] [--meaning <file>] [--project <id>]
 spec-sync map check [<repo-root>] [--meaning <file>] [--project <id>]
 spec-sync measure set <file> <pointer> <value> --register <n> [--server <url>]
@@ -216,6 +217,17 @@ command's exit code through. At the cap the command is killed — exit `124`; an
 exit `75` and nothing runs. `--cap` is required. The command's stdout and stderr go to stderr;
 stdout carries only the response. `slot status` lists the slots (pid, alive, step, holder line),
 the current 1-min `load` against `load_max`, and the last `--last <n>` (default 5) wait records.
+
+`prepush` is the light preflight a repo's pre-push hook calls (PROC-DEV-005 rev 7), with git's
+pre-push stdin handed on. A push that changes no code passes with exit 0 and one line saying why:
+only tags, only branch deletes, or commits that change nothing but `spec-pins.json` and
+`.spec-sync/drift-coverage.jsonl` (diffed against the remote sha, or the merge-base with
+`origin/main` for a new branch). Every other push runs `gate --profile merge --preflight --changed`
+in the repo root, under a hard cap (`--cap-min`, default 10). Past the cap the gate's whole process
+group is ended (SIGTERM, SIGKILL after 5 s), the `gate.lock` and box slot it held are released,
+and the run exits 0 with a notice: the push goes through and the runner's required check decides.
+Within the cap the gate's exit code, `failures`, `error`, `notes` and `logDir` pass through. No ref
+lines on stdin means the preflight runs. The WIP escape and the secret guard stay in the hook.
 
 `measure` changes a file a gate step measures against — size limits, coverage stock, hygiene
 ratchet — and binds the change to a register decision (SST-DESIGN-002, PROC-DEV-047). The file

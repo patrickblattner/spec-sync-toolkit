@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import type { CommandContext } from "../src/cli.js";
 import {
   EFFORT_TABLE_KEY,
+  invokesLightPreflight,
   invokesPreflight,
   parseEffortTable,
   prePushSources,
@@ -871,10 +872,12 @@ describe("doctor — push flow of PROC-DEV-005", () => {
 
   const SOUND_PREPUSH = [
     'import { spawnSync } from "node:child_process";',
+    'import { readFileSync } from "node:fs";',
+    'const stdin = readFileSync(0, "utf8");',
     "const preflight = spawnSync(",
     '  "npx",',
-    '  ["spec-sync", "gate", "--profile", "merge", "--preflight"],',
-    '  { stdio: "inherit" },',
+    '  ["spec-sync", "prepush"],',
+    '  { input: stdin, stdio: ["pipe", "inherit", "inherit"] },',
     ");",
     "if (preflight.status !== 0) process.exit(preflight.status ?? 1);",
   ].join("\n");
@@ -918,7 +921,7 @@ describe("doctor — push flow of PROC-DEV-005", () => {
     expect(findings).toHaveLength(1);
     expect(findings[0]).toContain("pre-push: scripts/prePush.mjs does not run the merge pre-run");
     expect(findings[0]).toContain(
-      'spawnSync("npx", ["spec-sync", "gate", "--profile", "merge", "--preflight"], { stdio: "inherit" })',
+      'spawnSync("npx", ["spec-sync", "prepush"], { input: stdin, stdio: ["pipe", "inherit", "inherit"] })',
     );
     expect(result.exit).toBe(EXIT.FAILED);
   });
@@ -938,7 +941,7 @@ describe("doctor — push flow of PROC-DEV-005", () => {
     ]);
   });
 
-  const line = "npx spec-sync gate --profile merge --preflight\n";
+  const line = "npx spec-sync prepush\n";
   it.each<[string, Record<string, string>]>([
     ["a husky hook", { ".husky/pre-push": `#!/bin/sh\n${line}` }],
     ["a .githooks hook", { ".githooks/pre-push": `#!/bin/sh\nset -e\n${line}npm run verify\n` }],
@@ -946,7 +949,7 @@ describe("doctor — push flow of PROC-DEV-005", () => {
       "an npm-script indirection",
       {
         "package.json": JSON.stringify({
-          scripts: { prepush: "spec-sync gate --profile=merge --preflight && npm run verify" },
+          scripts: { prepush: "spec-sync prepush --cap-min 10 && npm run verify" },
           "simple-git-hooks": { "pre-push": "npm run prepush" },
         }),
       },
@@ -969,7 +972,23 @@ describe("doctor — push flow of PROC-DEV-005", () => {
       },
     });
     expect(findingsOf((await run(root)).data)).toEqual([
-      "pre-push: .husky/pre-push does not run the merge pre-run — add `npx spec-sync gate --profile merge --preflight` and refuse the push on a non-zero exit (PROC-DEV-005)",
+      "pre-push: .husky/pre-push does not run the merge pre-run — add `npx spec-sync prepush` and refuse the push on a non-zero exit (PROC-DEV-005 rev 7)",
+    ]);
+  });
+
+  it.each<[string, string]>([
+    [
+      "a script spawning the plain gate",
+      'spawnSync("npx", ["spec-sync", "gate", "--profile", "merge", "--preflight"], { stdio: "inherit" });',
+    ],
+    [
+      "a script running the plain gate --changed",
+      "run('npx spec-sync gate --profile merge --preflight --changed')",
+    ],
+  ])("reports %s as drift: the hook lacks the light preflight (rev 7)", async (_name, prePush) => {
+    const findings = findingsOf((await run(appRepo(prePush))).data);
+    expect(findings).toEqual([
+      "pre-push: pre-push hook lacks the light preflight (PROC-DEV-005 rev 7) — scripts/prePush.mjs calls `spec-sync gate --profile merge --preflight` directly; call `spec-sync prepush` instead and hand it the hook's stdin",
     ]);
   });
 
@@ -1012,6 +1031,13 @@ describe("doctor — push flow of PROC-DEV-005", () => {
     expect(
       invokesPreflight("spec-sync gate --profile merge && spec-sync review pr 1 --preflight"),
     ).toBe(false);
+  });
+
+  it("invokesLightPreflight recognises the prepush call in a shell line and an argument array", () => {
+    expect(invokesLightPreflight("npx spec-sync prepush")).toBe(true);
+    expect(invokesLightPreflight('["spec-sync",\n "prepush", "--cap-min", "10"]')).toBe(true);
+    expect(invokesLightPreflight("npx spec-sync gate --profile merge --preflight")).toBe(false);
+    expect(invokesLightPreflight("spec-sync prepushed")).toBe(false);
   });
 
   it("prePushSources follows the hook into the script it calls", () => {

@@ -30,6 +30,7 @@ import { licenceInventoryCommand } from "./licence-inventory.js";
 import { prCommand } from "./pr.js";
 import { ledgerCommand } from "./ledger.js";
 import { slotCommand } from "./slot.js";
+import { prepushCommand } from "./prepush.js";
 
 export const ALL_COMMANDS: readonly Command[] = [
   gateCommand,
@@ -51,4 +52,5 @@ export const ALL_COMMANDS: readonly Command[] = [
   prCommand,
   ledgerCommand,
   slotCommand,
+  prepushCommand,
 ];

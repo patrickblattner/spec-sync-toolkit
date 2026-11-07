@@ -403,8 +403,12 @@ function hasWorkflows(repoRoot: string): boolean {
   return existsSync(dir) && readdirSync(dir).some((file) => /\.ya?ml$/.test(file));
 }
 
-/** The pre-run every push must pass (PROC-DEV-005 §Preflight on every push). */
-export const PREFLIGHT_COMMAND = "npx spec-sync gate --profile merge --preflight";
+/**
+ * The pre-run every push must pass (PROC-DEV-005 rev 7 §Preflight on every
+ * push, light): the toolkit's wrapper, which skips code-free pushes and caps
+ * the run, fed with the hook's stdin.
+ */
+export const PREFLIGHT_COMMAND = "npx spec-sync prepush";
 export const UNIT_STATIC_PHASE = "unit-static";
 export const COVERAGE_ATTRIBUTE = ".spec-sync/drift-coverage.jsonl merge=union";
 
@@ -525,6 +529,12 @@ export function invokesPreflight(text: string): boolean {
   return false;
 }
 
+/** Does the text invoke the light preflight `spec-sync prepush` (PROC-DEV-005 rev 7)? */
+export function invokesLightPreflight(text: string): boolean {
+  const flat = text.replace(/["'`,[\]()]/gu, " ").replace(/\s+/gu, " ");
+  return /spec-sync prepush\b/u.test(flat);
+}
+
 function checkPrePushHook(repoRoot: string, add: Add): void {
   const sources = prePushSources(repoRoot);
   if (sources.length === 0) {
@@ -534,7 +544,17 @@ function checkPrePushHook(repoRoot: string, add: Add): void {
     );
     return;
   }
-  if (sources.some((source) => invokesPreflight(source.text))) return;
+  if (sources.some((source) => invokesLightPreflight(source.text))) return;
+
+  // The plain gate call of rev 6: no skip for code-free pushes, no cap.
+  const plain = sources.find((source) => invokesPreflight(source.text));
+  if (plain !== undefined) {
+    add(
+      "pre-push",
+      `pre-push hook lacks the light preflight (PROC-DEV-005 rev 7) — ${plain.file} calls \`spec-sync gate --profile merge --preflight\` directly; call \`spec-sync prepush\` instead and hand it the hook's stdin`,
+    );
+    return;
+  }
 
   // Name the file a reader edits: the script the hook delegates to, else the entry.
   const target =
@@ -542,13 +562,13 @@ function checkPrePushHook(repoRoot: string, add: Add): void {
     sources.find((source) => !source.file.startsWith("package.json")) ??
     (sources[0] as HookSource);
   const line = /\.(?:mjs|cjs|js|ts)$/u.test(target.file)
-    ? `spawnSync("npx", ["spec-sync", "gate", "--profile", "merge", "--preflight"], { stdio: "inherit" })`
+    ? `spawnSync("npx", ["spec-sync", "prepush"], { input: stdin, stdio: ["pipe", "inherit", "inherit"] })`
     : target.file === "package.json"
       ? `"pre-push": "${PREFLIGHT_COMMAND} && …"`
       : PREFLIGHT_COMMAND;
   add(
     "pre-push",
-    `${target.file} does not run the merge pre-run — add \`${line}\` and refuse the push on a non-zero exit (PROC-DEV-005)`,
+    `${target.file} does not run the merge pre-run — add \`${line}\` and refuse the push on a non-zero exit (PROC-DEV-005 rev 7)`,
   );
 }
 
