@@ -229,6 +229,17 @@ and the run exits 0 with a notice: the push goes through and the runner's requir
 Within the cap the gate's exit code, `failures`, `error`, `notes` and `logDir` pass through. No ref
 lines on stdin means the preflight runs. The WIP escape and the secret guard stay in the hook.
 
+Before the preflight, `prepush` refuses a push onto a running or green ready PR (PROC-DEV-005
+rev 8). For each pushed branch (not tags or deletes) it asks
+`gh pr list --head <branch> --state open --json number,isDraft`; for an open non-draft PR it reads
+the required checks with `gh pr checks <n> --required --json name,bucket` (what branch protection
+requires). Any `fail`/`cancel` bucket means the last verdict is red and the push goes through;
+otherwise a `pending` bucket (running) or all `pass`/`skipping` (green) refuses it with exit 4,
+naming the PR and the escapes: `gh pr ready <n> --undo`, or `SPEC_SYNC_REGATE=1 git push` for an
+overlap update (`--regate`; git gives hooks no flags). A push whose every changed path is an
+existing PNG with status M goes through. Draft PRs and branches without a PR are never refused.
+If `gh` fails, times out (20 s) or reports no required check, the push goes through with one line.
+
 `measure` changes a file a gate step measures against — size limits, coverage stock, hygiene
 ratchet — and binds the change to a register decision (SST-DESIGN-002, PROC-DEV-047). The file
 must be listed under `measureFiles` in `spec-sync.config.json`, every JSON pointer must resolve,

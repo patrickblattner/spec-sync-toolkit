@@ -21,9 +21,16 @@
  * Without ref lines on stdin the preflight runs: a hook that forgot to hand its
  * stdin on must check more, never less. The WIP escape and the secret guard
  * stay in the repo's hook.
+ *
+ * Before all that, no push onto a running or green ready PR (PROC-DEV-005
+ * rev 8, register #1992): a pushed branch whose open, non-draft PR has its
+ * required checks running or green is refused (exit 4) — unless the last
+ * verdict is red, the push only modifies existing baseline PNGs, or
+ * `SPEC_SYNC_REGATE=1` carries `--regate` (git gives hooks no flags). If `gh`
+ * fails or times out, the push goes through with one line.
  */
 
-import { execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { readdirSync, readFileSync, rmSync } from "node:fs";
 import { constants } from "node:os";
 import { join } from "node:path";
@@ -47,6 +54,10 @@ export const NO_CODE_FILES: ReadonlySet<string> = new Set([
 /** The base a new branch is measured against, first candidate first. */
 const NEW_BRANCH_BASES = ["origin/main", "main"];
 const ZERO_SHA = /^0+$/u;
+/** git gives pre-push hooks no flags: `--regate` travels as this variable (PROC-DEV-005 rev 8). */
+export const REGATE_ENV = "SPEC_SYNC_REGATE";
+/** How long one `gh` question may take before the push goes through without it. */
+const GH_TIMEOUT_MS = 20_000;
 
 export interface PushedRef {
   localRef: string;
@@ -68,6 +79,8 @@ export interface PrePushDeps {
   /** Length of a cap minute; tests shorten it. */
   minuteMs: number;
   graceMs: number;
+  /** Timeout of one `gh` question of the ready-PR check. */
+  ghTimeoutMs: number;
 }
 
 const defaultDeps = (): PrePushDeps => ({
@@ -83,12 +96,13 @@ const defaultDeps = (): PrePushDeps => ({
   gate: [process.execPath, process.argv[1] as string],
   minuteMs: 60_000,
   graceMs: KILL_GRACE_MS,
+  ghTimeoutMs: GH_TIMEOUT_MS,
 });
 
 export const prepushCommand: Command = {
   name: "prepush",
   summary:
-    "Light pre-push preflight (PROC-DEV-005 rev 7): skips code-free pushes, caps the run at 10 min",
+    "Light pre-push preflight (PROC-DEV-005 rev 8): refuses pushes onto a running or green ready PR, skips code-free pushes, caps the run at 10 min",
   needsConfig: false,
   run: (ctx) => runPrePush(ctx),
 };
@@ -155,8 +169,8 @@ function git(repoRoot: string, args: string[]): string | undefined {
   }
 }
 
-/** The files `ref` changes against what the remote has, or `undefined` without a base. */
-export function changedFilesOf(repoRoot: string, ref: PushedRef): string[] | undefined {
+/** What `ref` is diffed against: the remote sha, or the merge-base with main for a new branch. */
+function diffBase(repoRoot: string, ref: PushedRef): string | undefined {
   let base: string | undefined;
   if (
     !ZERO_SHA.test(ref.remoteSha) &&
@@ -169,10 +183,152 @@ export function changedFilesOf(repoRoot: string, ref: PushedRef): string[] | und
       if (base) break;
     }
   }
+  return base || undefined;
+}
+
+/** The files `ref` changes against what the remote has, or `undefined` without a base. */
+export function changedFilesOf(repoRoot: string, ref: PushedRef): string[] | undefined {
+  const base = diffBase(repoRoot, ref);
   if (!base) return undefined;
   const out = git(repoRoot, ["diff", "--name-only", "--no-renames", base, ref.localSha]);
   if (out === undefined) return undefined;
   return out.split("\n").filter((line) => line !== "");
+}
+
+/** Does `ref` only modify existing PNGs (every path status M)? No base → no. */
+function onlyModifiesPngs(repoRoot: string, ref: PushedRef): boolean {
+  const base = diffBase(repoRoot, ref);
+  if (!base) return false;
+  const out = git(repoRoot, ["diff", "--name-status", "--no-renames", base, ref.localSha]);
+  if (!out) return false;
+  return out.split("\n").every((row) => /^M\t.+\.png$/iu.test(row));
+}
+
+interface GhOutcome {
+  code: number | null;
+  stdout: string;
+  failed?: string;
+}
+
+function runGh(repoRoot: string, args: string[], timeoutMs: number): Promise<GhOutcome> {
+  return new Promise((resolve) => {
+    execFile(
+      "gh",
+      args,
+      { cwd: repoRoot, encoding: "utf8", timeout: timeoutMs },
+      (error, stdout, stderr) => {
+        if (error === null) return resolve({ code: 0, stdout });
+        const killed = (error as { killed?: boolean }).killed === true;
+        const code = typeof error.code === "number" ? error.code : null;
+        resolve({
+          code,
+          stdout,
+          failed: killed
+            ? `timed out after ${timeoutMs / 1000} s`
+            : (stderr.trim().split("\n")[0] ?? error.message),
+        });
+      },
+    );
+  });
+}
+
+function parseJsonArray(text: string): unknown[] | undefined {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return Array.isArray(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+interface Refusal {
+  pr: number;
+  checks: "running" | "green";
+  message: string;
+}
+
+/**
+ * §No push onto a running or green ready PR (PROC-DEV-005 rev 8). For each
+ * pushed branch with an open, non-draft PR, the PR's required checks
+ * (`gh pr checks --required`, i.e. what branch protection requires) decide:
+ * any failed or cancelled → through (the last verdict is red); otherwise any
+ * pending → refused (running); otherwise → refused (green). A push that only
+ * modifies existing PNGs, `SPEC_SYNC_REGATE=1` and an unanswerable `gh` let it
+ * through, each with one line in `notes`.
+ */
+async function guardReadyPrs(
+  repoRoot: string,
+  refs: PushedRef[],
+  timeoutMs: number,
+  notes: string[],
+): Promise<Refusal | undefined> {
+  const branches = refs.filter(
+    (ref) => !isDelete(ref) && !isTag(ref) && ref.remoteRef.startsWith("refs/heads/"),
+  );
+  if (branches.length === 0) return undefined;
+  if (process.env[REGATE_ENV] === "1") {
+    notes.push(
+      `${REGATE_ENV}=1 — pushed with --regate: the ready-PR check is skipped, the required check runs again (PROC-DEV-005 rev 8)`,
+    );
+    return undefined;
+  }
+  const failOpen = (what: string): void => {
+    notes.push(
+      `GitHub could not be asked (${what}) — the push goes through without the ready-PR check (PROC-DEV-005 rev 8)`,
+    );
+  };
+  for (const ref of branches) {
+    const branch = ref.remoteRef.slice("refs/heads/".length);
+    const list = await runGh(
+      repoRoot,
+      ["pr", "list", "--head", branch, "--state", "open", "--json", "number,isDraft"],
+      timeoutMs,
+    );
+    const prs = list.failed === undefined ? parseJsonArray(list.stdout) : undefined;
+    if (prs === undefined) {
+      failOpen(`gh pr list: ${list.failed ?? "unreadable answer"}`);
+      continue;
+    }
+    const pr = (prs as { number?: unknown; isDraft?: unknown }[]).find(
+      (entry) => entry.isDraft === false && typeof entry.number === "number",
+    );
+    if (pr === undefined) continue;
+    const number = pr.number as number;
+
+    // `gh pr checks` exits 1 on a failed and 8 on a pending check; its JSON still stands.
+    const checks = await runGh(
+      repoRoot,
+      ["pr", "checks", String(number), "--required", "--json", "name,bucket"],
+      timeoutMs,
+    );
+    const rows = checks.code === null ? undefined : parseJsonArray(checks.stdout);
+    if (rows === undefined || rows.length === 0) {
+      failOpen(
+        `gh pr checks ${number}: ${rows === undefined ? (checks.failed ?? "unreadable answer") : "no required check reported"}`,
+      );
+      continue;
+    }
+    const buckets = (rows as { bucket?: unknown }[]).map((row) => row.bucket);
+    if (buckets.some((bucket) => bucket === "fail" || bucket === "cancel")) {
+      notes.push(
+        `#${number}: the last verdict of its required checks is red — the push goes through`,
+      );
+      continue;
+    }
+    if (onlyModifiesPngs(repoRoot, ref)) {
+      notes.push(
+        `#${number}: the push changes only existing baseline PNGs — it goes through (PROC-DEV-005 rev 8)`,
+      );
+      continue;
+    }
+    const state = buckets.some((bucket) => bucket === "pending") ? "running" : "green";
+    return {
+      pr: number,
+      checks: state,
+      message: `push refused: #${number} is ready and its required check is ${state} (PROC-DEV-005 rev 8). Turn it back to draft first (gh pr ready ${number} --undo), or, for an overlap update, push with SPEC_SYNC_REGATE=1 git push.`,
+    };
+  }
+  return undefined;
 }
 
 export async function runPrePush(
@@ -189,12 +345,25 @@ export async function runPrePush(
   const capMin = Number(cap);
 
   const refs = parseRefLines(deps.readStdin());
+  const guardNotes: string[] = [];
+  const refusal = await guardReadyPrs(ctx.repoRoot, refs, deps.ghTimeoutMs, guardNotes);
+  for (const note of guardNotes) progress(`• pre-push: ${note}`);
+  if (refusal !== undefined) {
+    progress(`• pre-push: ${refusal.message}`);
+    return {
+      ok: false,
+      exit: EXIT.PRECONDITION,
+      notes: [refusal.message, ...guardNotes],
+      data: { preflight: "refused", pr: refusal.pr, checks: refusal.checks },
+    };
+  }
+
   const plan = planPrePush(refs, (ref) => changedFilesOf(ctx.repoRoot, ref));
   if (!plan.run) {
     progress(`• pre-push: preflight skipped — ${plan.reason}`);
     return {
       ok: true,
-      notes: [`preflight skipped: ${plan.reason}`],
+      notes: [...guardNotes, `preflight skipped: ${plan.reason}`],
       data: { preflight: "skipped", reason: plan.reason },
     };
   }
@@ -216,13 +385,17 @@ export async function runPrePush(
     return {
       ok: true,
       exit: EXIT.OK,
-      notes: [notice, ...(released.length > 0 ? [`released ${released.join(", ")}`] : [])],
+      notes: [
+        ...guardNotes,
+        notice,
+        ...(released.length > 0 ? [`released ${released.join(", ")}`] : []),
+      ],
       data: { preflight: "capped", reason: plan.reason, cap_min: capMin, released },
     };
   }
 
   const gate = parseGateResponse(outcome.stdout);
-  const notes = [...(gate.notes ?? [])];
+  const notes = [...guardNotes, ...(gate.notes ?? [])];
   if (outcome.error !== undefined) notes.push(`preflight could not run: ${outcome.error}`);
   return {
     ok: outcome.code === 0,
