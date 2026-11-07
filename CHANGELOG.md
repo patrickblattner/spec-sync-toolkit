@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.41.0
+
+Review verdict `accepted collected <c>` (SST-DESIGN-030 rev 6, register #1983).
+
+### Added
+
+- `spec-sync review verdict <pr|issue> <n> <id> accepted collected <c>`: records a finding as
+  accepted and handed to the spec-server finding collector, `<c>` being the collector row id
+  (SMCP-DESIGN-019). The `review-verdict` marker carries `"resolution":"collected","collected":<c>`
+  and the comment line reads `accepted (collected #<c>)`. The command only records it and never
+  calls the spec server. Like `accepted ticket`, it does not hold a merge.
+- Without `<c>`, with a non-numeric or zero `<c>`, or with extra words, the verdict is refused
+  with the usage line (exit 4).
+
+### How to adopt (app repos)
+
+Nothing beyond the pin bump. The skill text that uses the new resolution follows separately.
+
 ## 0.40.0
 
 Light preflight on every push (PROC-DEV-005 rev 7, register #1979).
