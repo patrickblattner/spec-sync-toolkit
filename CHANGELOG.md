@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.43.1
+
+`review growth` reads the common metrics fields the app repos agreed on (register #1999).
+
+### Changed
+
+- The metrics file must carry `week` (ISO, `YYYY-Www`) and `targets[]` (objects with `path` and
+  `reason`); either missing or malformed is exit 4. The `date`/`generatedAt`/`measuredAt` and
+  file-name fallbacks and plain-string targets are gone. Every other field (`previous_week` or
+  `null` with `gap_reason`, `chunks`, `ratchet`, `raises`, `dependencies`, `modules`, `fta`,
+  `complexity`, `cleanness`, `hotspots`, `cycles`, `check_times`) reaches the prompt as is.
+- The target list in the prompt reads `- <path> — <reason>`. The default `--out` and `--since`
+  come from `week` (its Sunday minus 7 days).
+
+### How to adopt (app repos)
+
+Pin bump only; the weekly metrics run writes `week` and `targets[]` as agreed.
+
 ## 0.43.0
 
 Codex first opinion on the weekly growth audit (SST-DESIGN-040 rev 2, PROC-REL-080, register
