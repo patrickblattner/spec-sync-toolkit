@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.40.0
+
+Light preflight on every push (PROC-DEV-005 rev 7, register #1979).
+
+### Added
+
+- `spec-sync prepush [--cap-min <minutes>]`: the command a repo's pre-push hook calls instead of
+  `spec-sync gate --profile merge --preflight`. It reads git's pre-push stdin (handed on by the
+  hook) and skips the preflight with exit 0 and one line when the push changes no code: only tags,
+  only branch deletes, or commits that change nothing but `spec-pins.json` and
+  `.spec-sync/drift-coverage.jsonl` (diffed against the remote sha, or against the merge-base with
+  `origin/main` — then `main` — for a new branch). No ref lines on stdin, or no base to diff
+  against, runs the preflight.
+- Every other push runs `gate --profile merge --preflight --changed` in the repo root under a hard
+  cap, default 10 min. Past it the gate's whole process group is ended (SIGTERM, SIGKILL after
+  5 s; the run settles only once the group is gone), the `gate.lock`, box slot and box queue entry
+  the gate still held are released, and the command prints a notice and exits 0: the push goes
+  through and the runner's required check decides. Within the cap the gate's exit code passes
+  through (a red preflight refuses the push), with its `failures`, `error`, `notes` and `logDir`.
+  SIGINT/SIGTERM/SIGHUP are forwarded to the group.
+
+### Changed
+
+- `doctor`: the pre-push check accepts `spec-sync prepush` as the preflight. A hook that still
+  calls the plain `gate --profile merge --preflight` is a finding: "pre-push hook lacks the light
+  preflight (PROC-DEV-005 rev 7)". The WIP escape and the secret guard stay in the repo's hook.
+
+### How to adopt (app repos)
+
+Replace the preflight call in the pre-push script with `npx spec-sync prepush` and hand it the
+hook's stdin, which the script has already read — e.g.
+`spawnSync("npx", ["spec-sync", "prepush"], { input: stdin, stdio: ["pipe", "inherit", "inherit"] })`.
+A shell hook (`.husky/pre-push`) only swaps the line: `npx spec-sync prepush` inherits git's stdin.
+Keep the WIP check in front of it and the exit handling as today.
+
 ## 0.39.0
 
 First come, first served for the dev-box slots (PROC-REL-060 rev 4).
