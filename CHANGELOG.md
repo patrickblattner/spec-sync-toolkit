@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.43.2
+
+`queue` sweeps every open issue (SST-DESIGN-017 rev 9, Q#5570).
+
+### Fixed
+
+- The sweep read at most 200 open issues, so a repo with more silently lost its oldest tickets
+  (community-platform: 14 of 214, including P1 musts). `gh` now paginates up to a safety cap of
+  10 000; a fetch that reaches it exits 4 instead of sweeping a truncated list.
+
+### How to adopt (app repos)
+
+Pin bump only.
+
 ## 0.43.1
 
 `review growth` reads the common metrics fields the app repos agreed on (register #1999).
