@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.43.3
+
+The toolkit can be installed as a git dependency under `strict-allow-scripts=true` (GL-CODE-004, Q#5590).
+
+### Changed
+
+- `allowScripts` lists every lockfile package with an install script (`esbuild` true, `fsevents` false); a
+  unit test compares lockfile and list in both directions.
+
+### How to adopt (app repos)
+
+Pin bump only; then `strict-allow-scripts=true` can be switched on.
+
 ## 0.43.2
 
 `queue` sweeps every open issue (SST-DESIGN-017 rev 9, Q#5570).
