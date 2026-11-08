@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   BOT_LOGIN,
   HEALTH_MAX_TICKETS,
+  ISSUE_LIMIT,
   parseQueueOptions,
   readPhasePin,
   runQueue,
@@ -377,6 +378,30 @@ describe("--check answers in one line from a single roundtrip (§7.2, §12 M3)",
     const { gh } = fakeGh({ issues: [issue(1, ["spec-sync"])] });
     const result = await runQueue(deps(gh), config, { check: true }, norms);
     expect(result.data).toEqual({ open: 1, next: null });
+  });
+});
+
+describe("complete sweep — no silent truncation (SST-DESIGN-017 rev 9)", () => {
+  it("sweeps all 214 open issues and puts the oldest P1 at the head", async () => {
+    const issues = Array.from({ length: 214 }, (_, index) =>
+      issue(index + 1, ["spec-sync", index === 0 ? "P1 must" : "P2 important"], "M1"),
+    );
+    const { gh, calls } = fakeGh({ issues });
+    expect((await runQueue(deps(gh), config, { check: true }, norms)).data).toEqual({
+      open: 214,
+      next: 1,
+    });
+    expect(calls[0]).toContain(String(ISSUE_LIMIT));
+  });
+
+  it("aborts with exit 4 when the fetch reaches the safety cap", async () => {
+    const issues = Array.from({ length: ISSUE_LIMIT }, (_, index) =>
+      issue(index + 1, ["spec-sync"], "M1"),
+    );
+    const { gh } = fakeGh({ issues });
+    const run = runQueue(deps(gh), config, { check: true }, norms);
+    await expect(run).rejects.toThrowError(/safety cap of 10000/);
+    await expect(run).rejects.toMatchObject({ exit: EXIT.PRECONDITION });
   });
 });
 

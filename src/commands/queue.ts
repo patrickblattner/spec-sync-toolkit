@@ -49,8 +49,11 @@ export const NIGHTLY_STALE_HOURS = 25;
 /** Login the nightly report jobs post under — the label-drift guard keys on it. */
 export const BOT_LOGIN = "github-actions[bot]";
 
-/** How many open issues one sweep asks for. Above this the queue is not the bottleneck. */
-const ISSUE_LIMIT = 200;
+/**
+ * Safety cap for one sweep (`SST-DESIGN-017` rev 9). `gh` paginates up to it;
+ * a fetch that reaches it aborts instead of sweeping a truncated list.
+ */
+export const ISSUE_LIMIT = 10_000;
 
 /** Conclusions that make a nightly run red. */
 const RED_CONCLUSIONS = new Set(["failure", "timed_out", "cancelled", "startup_failure"]);
@@ -459,7 +462,15 @@ export async function fetchIssues(gh: GhRunner, withBody = false): Promise<GhIss
     // The body only for `--bundle`, which reads spec keys from it.
     `number,title,labels,author,comments,updatedAt${withBody ? ",body" : ""}`,
   ]);
-  return parseJson<GhIssue[]>(raw, "gh issue list");
+  const issues = parseJson<GhIssue[]>(raw, "gh issue list");
+  if (issues.length >= ISSUE_LIMIT) {
+    throw new ToolkitError(
+      `gh issue list returned ${issues.length} open issues, the safety cap of ${ISSUE_LIMIT} — the sweep may be truncated`,
+      EXIT.PRECONDITION,
+      { field: "issues" },
+    );
+  }
+  return issues;
 }
 
 interface GhRun {
@@ -634,9 +645,7 @@ function newestComment(issue: GhIssue): { body: string } | undefined {
  * Open/closed is read from the sweep's own issue list, which holds every OPEN
  * issue (`gh issue list --state open`) — no extra `gh` call per reference. A
  * number in that set is open; a number not in it counts as closed, so the
- * block is judged again. (Above `ISSUE_LIMIT` open issues a still-open ticket
- * beyond the limit would count as closed — the stricter side.) A reference to
- * the ticket itself is ignored.
+ * block is judged again. A reference to the ticket itself is ignored.
  */
 function waitsOnOpenTicket(issue: GhIssue, open: Set<number>): boolean {
   const body = newestComment(issue)?.body;
