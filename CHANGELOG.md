@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.45.0
+
+`review batch` and `review tag` can cap the `priority:` label of finding issues (SST-DESIGN-030 rev 8).
+
+### Added
+
+- Optional `review.priorityCap` (`"critical"` | `"high"` | `"medium"`, default unset): the
+  `priority:` label of an issue with ticketed findings never ranks above it (critical > high >
+  medium). The issue body keeps the real severity; exit codes and the security label are unchanged.
+  An unknown value is rejected as an invalid config (exit 4, field `review.priorityCap`).
+
+### How to adopt (app repos)
+
+Pin bump; set `review.priorityCap` only if your repo reserves a priority level (community-platform: `"high"`).
+
 ## 0.44.0
 
 `review batch` no longer re-tickets findings that are stale or were rejected (SST-DESIGN-030 rev 7).
