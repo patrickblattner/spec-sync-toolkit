@@ -176,6 +176,8 @@ const reviewSchema = z.object({
   marker: z.string().min(1).default("review/last"),
   label: z.string().min(1).default("review-codex"),
   securityLabel: z.string().min(1).default("security"),
+  /** Highest `priority:` label a finding issue may carry (SST-DESIGN-030 rev 8). */
+  priorityCap: z.enum(["critical", "high", "medium"]).optional(),
   timeoutMs: z.number().int().positive().default(900000),
   maxDiffBytes: z.number().int().positive().default(400000),
 });

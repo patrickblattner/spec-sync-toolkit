@@ -667,6 +667,34 @@ describe("review batch (acceptance 5)", () => {
     }
   });
 
+  it("caps the priority label at review.priorityCap; the body keeps the real severity (acceptance 7, rev 8)", async () => {
+    const r = batchRepo();
+    const config = JSON.parse(readFileSync(join(r.root, "spec-sync.config.json"), "utf8"));
+    writeFileSync(
+      join(r.root, "spec-sync.config.json"),
+      JSON.stringify({ ...config, review: { ...config.review, priorityCap: "high" } }),
+    );
+    const codex = fakeCodex({
+      answers: [
+        answer([
+          { ...highFinding, severity: "critical" },
+          { ...highFinding, severity: "medium", area: "code", claim: "Medium one" },
+        ]),
+      ],
+    });
+    const { tools: t, gh } = tools(r.root, {});
+    await runReview(context(r.root, ["batch"]), { tools: t, codexEnv: codex.env });
+
+    const labels = gh.calls
+      .filter((c) => c[0] === "issue" && c[1] === "create")
+      .map((c) => c.flatMap((arg, i) => (c[i - 1] === "--label" ? [arg] : [])));
+    expect(labels).toEqual([
+      ["review-codex", "type: bug", "priority: high", "status: backlog", "security"],
+      ["review-codex", "type: bug", "priority: medium", "status: backlog"],
+    ]);
+    expect(gh.bodies[0]).toContain("critical");
+  });
+
   it("takes the bug label from the config", async () => {
     const r = batchRepo();
     const config = JSON.parse(readFileSync(join(r.root, "spec-sync.config.json"), "utf8"));

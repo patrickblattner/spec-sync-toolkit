@@ -1128,12 +1128,20 @@ function postComment(
 /**
  * Labels of an issue that carries findings (SST-DESIGN-030 rev 4): `review-codex`,
  * the control label `type: bug` (PROC-DEV-010: no ticket without one),
- * `priority:` of the highest ticketed severity, `status: backlog`, and the
+ * `priority:` of the highest ticketed severity, never above `review.priorityCap`
+ * (rev 8), `status: backlog`, and the
  * security label when a finding is of area security. Never `spec-sync` or
  * `auto-audit`.
  */
 function findingLabels(run: Run, findings: readonly Finding[]): string[] {
-  const priority = PRIORITIES.find((severity) => findings.some((f) => f.severity === severity));
+  const highest = PRIORITIES.find((severity) => findings.some((f) => f.severity === severity));
+  const cap = run.review.priorityCap;
+  const priority =
+    highest !== undefined &&
+    cap !== undefined &&
+    PRIORITIES.indexOf(highest) < PRIORITIES.indexOf(cap)
+      ? cap
+      : highest;
   return [
     run.review.label,
     run.config.labels.bug,

@@ -163,6 +163,18 @@ describe("invalid config → exit 4 naming the field (spec §5)", () => {
     expect(error.field).toBe("pinExclude");
   });
 
+  it("rejects an unknown review.priorityCap (SST-DESIGN-030 rev 8)", () => {
+    const broken = { ...valid, review: { priorityCap: "low" } };
+    const error = expectPrecondition(() => loadConfig(repoWith(broken)));
+    expect(error.field).toBe("review.priorityCap");
+  });
+
+  it("takes a review.priorityCap the config does name", () => {
+    expect(
+      loadConfig(repoWith({ ...valid, review: { priorityCap: "high" } })).review.priorityCap,
+    ).toBe("high");
+  });
+
   it("names a wrong type", () => {
     const broken = { ...valid, project: 42 };
     const error = expectPrecondition(() => loadConfig(repoWith(broken)));
