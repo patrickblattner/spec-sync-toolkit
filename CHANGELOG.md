@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.44.0
+
+`review batch` no longer re-tickets findings that are stale or were rejected (SST-DESIGN-030 rev 7).
+
+### Changed
+
+- A finding whose cited file is gone from `origin/main`, or none of whose evidence lines (trimmed,
+  at least 10 characters) occurs in it there, is dropped as `stale`: listed under `stale` in the
+  output, counted as `counts.stale` in the ledger, no issue. Evidence without such a line is judged
+  by the file rule alone.
+- Dedup also reads closed `review-codex` issues (one listing per run): a key whose issue carries a
+  `rejected` verdict is never ticketed again (`rejected` count in the output). A closed key without
+  `rejected` is ticketed as before.
+- The prompt asks for evidence as a verbatim excerpt of the cited file.
+
+### How to adopt (app repos)
+
+Pin bump only.
+
 ## 0.43.3
 
 The toolkit can be installed as a git dependency under `strict-allow-scripts=true` (GL-CODE-004, Q#5590).
