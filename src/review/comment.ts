@@ -240,6 +240,20 @@ export function renderVerdictComment(input: VerdictInput): string {
   ].join("\n");
 }
 
+/** Whether any comment carries a `review-verdict` marker with verdict `rejected`. */
+export function hasRejectedVerdict(bodies: readonly string[]): boolean {
+  const pattern = new RegExp(`<!-- ${VERDICT_MARKER} (\\{.*?\\}) -->`, "gs");
+  return bodies.some((body) =>
+    [...body.matchAll(pattern)].some((match) => {
+      try {
+        return (JSON.parse(match[1] as string) as { verdict?: unknown }).verdict === "rejected";
+      } catch {
+        return false;
+      }
+    }),
+  );
+}
+
 /** The tag-mode issue title — one issue per tag. */
 export function tagIssueTitle(to: string): string {
   return `Codex review ${to}`;

@@ -197,6 +197,25 @@ export function partitionFindings<T extends { file: string; claim: string }>(
   return { fresh, duplicates };
 }
 
+/** Evidence lines the stale check matches: trimmed, at least 10 characters. */
+export function evidenceLines(evidence: string): string[] {
+  return evidence
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length >= 10);
+}
+
+/**
+ * Stale on `origin/main` (SST-DESIGN-030 rev 7): the cited file is gone
+ * (`content` undefined), or none of its evidence lines occurs in it. Evidence
+ * without a line of 10 characters is judged by the file rule alone.
+ */
+export function isStale(evidence: string, content: string | undefined): boolean {
+  if (content === undefined) return true;
+  const wanted = evidenceLines(evidence);
+  return wanted.length > 0 && !wanted.some((line) => content.includes(line));
+}
+
 /** One compact line per finding for the JSON response. */
 export function findingLine(finding: Finding): string {
   const claim = finding.claim.replace(/\s+/g, " ").trim();

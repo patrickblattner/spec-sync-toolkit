@@ -18,6 +18,7 @@ Rules:
 - Report only findings CAUSED by this diff. Code outside the diff counts only where the diff breaks it.
 - No style, naming, formatting or taste-of-wording findings. A design choice you would make differently is severity "taste", not a defect.
 - Every finding needs evidence from the code: the file, the line and why it fails. An unproven suspicion is not a finding.
+- evidence is a verbatim excerpt of the cited file (the lines as they stand, copied, not paraphrased); put the explanation in claim and scenario.
 - critical and high need a concrete line (line >= 1) and a failure scenario (input or sequence -> wrong result). Without both, use medium.
 - area is "code" or "security". severity is one of critical, high, medium, low, taste.
 - Use the empty string for a field that has nothing to say, and line 0 when no line applies.

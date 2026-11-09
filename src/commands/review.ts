@@ -31,6 +31,7 @@ import { checkFlags, positionals, valueFlag } from "../pack/args.js";
 import { defaultTools, failureLine, type RunResult, type Tools } from "../pack/exec.js";
 import {
   batchIssueTitle,
+  hasRejectedVerdict,
   hasReviewMarker,
   latestReviewMarker,
   REVIEW_MARKER,
@@ -51,6 +52,7 @@ import {
   dedupeKey,
   findingLine,
   isBlocking,
+  isStale,
   isTicketed,
   parseResult,
   partitionFindings,
@@ -481,10 +483,25 @@ async function runBatch(run: Run, pos: string[]): Promise<CommandResult> {
     );
   }
 
-  // Critical, high and medium become issues, deduplicated by review-key.
-  const ticketed = result.findings.filter(isTicketed);
+  // A finding whose file is gone from origin/main, or whose evidence no longer
+  // occurs there, is stale: output and ledger count only.
+  const contents = new Map<string, string | undefined>();
+  const contentOf = (file: string): string | undefined => {
+    if (!contents.has(file)) {
+      const shown = tools.run("git", ["show", `${MAIN}:${file.replace(/^\.\//, "")}`]);
+      contents.set(file, shown.ok ? shown.stdout : undefined);
+    }
+    return contents.get(file);
+  };
+  const stale = result.findings.filter((f) => isStale(f.evidence, contentOf(f.file)));
+  const current = result.findings.filter((f) => !stale.includes(f));
+
+  // Critical, high and medium become issues, deduplicated by review-key
+  // against open issues and against closed ones carrying a rejected verdict.
+  const ticketed = current.filter(isTicketed);
   const created: string[] = [];
   let duplicates = 0;
+  let rejected = 0;
   if (ticketed.length > 0) {
     const open = gh(
       tools,
@@ -505,7 +522,34 @@ async function runBatch(run: Run, pos: string[]): Promise<CommandResult> {
     const keys = reviewKeysOf(
       parseJson<{ body?: string }[]>(open.stdout, "gh").map((issue) => issue.body ?? ""),
     );
-    const parts = partitionFindings(ticketed, keys);
+    const closed = gh(
+      tools,
+      [
+        "issue",
+        "list",
+        "--label",
+        review.label,
+        "--state",
+        "closed",
+        "--limit",
+        "1000",
+        "--json",
+        "body,comments",
+      ],
+      "gh",
+    );
+    const rejectedKeys = new Set(
+      reviewKeysOf(
+        parseJson<{ body?: string; comments?: { body?: string }[] }[]>(closed.stdout, "gh")
+          .filter((issue) =>
+            hasRejectedVerdict((issue.comments ?? []).map((comment) => comment.body ?? "")),
+          )
+          .map((issue) => issue.body ?? ""),
+      ),
+    );
+    const notRejected = ticketed.filter((f) => !rejectedKeys.has(dedupeKey(f)));
+    rejected = ticketed.length - notRejected.length;
+    const parts = partitionFindings(notRejected, keys);
     duplicates = parts.duplicates.length;
     for (const finding of parts.fresh) {
       const body = renderBatchIssue(finding, { model, range, key: dedupeKey(finding) });
@@ -522,9 +566,9 @@ async function runBatch(run: Run, pos: string[]): Promise<CommandResult> {
     markerMoved = true;
   }
 
-  const counts = countFindings(result.findings);
+  const counts = { ...countFindings(current), stale: stale.length };
   const outcome: Outcome =
-    result.skipped !== undefined ? "skipped" : result.findings.length > 0 ? "findings" : "clean";
+    result.skipped !== undefined ? "skipped" : current.length > 0 ? "findings" : "clean";
   ledger(run, {
     mode: "batch",
     model,
@@ -534,7 +578,7 @@ async function runBatch(run: Run, pos: string[]): Promise<CommandResult> {
     class: result.skipped?.class,
     counts,
   });
-  const blocking = result.findings.some(isBlocking);
+  const blocking = current.some(isBlocking);
   return {
     ok: !blocking,
     exit: blocking ? EXIT.FAILED : EXIT.OK,
@@ -545,12 +589,14 @@ async function runBatch(run: Run, pos: string[]): Promise<CommandResult> {
       outcome,
       class: result.skipped?.class,
       counts,
-      findings: result.findings.filter(isTicketed).map(findingLine),
-      low: result.findings.filter((f) => f.severity === "low").map(findingLine),
-      taste: result.findings.filter((f) => f.severity === "taste").map(findingLine),
+      findings: current.filter(isTicketed).map(findingLine),
+      low: current.filter((f) => f.severity === "low").map(findingLine),
+      taste: current.filter((f) => f.severity === "taste").map(findingLine),
+      stale: stale.map(findingLine),
       downgraded: result.downgraded,
       issues: created,
       duplicates,
+      rejected,
       markerMoved,
     },
   };
@@ -1042,7 +1088,7 @@ interface ReviewEvent {
   trigger: string;
   outcome: Outcome;
   class?: FailureClass;
-  counts?: Counts;
+  counts?: Counts & { stale?: number };
   /** growth mode: kept and dropped item counts. */
   items?: { growth: number; cleanness: number; dropped: number };
   overrunMs?: number;

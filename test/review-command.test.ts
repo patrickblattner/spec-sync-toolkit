@@ -18,7 +18,7 @@ import { readLedger } from "../src/ledger.js";
 import { EXIT, ToolkitError } from "../src/output.js";
 import { runProcess, type RunResult, type Tools } from "../src/pack/exec.js";
 import { assignFindings, dedupeKey, type RawFinding } from "../src/review/findings.js";
-import { renderReviewComment } from "../src/review/comment.js";
+import { renderReviewComment, renderVerdictComment } from "../src/review/comment.js";
 
 /**
  * End to end on real temporary git repositories (with a bare `origin`), a fake
@@ -156,6 +156,7 @@ interface GhWorld {
   prComments?: string[];
   merged?: { number: number; oid: string; comments: string[] }[];
   openIssueBodies?: string[];
+  closedIssues?: { body: string; comments: string[] }[];
   tagIssues?: { number: number; title: string }[];
   gateCompletedAt?: string;
   /** A draft PR: `isDraft` in the view, and no check has run (`gh pr checks` exits 1). */
@@ -217,6 +218,16 @@ function tools(root: string, world: GhWorld): { tools: Tools; gh: GhLog } {
         }
         if (a === "issue" && b === "list") {
           if (args.includes("all")) return ok(JSON.stringify(world.tagIssues ?? []));
+          if (args.includes("closed")) {
+            return ok(
+              JSON.stringify(
+                (world.closedIssues ?? []).map((issue) => ({
+                  body: issue.body,
+                  comments: issue.comments.map((body) => ({ body })),
+                })),
+              ),
+            );
+          }
           return ok(JSON.stringify((world.openIssueBodies ?? []).map((body) => ({ body }))));
         }
         if ((a === "pr" || a === "issue") && b === "comment")
@@ -510,6 +521,9 @@ describe("review pr (acceptance 3, 4)", () => {
 
 function batchRepo(review: Record<string, unknown> = {}) {
   const r = repo(review);
+  // The cited file carries the fixtures' evidence, so they are not stale on origin/main.
+  commit(r.root, { "server/auth/x.ts": `x\n${highFinding.evidence}\n` }, "evidence");
+  push(r);
   sh(r.root, ["tag", "review/last"]);
   sh(r.root, ["push", "-q", "origin", "refs/tags/review/last"]);
   const marker = sh(r.root, ["rev-parse", "HEAD"]);
@@ -681,6 +695,90 @@ describe("review batch (acceptance 5)", () => {
     expect(gh.calls.filter((c) => c[1] === "create")).toHaveLength(0);
     expect(remoteTag(r)).toBe(r.marker);
     expect(existsSync(join(r.root, ".spec-sync", "ledger.jsonl"))).toBe(false);
+  });
+});
+
+describe("review batch — stale and rejected findings (acceptance 10)", () => {
+  const creates = (gh: GhLog): string[][] =>
+    gh.calls.filter((c) => c[0] === "issue" && c[1] === "create");
+
+  it("drops a finding whose file is gone from origin/main as stale", async () => {
+    const r = batchRepo();
+    const gone = { ...highFinding, file: "server/auth/removed.ts", claim: "Gone" };
+    const codex = fakeCodex({ answers: [answer([gone])] });
+    const { tools: t, gh } = tools(r.root, {});
+    const result = await runReview(context(r.root, ["batch"]), { tools: t, codexEnv: codex.env });
+    expect(creates(gh)).toHaveLength(0);
+    expect(result.exit).toBe(EXIT.OK);
+    expect(result.data).toMatchObject({ outcome: "clean", findings: [], markerMoved: true });
+    expect(result.data?.stale as string[]).toEqual([expect.stringContaining("removed.ts")]);
+    expect(reviewEvents(r.root)).toEqual([
+      expect.objectContaining({ counts: expect.objectContaining({ high: 0, stale: 1 }) }),
+    ]);
+  });
+
+  it("drops a finding none of whose evidence lines occurs on origin/main as stale", async () => {
+    const r = batchRepo();
+    const moved = {
+      ...highFinding,
+      claim: "Removed code",
+      evidence: "spawn('unshare', args)\n  return convert(file);",
+    };
+    const codex = fakeCodex({ answers: [answer([moved])] });
+    const { tools: t, gh } = tools(r.root, {});
+    const result = await runReview(context(r.root, ["batch"]), { tools: t, codexEnv: codex.env });
+    expect(creates(gh)).toHaveLength(0);
+    expect(result.data?.stale as string[]).toHaveLength(1);
+    expect(result.data?.counts).toMatchObject({ high: 0, stale: 1 });
+  });
+
+  it("one matching evidence line keeps the finding; evidence without a 10-character line is judged by the file alone", async () => {
+    const r = batchRepo();
+    const codex = fakeCodex({
+      answers: [
+        answer([
+          { ...highFinding, evidence: `  ${highFinding.evidence}  \nnot in the file at all` },
+          { ...highFinding, claim: "Short evidence", evidence: "x\n  short  " },
+        ]),
+      ],
+    });
+    const { tools: t, gh } = tools(r.root, {});
+    const result = await runReview(context(r.root, ["batch"]), { tools: t, codexEnv: codex.env });
+    expect(creates(gh)).toHaveLength(2);
+    expect(result.data).toMatchObject({ stale: [], counts: { high: 2, stale: 0 } });
+  });
+
+  it("never tickets a key rejected on a closed issue; a closed key without rejected is ticketed again", async () => {
+    const r = batchRepo();
+    const rejectedOne = { ...highFinding, claim: "Rejected earlier" };
+    const fixedOne = { ...highFinding, claim: "Fixed earlier" };
+    const codex = fakeCodex({ answers: [answer([rejectedOne, fixedOne])] });
+    const verdict = (v: Parameters<typeof renderVerdictComment>[0]["verdict"]): string =>
+      renderVerdictComment({
+        target: "issue",
+        number: 7,
+        finding: "CX1",
+        source: "codex",
+        verdict: v,
+      });
+    const { tools: t, gh } = tools(r.root, {
+      closedIssues: [
+        {
+          body: `old\n<!-- review-key: ${dedupeKey(rejectedOne)} -->`,
+          comments: ["looked at it", verdict({ verdict: "rejected", reason: "code removed" })],
+        },
+        {
+          body: `old\n<!-- review-key: ${dedupeKey(fixedOne)} -->`,
+          comments: [verdict({ verdict: "accepted", resolution: "fixed" })],
+        },
+      ],
+    });
+    const result = await runReview(context(r.root, ["batch"]), { tools: t, codexEnv: codex.env });
+    expect(creates(gh)).toHaveLength(1);
+    expect(gh.bodies[0]).toContain(`<!-- review-key: ${dedupeKey(fixedOne)} -->`);
+    expect(result.data).toMatchObject({ rejected: 1, duplicates: 0 });
+    // One listing of closed issues per run, not one per finding.
+    expect(gh.calls.filter((c) => c[1] === "list" && c.includes("closed"))).toHaveLength(1);
   });
 });
 

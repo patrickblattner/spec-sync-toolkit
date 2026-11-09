@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { loadConfig, type ReviewConfig } from "../src/config.js";
 import {
+  hasRejectedVerdict,
   latestReviewMarker,
   parseReviewMarker,
   renderReviewComment,
@@ -11,6 +12,8 @@ import { codexArgs } from "../src/review/engine.js";
 import {
   assignFindings,
   dedupeKey,
+  evidenceLines,
+  isStale,
   parseResult,
   partitionFindings,
   reviewKeysOf,
@@ -335,5 +338,44 @@ describe("comment markers (acceptance 4)", () => {
     });
     expect(body).toMatch(/^<!-- review-verdict \{.*"verdict":"rejected".*\} -->/);
     expect(body).toContain("claude:security");
+  });
+});
+
+describe("stale and rejected (SST-DESIGN-030 rev 7)", () => {
+  it("keeps trimmed evidence lines of at least 10 characters", () => {
+    expect(evidenceLines("  abcdefghij  \nshort\n\n 123456789 ")).toEqual(["abcdefghij"]);
+  });
+
+  it("is stale when the file is gone or no evidence line occurs in it", () => {
+    const content = "const a = 1;\nreturn verify(token);\n";
+    expect(isStale("return verify(token);", undefined)).toBe(true);
+    expect(isStale("return skip(token);", content)).toBe(true);
+    expect(isStale("return skip(token);\n  return verify(token);  ", content)).toBe(false);
+    // No line of 10 characters: only the file rule applies.
+    expect(isStale("a = 1\nx", content)).toBe(false);
+    expect(isStale("", undefined)).toBe(true);
+  });
+
+  it("detects a rejected verdict marker among comments", () => {
+    const rejected = renderVerdictComment({
+      target: "issue",
+      number: 3,
+      finding: "CX1",
+      source: "codex",
+      verdict: { verdict: "rejected", reason: "stale" },
+    });
+    const accepted = renderVerdictComment({
+      target: "issue",
+      number: 3,
+      finding: "CX1",
+      source: "codex",
+      verdict: { verdict: "accepted", resolution: "fixed" },
+    });
+    expect(hasRejectedVerdict(["plain", rejected])).toBe(true);
+    expect(hasRejectedVerdict([accepted, "rejected in prose"])).toBe(false);
+  });
+
+  it("the prompt asks for evidence as a verbatim excerpt of the cited file", () => {
+    expect(PROMPT_TEMPLATE).toContain("evidence is a verbatim excerpt of the cited file");
   });
 });
