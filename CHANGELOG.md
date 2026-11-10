@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.45.1
+
+The gate recognises Playwright runner aborts as timeouts.
+
+### Fixed
+
+- `TIMEOUT_PATTERNS` gains `test|hook timeout of <n>ms exceeded` (Playwright test and hook
+  timeouts). A failure whose messages are all such aborts is a timeout (exit 2 under saturation)
+  instead of content. Playwright action/locator timeouts (`Timeout 5000ms exceeded.`) stay content.
+
+### How to adopt (app repos)
+
+Pin bump only.
+
 ## 0.45.0
 
 `review batch` and `review tag` can cap the `priority:` label of finding issues (SST-DESIGN-030 rev 8).

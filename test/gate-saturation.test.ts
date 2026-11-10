@@ -331,6 +331,39 @@ describe("isTimeoutFailure", () => {
   });
 });
 
+describe("classifyFailures — Playwright runner aborts", () => {
+  it.each([
+    ["Test timeout of 30000ms exceeded."],
+    ["Expected: true\nReceived: false\n\nCall log:\n  - Test timeout of 30000ms exceeded."],
+    ['"beforeEach" hook timeout of 30000ms exceeded.'],
+  ])("classifies a Playwright abort as timeout: %s", (message) => {
+    const { timeout, content } = classifyFailures([{ messages: [message] }]);
+    expect(timeout).toHaveLength(1);
+    expect(content).toHaveLength(0);
+  });
+
+  it("keeps a Playwright action timeout as content", () => {
+    const { timeout, content } = classifyFailures([
+      { messages: ["locator.click: Timeout 5000ms exceeded."] },
+    ]);
+    expect(timeout).toHaveLength(0);
+    expect(content).toHaveLength(1);
+  });
+
+  it("keeps a failure with an unrelated assertion as content", () => {
+    const { timeout, content } = classifyFailures([
+      {
+        messages: [
+          "Test timeout of 30000ms exceeded.",
+          "Error: expect(received).toBe(expected)\nExpected: 2\nReceived: 1",
+        ],
+      },
+    ]);
+    expect(timeout).toHaveLength(0);
+    expect(content).toHaveLength(1);
+  });
+});
+
 describe("isTransientFailure", () => {
   it.each([
     "Error: read ECONNRESET",

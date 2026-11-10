@@ -488,6 +488,8 @@ export function assessSaturation({
 //   "Hook timed out in 60000ms."   — a hook hit hookTimeout
 //   "Timeout calling <rpc>"        — the worker RPC channel gave up
 //   "Vitest worker terminated"     — the worker died outright
+//   "Test timeout of 30000ms exceeded."              — Playwright test timeout hit
+//   "\"beforeAll\" hook timeout of 30000ms exceeded." — a Playwright hook hit its timeout
 // Everything else — including a test that asserts on a timeout it produced
 // itself — is CONTENT.
 export const TIMEOUT_PATTERNS: readonly RegExp[] = [
@@ -495,6 +497,7 @@ export const TIMEOUT_PATTERNS: readonly RegExp[] = [
   /\btimeout calling\b/i,
   /worker\b[^.\n]*\b(terminated|exited|closed)\b/i,
   /\bterminating worker thread\b/i,
+  /\b(?:test|hook) timeout of \d+ ?ms exceeded\b/i,
 ];
 
 export function isTimeoutFailure(messages: string | readonly (string | undefined)[]): boolean {
