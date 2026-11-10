@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.46.0
+
+New command `spec-sync e2e-select` — the selection behind the merge phase `e2e-targeted`
+(PROC-REL-071, PROC-REL-012 rev 24, register #2024).
+
+### Added
+
+- `spec-sync e2e-select [--format json|lines]`: from the `gate --changed` diff base and file union,
+  `full` when the resolved `@suite/ui` version differs (lockfile `version`/`resolved` or a
+  `package.json` dependency spec, root or workspace, compared at the merge base), else `files` with
+  the changed `e2e/**/*.spec.ts` that still exist, else `none`. No diff base or an unreadable
+  manifest → `full` with `reason`; always exit 0. `--format lines` prints `full`, `none` or one
+  file per line.
+- Optional config `e2eSelect.specGlob` (default `e2e/**/*.spec.ts`) and `e2eSelect.package`
+  (default `@suite/ui`).
+- `gate --preflight` treats `e2e-targeted` like `e2e-smoke`: never in the pre-run unless marked
+  `imageOnly`.
+
+### How to adopt (app repos)
+
+Pin bump; add the phase `{"name":"e2e-targeted","cmd":"node scripts/e2e-targeted.mjs","imageOnly":"gate image"}`
+to `gate.phases` and to `gate.profiles.merge` right after `e2e-smoke`, plus the script from the
+README section "E2E selection for `e2e-targeted`".
+
 ## 0.45.1
 
 The gate recognises Playwright runner aborts as timeouts.

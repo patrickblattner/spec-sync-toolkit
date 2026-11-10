@@ -44,6 +44,8 @@ export interface CommandResult {
   notes?: string[];
   logDir?: string;
   data?: Record<string, unknown>;
+  /** Plain text written to stdout in place of the envelope (a command's `--format lines`). */
+  text?: string;
 }
 
 export interface Command {
@@ -188,6 +190,7 @@ export async function run(argv: string[]): Promise<ExitCode> {
       envelope(command, result.ok, exit, startedAt, result.notes ?? [], result.logDir, result.data),
       {
         human: flags.human,
+        text: result.text,
       },
     );
     return exit;

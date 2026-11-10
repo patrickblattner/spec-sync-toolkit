@@ -107,7 +107,14 @@ const PREFLIGHT_CONFIG = "preflight-config";
  * Carrying an `imageOnly` mark is what releases a phase from the list: the
  * mark says the config author saw it and kept it out of the pre-run.
  */
-const PREFLIGHT_FORBIDDEN = ["unit", "build", "e2e-smoke", "e2e-touched", "e2e-full"];
+const PREFLIGHT_FORBIDDEN = [
+  "unit",
+  "build",
+  "e2e-smoke",
+  "e2e-targeted",
+  "e2e-touched",
+  "e2e-full",
+];
 
 /**
  * The realpath of a path, or the path as spelled when the filesystem cannot

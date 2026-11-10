@@ -102,9 +102,11 @@ export function progress(message: string): void {
  * Writes the response — the single permitted stdout write of a process.
  *
  * `--human` swaps stdout for a compact text rendering (for the owner at the
- * terminal); the JSON form stays the contract.
+ * terminal); the JSON form stays the contract. `text` replaces the rendering
+ * with a command's own plain-text form for shell wiring (`e2e-select --format
+ * lines`) — still the one write of the process.
  */
-export function emit(response: Response, options: { human?: boolean } = {}): void {
+export function emit(response: Response, options: { human?: boolean; text?: string } = {}): void {
   if (emitted) {
     throw new Error(
       `emit() called twice (command "${response.command}") — stdout carries exactly one JSON object (spec §3)`,
@@ -112,7 +114,11 @@ export function emit(response: Response, options: { human?: boolean } = {}): voi
   }
   emitted = true;
   process.stdout.write(
-    options.human === true ? renderHuman(response) : `${formatJson(response)}\n`,
+    options.text !== undefined
+      ? options.text
+      : options.human === true
+        ? renderHuman(response)
+        : `${formatJson(response)}\n`,
   );
 }
 

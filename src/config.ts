@@ -182,6 +182,14 @@ const reviewSchema = z.object({
   maxDiffBytes: z.number().int().positive().default(400000),
 });
 
+/** The `e2eSelect` block (`PROC-REL-071`): what `e2e-select` reads from a diff. */
+const e2eSelectSchema = z.object({
+  /** E2E spec files a PR may touch (picomatch, repo-relative). */
+  specGlob: z.string().min(1).default("e2e/**/*.spec.ts"),
+  /** The package whose resolved version change selects the full suite. */
+  package: z.string().min(1).default("@suite/ui"),
+});
+
 /** Keys of former per-repo review scripts — ignored, reported by `doctor`. */
 export const LEGACY_REVIEW_KEYS = [
   "engine",
@@ -230,6 +238,7 @@ const configSchema = z
     health: healthSchema.prefault({}),
     overlap: overlapSchema.prefault({}),
     bundle: bundleSchema.prefault({}),
+    e2eSelect: e2eSelectSchema.prefault({}),
   })
   .superRefine((config, ctx) => {
     // A profile may only name phases that exist — otherwise `gate --profile x`
@@ -253,6 +262,7 @@ export type GatePhase = z.infer<typeof phaseSchema>;
 export type ReviewConfig = z.infer<typeof reviewSchema>;
 export type OverlapConfig = z.infer<typeof overlapSchema>;
 export type BundleConfig = z.infer<typeof bundleSchema>;
+export type E2eSelectConfig = z.infer<typeof e2eSelectSchema>;
 
 /**
  * Loads and validates the config. Every failure path — missing file, broken

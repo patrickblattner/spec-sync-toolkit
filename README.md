@@ -49,6 +49,7 @@ spec-sync review tag <from>..<to>
 spec-sync review verdict <pr|issue> <n> <id> (accepted (fixed|ticket <t>|collected <c>) | rejected "<reason>") [--source claude:<lens>]
 spec-sync review growth --metrics <file.json> [--since <date>] [--out <file>] [--dry-run]
 spec-sync licence-inventory [--allowlist <file>]
+spec-sync e2e-select [--format json|lines]
 ```
 
 `licence-inventory` (SST-FEATURE-001) replaces `license-checker`: it inventories the production
@@ -79,6 +80,59 @@ An SPDX expression passes when it is satisfiable from `licenses` (`OR` needs one
 readable licence. It passes only while the package still reads exactly that (SPDX text compared up
 to case and whitespace); otherwise it is a finding `exception granted for <X>, package now <Y>`.
 An exception is the only way `UNLICENSED` or an unreadable licence passes.
+
+### E2E selection for `e2e-targeted` (PROC-REL-071)
+
+```bash
+spec-sync e2e-select [--format json|lines]
+```
+
+Picks what the merge phase `e2e-targeted` runs, from the same diff base and changed-file union as
+`gate --changed` (branch commits + working tree + untracked):
+
+1. The resolved version of `@suite/ui` differs between the merge base and the working tree — a
+   `…node_modules/@suite/ui` entry (`version`, `resolved`) in a changed `package-lock.json`, or the
+   spec in `dependencies`/`devDependencies` of a changed `package.json` (root or workspace) →
+   `mode: "full"`.
+2. Else changed files matching `e2e/**/*.spec.ts` that still exist → `mode: "files"`, `files`
+   sorted and repo-relative.
+3. Else → `mode: "none"`.
+
+Fail-safe: no diff base, or a lockfile/manifest that cannot be read or parsed → `mode: "full"` with
+a `reason`. Always exit 0 (exit 4 only for a bad `--format` or config). JSON carries `mode`,
+`files` and `reason` in the usual envelope; `--format lines` prints `full`, `none`, or one file
+per line. Optional config: `"e2eSelect": {"specGlob": "e2e/**/*.spec.ts", "package": "@suite/ui"}`.
+
+Wiring — the phase in `spec-sync.config.json`, listed in `gate.profiles.merge` right after
+`e2e-smoke`:
+
+```json
+{ "name": "e2e-targeted", "cmd": "node scripts/e2e-targeted.mjs", "imageOnly": "gate image" }
+```
+
+and `scripts/e2e-targeted.mjs` (projects = the ones `main-check` runs for the full suite):
+
+```js
+import { execFileSync, spawnSync } from "node:child_process";
+
+const FULL_PROJECTS = ["chromium"]; // the full suite's Playwright projects
+const out = execFileSync("npx", ["spec-sync", "e2e-select", "--format", "lines"], {
+  encoding: "utf8",
+});
+const lines = out.split("\n").filter(Boolean);
+if (lines.length === 0) {
+  console.error("e2e-select returned nothing");
+  process.exit(1); // an empty selection is a non-run (PROC-REL-012)
+}
+if (lines[0] === "none") {
+  console.log("e2e-targeted: nicht betroffen");
+  process.exit(0);
+}
+const files = lines[0] === "full" ? [] : lines;
+const projects = FULL_PROJECTS.flatMap((p) => ["--project", p]);
+const run = spawnSync("npx", ["playwright", "test", ...projects, ...files], { stdio: "inherit" });
+process.exit(run.status ?? 1);
+```
 
 ### Push flow with little CI rework (PROC-DEV-005)
 

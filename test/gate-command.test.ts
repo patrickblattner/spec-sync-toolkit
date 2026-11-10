@@ -1110,7 +1110,7 @@ describe("gate --preflight (SST-DESIGN-013 rev 4)", () => {
    * was never read for a pre-run, and running it anyway boots a database on the
    * developer's machine (`PROC-REL-030`).
    */
-  it.each(["unit", "build", "e2e-smoke", "e2e-touched", "e2e-full"])(
+  it.each(["unit", "build", "e2e-smoke", "e2e-targeted", "e2e-touched", "e2e-full"])(
     "refuses to start when the merge profile carries an unmarked %s phase",
     async (name) => {
       const root = makeRepo(
