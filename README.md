@@ -433,11 +433,23 @@ finding. A note names the count per class. The label names are configurable:
 "labels": { "priority": { "must": "P1 must", "important": "P2 important", "polish": "P3 polish" } }
 ```
 
+Forced lanes sit above the class (SST-DESIGN-017 rev 10, PROC-DEV-006 rev 4, PROC-DEV-007 rev 6), in
+this order: a `P1 must` ticket with the audit label or the security label (`review.securityLabel`) ·
+an escalated sweep (`labels.sweep` with `P1 must`) · a pipeline or deployment ticket
+(`labels.pipeline`) · a due sweep (`labels.sweep` without `P1 must`) · every other ticket by class.
+A sweep entry carries `sweep: "escalated" | "due"`; a sweep ticket without a `Phase:` comment counts
+to the current phase instead of landing in `needsPin`. A ticket in its merge gate is not in the
+queue's choice — the worker finishes it before taking the head.
+
+```jsonc
+"labels": { "sweep": "sweep", "pipeline": "pipeline" }
+```
+
 `queue --health` (SST-DESIGN-017 rev 7) runs the same sweep and judges it like a gate: exit 0 when
 nothing is found, exit 1 with one `health` finding per failed check. The checks: `unclassified`
 (a swept ticket without a class label), `several-classes` (more than one class label),
 `p1-share` (P1 tickets above `p1MaxShare` of the swept queue, judged only from `p1MinQueue`
-tickets on) and `stale-block` (a ticket with the block label whose newest comment is older than
+tickets on; a sweep ticket never counts as P1 here) and `stale-block` (a ticket with the block label whose newest comment is older than
 `staleBlockDays`; without any comment the issue's `updatedAt` stands in); a block whose newest comment names a still-open ticket of the repo (`#<n>`) waits on that ticket and is skipped (rev 8). Each finding carries
 `check`, `tickets` (at most 10 numbers, `more` counts the rest), `value` and `threshold`. It writes
 nothing — no label, comment or ledger event — and does not call the nightly. `--health` together

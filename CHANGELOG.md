@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.47.0
+
+`queue` forces the rank of collector sweep tickets (SST-DESIGN-017 rev 10, PROC-DEV-006 rev 4,
+PROC-DEV-007 rev 6).
+
+### Added
+
+- Forced lanes above the class: a `P1 must` ticket with the audit or the security label
+  (`review.securityLabel`) · an escalated sweep (`labels.sweep` with `P1 must`) · a pipeline or
+  deployment ticket (`labels.pipeline`) · a due sweep (`labels.sweep` without `P1 must`) · every
+  other ticket by class, as before. A queue without these labels sorts exactly as in 0.46.
+- Queue entries of sweep tickets carry `sweep: "escalated" | "due"`.
+- Optional config `labels.sweep` (default `sweep`) and `labels.pipeline` (default `pipeline`). Like the
+  class labels they are optional: `doctor` does not report them missing.
+
+### Changed
+
+- A sweep ticket without a `Phase:` comment counts to the current phase instead of `needsPin`.
+- `queue --health`: a sweep ticket never counts toward `p1-share`.
+
+### How to adopt (app repos)
+
+Pin bump. Label every open pipeline or deployment ticket `pipeline` (or set `labels.pipeline` to the
+repo's label); an unlabelled one sorts as an ordinary P1 ticket, behind a due sweep.
+
 ## 0.46.0
 
 New command `spec-sync e2e-select` — the selection behind the merge phase `e2e-targeted`

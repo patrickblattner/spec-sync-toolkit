@@ -28,8 +28,11 @@ const config = {
     deferred: "status: deferred",
     started: "status: in-progress",
     blocked: "blocked",
+    sweep: "sweep",
+    pipeline: "pipeline",
     priority: { must: "P1 must", important: "P2 important", polish: "P3 polish" },
   },
+  review: { securityLabel: "security" },
   nightlyWorkflow: "nightly.yml",
   health: { p1MaxShare: 0.25, p1MinQueue: 8, staleBlockDays: 7 },
 } as unknown as Config;
@@ -778,6 +781,100 @@ describe("priority class — sort level ½ (SST-DESIGN-017 rev 6, PROC-DEV-039 r
     });
     const result = await runQueue(deps(gh), config, { check: true }, norms);
     expect(result.data).toEqual({ open: 2, next: 9 });
+  });
+});
+
+describe("forced sweep ranks (SST-DESIGN-017 rev 10, PROC-DEV-006 rev 4, PROC-DEV-007 rev 6)", () => {
+  const order = (issues: GhIssue[], cfg: Config = config) =>
+    sweepIssues(issues, cfg, norms).queue.map((entry) => entry.issue);
+
+  it("an escalated sweep sorts ahead of a pipeline ticket", () => {
+    expect(
+      order([
+        issue(1, ["spec-sync", "pipeline", "P1 must"], "M1"),
+        issue(2, ["spec-sync", "sweep", "P1 must"]),
+      ]),
+    ).toEqual([2, 1]);
+  });
+
+  it("a red-main audit and a security finding still go ahead of an escalated sweep", () => {
+    expect(
+      order([
+        issue(3, ["spec-sync", "sweep", "P1 must"]),
+        issue(4, ["spec-sync", "security", "P1 must"], "M2"),
+        issue(5, ["auto-audit", "P1 must"], "M1"),
+      ]),
+    ).toEqual([5, 4, 3]);
+  });
+
+  it("a due sweep sorts directly after pipeline tickets, ahead of a P1 product ticket", () => {
+    expect(
+      order([
+        issue(1, ["spec-sync", "P1 must"], "M1"),
+        issue(2, ["type: bug", "P1 must", "status: in-progress"], "M1"),
+        issue(3, ["spec-sync", "sweep", "P2 important"]),
+        issue(4, ["spec-sync", "pipeline", "P1 must"], "M4"),
+      ]),
+    ).toEqual([4, 3, 2, 1]);
+  });
+
+  it("full order: stop · escalated sweep · pipeline · due sweep · P1 · P2 · P3", () => {
+    const sweep = sweepIssues(
+      [
+        issue(1, ["spec-sync", "P3 polish"], "M1"),
+        issue(2, ["spec-sync", "P2 important"], "M1"),
+        issue(3, ["spec-sync", "P1 must"], "M1"),
+        issue(4, ["spec-sync", "sweep", "P2 important"]),
+        issue(5, ["spec-sync", "pipeline", "P1 must"], "M1"),
+        issue(6, ["spec-sync", "sweep", "P1 must"]),
+        issue(7, ["auto-audit", "P1 must"], "M1"),
+      ],
+      config,
+      norms,
+    );
+    expect(sweep.queue.map((entry) => entry.issue)).toEqual([7, 6, 5, 4, 3, 2, 1]);
+    expect(sweep.queue.find((entry) => entry.issue === 6)?.sweep).toBe("escalated");
+    expect(sweep.queue.find((entry) => entry.issue === 4)?.sweep).toBe("due");
+    expect(sweep.queue.find((entry) => entry.issue === 3)?.sweep).toBeUndefined();
+    expect(sweep.queue[0]).not.toHaveProperty("lane");
+  });
+
+  it("a sweep ticket without a phase pin counts to the current phase, never needsPin", () => {
+    const sweep = sweepIssues([issue(8, ["spec-sync", "sweep", "P2 important"])], config, norms);
+    expect(sweep.needsPin).toEqual([]);
+    expect(sweep.queue[0]).toMatchObject({ issue: 8, pin: "aktuell", sweep: "due" });
+  });
+
+  it("the sweep and pipeline label names are configurable", () => {
+    const custom = {
+      ...config,
+      labels: { ...config.labels, sweep: "collector-sweep", pipeline: "area: pipeline" },
+    } as Config;
+    expect(
+      order(
+        [
+          issue(1, ["spec-sync", "P1 must"], "M1"),
+          issue(2, ["spec-sync", "area: pipeline", "P1 must"], "M1"),
+          issue(3, ["spec-sync", "collector-sweep", "P2 important"]),
+          issue(4, ["spec-sync", "sweep", "P2 important"], "M1"),
+        ],
+        custom,
+      ),
+    ).toEqual([2, 3, 1, 4]);
+  });
+
+  it("an escalated sweep is not counted against the p1-share threshold", async () => {
+    const issues = [
+      issue(1, ["spec-sync", "P1 must"], "M1"),
+      issue(2, ["spec-sync", "P1 must"], "M1"),
+      issue(3, ["spec-sync", "sweep", "P1 must"]),
+      issue(4, ["spec-sync", "sweep", "P1 must"]),
+      ...[5, 6, 7, 8, 9, 10].map((n) => issue(n, ["spec-sync", "P2 important"], "M1")),
+    ];
+    const { gh } = fakeGh({ issues });
+    const result = await runQueue(deps(gh), config, { check: false, health: true }, norms);
+    expect(result.exit).toBe(EXIT.OK);
+    expect(result.data.findings).toEqual([]);
   });
 });
 

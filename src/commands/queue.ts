@@ -6,7 +6,8 @@
  * priority class label (`P1 must` → `P2 important` → `P3 polish`, `PROC-DEV-039`
  * rev 3 "sort level ½", `SST-DESIGN-017` rev 6), then by the four tiers of
  * `foundation.dev.process` §Worker-Loop within each class, and *reports*
- * everything else:
+ * everything else. Forced lanes sit above the class (`SST-DESIGN-017` rev 10,
+ * see `LANE`): P1 audit or security · escalated sweep · pipeline · due sweep.
  *
  *   - a ticket without a legible phase pin is **not guessed** — it lands in
  *     `needsPin` with the reason it could not be placed;
@@ -126,11 +127,34 @@ const CLASS_ORDER: Record<PriorityClass, number> = {
   polish: 2,
 };
 
+/**
+ * Forced lanes ahead of the class (`SST-DESIGN-017` rev 10, `PROC-DEV-006` rev 4,
+ * `PROC-DEV-007` rev 6). Lower sorts first; every other ticket sorts in the lane
+ * `LANE.rest` plus its class order, so a queue without sweep, pipeline or
+ * security labels keeps the class-first order unchanged.
+ */
+const LANE = {
+  /** `P1 must` with the audit or the security label — stops the pipeline itself. */
+  stop: 0,
+  /** Sweep label with `P1 must` — the sweep of an escalated collector area. */
+  escalatedSweep: 1,
+  /** Pipeline label — pipeline and deployment work, always `P1 must`. */
+  pipeline: 2,
+  /** Sweep label without `P1 must` — the sweep of a due area. */
+  dueSweep: 3,
+  rest: 4,
+} as const;
+
+/** Which kind of collector sweep a queue entry is (`PROC-DEV-007` rev 6). */
+export type SweepKind = "escalated" | "due";
+
 export interface QueueEntry {
   issue: number;
   title: string;
   /** Priority class from the class label — the first sort key, ahead of tier 1. */
   class: PriorityClass;
+  /** Set on a ticket with the sweep label: `escalated` with `P1 must`, else `due`. */
+  sweep?: SweepKind;
   /** 0 = `auto-audit`, 1 = `type: bug`, 2 = ordinary build ticket. Tier 1. */
   rank: number;
   /** Increments already merged to `main` — tier 2, started before unstarted. */
@@ -302,6 +326,8 @@ export function sweepIssues(issues: GhIssue[], config: Config, norms: Norms): Sw
     build,
     started: startedLabel,
     blocked: blockedLabel,
+    sweep: sweepLabel,
+    pipeline: pipelineLabel,
     priority,
   } = config.labels;
   const hold = norms.hold;
@@ -320,6 +346,8 @@ export function sweepIssues(issues: GhIssue[], config: Config, norms: Norms): Sw
     pin: string;
     phase: number | typeof CURRENT_PHASE;
     blocked: boolean;
+    lane: number;
+    sweep?: SweepKind;
   }[] = [];
 
   for (const issue of issues) {
@@ -360,7 +388,10 @@ export function sweepIssues(issues: GhIssue[], config: Config, norms: Norms): Sw
       continue;
     }
 
-    const pin = readPhasePin(issue);
+    const isSweep = labels.includes(sweepLabel);
+    // A sweep ticket carries no phase binding: without a pin it counts to the
+    // current phase (`PROC-DEV-039` level 3) — its rank is forced, not phased.
+    const pin = readPhasePin(issue) ?? (isSweep ? "aktuell" : undefined);
     if (pin === undefined) {
       needsPin.push({
         issue: issue.number,
@@ -391,6 +422,19 @@ export function sweepIssues(issues: GhIssue[], config: Config, norms: Norms): Sw
       });
     }
 
+    const isMust = priorityClass.class === "must";
+    const isSecurity = labels.includes(config.review.securityLabel);
+    const lane =
+      isMust && (isAudit || isSecurity)
+        ? LANE.stop
+        : isSweep && isMust
+          ? LANE.escalatedSweep
+          : labels.includes(pipelineLabel)
+            ? LANE.pipeline
+            : isSweep
+              ? LANE.dueSweep
+              : LANE.rest + CLASS_ORDER[priorityClass.class];
+
     pinned.push({
       issue,
       class: priorityClass.class,
@@ -399,6 +443,8 @@ export function sweepIssues(issues: GhIssue[], config: Config, norms: Norms): Sw
       pin,
       phase,
       blocked: labels.includes(blockedLabel),
+      lane,
+      ...(isSweep ? { sweep: isMust ? ("escalated" as const) : ("due" as const) } : {}),
     });
   }
 
@@ -415,6 +461,8 @@ export function sweepIssues(issues: GhIssue[], config: Config, norms: Norms): Sw
       issue: entry.issue.number,
       title: entry.issue.title,
       class: entry.class,
+      ...(entry.sweep === undefined ? {} : { sweep: entry.sweep }),
+      lane: entry.lane,
       rank: entry.rank,
       started: entry.started,
       phase: typeof entry.phase === "number" ? entry.phase : currentPhase,
@@ -431,16 +479,18 @@ export function sweepIssues(issues: GhIssue[], config: Config, norms: Norms): Sw
     // order. Half-integrated increments on `main` are a state, not a backlog.
     // Tiers 3 and 4 then order within each of the two groups, unchanged.
     // The class (sort level ½) sits above all four tiers; without class labels
-    // every entry is P2 and the order is exactly the four-tier order.
+    // every entry is P2 and the order is exactly the four-tier order. The forced
+    // lanes (`LANE`) sit above the class.
     .sort(
       (a, b) =>
+        a.lane - b.lane ||
         CLASS_ORDER[a.class] - CLASS_ORDER[b.class] ||
         a.rank - b.rank ||
         Number(b.started) - Number(a.started) ||
         a.phase - b.phase ||
         a.issue - b.issue,
     )
-    .map((entry, index) => ({ ...entry, position: index + 1 }));
+    .map(({ lane: _lane, ...entry }, index) => ({ ...entry, position: index + 1 }));
 
   const unclassified = queue
     .filter((entry) => entry.class === "unclassified")
@@ -710,7 +760,10 @@ export function healthFindings(
   }
 
   // (3) p1-share — only judged from `p1MinQueue` tickets on; strictly above the share.
-  const p1 = queue.filter((entry) => entry.class === "must").map((entry) => entry.issue);
+  // A sweep ticket's `P1 must` is the collector's escalation, not a cut decision (rev 10).
+  const p1 = queue
+    .filter((entry) => entry.class === "must" && entry.sweep === undefined)
+    .map((entry) => entry.issue);
   if (queue.length >= p1MinQueue) {
     const share = p1.length / queue.length;
     if (share > p1MaxShare) {

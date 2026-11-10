@@ -57,6 +57,11 @@ const labelsSchema = z.object({
   // `NORM_DEFAULTS` would claim a pinned revision it was never transcribed from
   // (SST-DESIGN-015).
   blocked: z.string().min(1).default("blocked"),
+  // Forced ranks of `queue` (`SST-DESIGN-017` rev 10, `PROC-DEV-006` rev 4,
+  // `PROC-DEV-007` rev 6): a collector sweep ticket, and a pipeline or
+  // deployment ticket, each sorted into its own lane ahead of the class.
+  sweep: z.string().min(1).default("sweep"),
+  pipeline: z.string().min(1).default("pipeline"),
   // Priority class labels (`SST-DESIGN-017` rev 6, `PROC-DEV-039` rev 3): the
   // first sort key of `queue`, ahead of the four tiers.
   priority: z

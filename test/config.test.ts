@@ -50,6 +50,8 @@ describe("loadConfig (spec §5)", () => {
       hold: "owner-hold",
       started: "status: in-progress",
       blocked: "blocked",
+      sweep: "sweep",
+      pipeline: "pipeline",
       priority: { must: "P1 must", important: "P2 important", polish: "P3 polish" },
     });
     expect(config.lenses).toEqual({});
