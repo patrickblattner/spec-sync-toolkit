@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.49.0
+
+Corrects the product quota of 0.48.0 (register #2030, owner 11.11.; corrects how register #2028
+was implemented). Ships outside the weekly process train.
+
+### Changed
+
+- The quota delivers at least two product starts of every three: window 2, at most one
+  non-product start. When one of the last two starts was not product and a product ticket is
+  buildable, the product head comes next — T, P, P. 0.48.0 counted window 3 with two allowed,
+  which let T, T, P, P through (2 of 4).
+- Only three things bypass the quota: the audit of a red `main` (new label `main-red`), a
+  `P1 must` security ticket, and `merge-blocker`. Other `P1 must` audits (failing nightly,
+  night-security, night-ux, image scan) stay P1 but take the third slot.
+- Starts are counted from the new `work-started` ledger event. A ledger without one yet keeps the
+  0.48.0 signals (`merge-started`, the first PR review) for its lines before the first
+  `work-started`; from that line on only `work-started` counts.
+
+### Added
+
+- `spec-sync ledger start <issue> [--dry-run]` appends one `work-started` event — run by the
+  worker when it begins building a ticket or a further increment.
+- Optional config `labels.mainRed` (default `main-red`); `doctor` does not report it missing.
+
+### How to adopt (app repos)
+
+Pin bump. The label `main-red` is set by the creator of the red-main audit ticket (the report job
+of the `main-check` workflow); until that creator sets it, add it by hand to an open red-main
+`auto-audit` ticket — without it the ticket takes the third slot. The worker runs
+`npx spec-sync ledger start <n>` when it begins building a ticket or increment (spec-sync skill).
+
 ## 0.48.0
 
 `queue` replaces the forced sweep lanes of 0.47.0 with the product quota (SST-DESIGN-017 rev 11,

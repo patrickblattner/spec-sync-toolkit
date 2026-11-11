@@ -132,9 +132,10 @@ const CLASS_ORDER: Record<PriorityClass, number> = {
 
 /**
  * The three slots of the product quota (`SST-DESIGN-017` rev 11, `PROC-DEV-039`
- * rev 5 level ¼): `bypass` (a `P1 must` audit or security ticket, or the
- * merge-blocker label) always first, then `product` and `third` interleaved so
- * that at most one of every three starts is not product.
+ * rev 5 level ¼, register #2030): `bypass` (the audit of a red `main` — label
+ * `main-red` —, a `P1 must` security ticket, or the merge-blocker label) always
+ * first, then `product` and `third` interleaved so that at least two of every
+ * three starts are product.
  */
 export type Slot = "bypass" | "product" | "third";
 
@@ -144,11 +145,15 @@ export type Slot = "bypass" | "product" | "third";
  */
 const THIRD_LANE = { pipeline: 0, escalatedSweep: 1, dueSweep: 2, rest: 3 } as const;
 
-/** Starts the quota is counted over. */
-export const QUOTA_WINDOW = 3;
+/**
+ * Starts the quota is counted over. Window 2 with at most one non-product start
+ * yields T, P, P — at least two of every three starts product (register #2030).
+ * Window 3 with two allowed let T, T, P, P through: 2 of 4.
+ */
+export const QUOTA_WINDOW = 2;
 
 /** Non-product starts in the window that force the next start to be product. */
-const QUOTA_NON_PRODUCT_MAX = 2;
+const QUOTA_NON_PRODUCT_MAX = 1;
 
 /** Which kind of collector sweep a queue entry is (`PROC-DEV-007` rev 9). */
 export type SweepKind = "escalated" | "due";
@@ -343,7 +348,7 @@ interface LevelKeys {
 
 /**
  * Places the three slots (`PROC-DEV-039` rev 5 level ¼). `bypass` goes first.
- * Then, start by start: when two of the last three starts were not product and
+ * Then, start by start: when one of the last two starts was not product and
  * a product ticket is buildable, the product head; with no buildable product
  * ticket, the third-slot head; else the better of the two heads by the levels.
  * A blocked entry is placed but starts nothing, so it does not move the window. `recent` is the product flag of the last
@@ -393,6 +398,7 @@ export function sweepIssues(
     pipeline: pipelineLabel,
     product: productLabel,
     mergeBlocker: mergeBlockerLabel,
+    mainRed: mainRedLabel,
     priority,
   } = config.labels;
   const hold = norms.hold;
@@ -490,8 +496,10 @@ export function sweepIssues(
 
     const isMust = priorityClass.class === "must";
     const isSecurity = labels.includes(config.review.securityLabel);
+    // Only the red-main audit bypasses (register #2030), recognised by the label
+    // its creator sets — never by title. Other P1 audits take the third slot.
     const slot: Slot =
-      (isMust && (isAudit || isSecurity)) || labels.includes(mergeBlockerLabel)
+      labels.includes(mainRedLabel) || (isMust && isSecurity) || labels.includes(mergeBlockerLabel)
         ? "bypass"
         : labels.includes(productLabel)
           ? "product"
@@ -1051,22 +1059,31 @@ export function proposeBundle(
 export interface QuotaStart {
   at: string;
   issue: number | null;
-  source: "merge-started" | "review-pr";
+  source: "work-started" | "merge-started" | "review-pr";
 }
 
 /**
  * The starts the quota counts, oldest first. A start is one work unit — a
- * ticket or a further increment of one — and the ledger records each one
- * exactly once in one of two shapes: a `merge-started` event (local merge
- * model) or the first `review` event of mode `pr` for a PR number (PR model;
- * a recheck or a re-review of the same PR is not a new start).
+ * ticket or a further increment of one. Since 0.49.0 (register #2030) the
+ * worker records each one as a `work-started` event when it begins building
+ * (`spec-sync ledger start`). From the first `work-started` line on, only those
+ * count. Before it — a ledger written by an older toolkit — the two lagging
+ * signals stand in: a `merge-started` event (local merge model) or the first
+ * `review` event of mode `pr` for a PR number (PR model; a recheck or a
+ * re-review of the same PR is not a new start).
  */
 export function quotaStarts(events: LedgerEvent[]): QuotaStart[] {
   const seenPrs = new Set<number>();
   const starts: QuotaStart[] = [];
+  let recorded = false;
   for (const event of events) {
     const issue = typeof event.issue === "number" ? event.issue : null;
-    if (event.type === "merge-started") {
+    if (event.type === "work-started") {
+      recorded = true;
+      starts.push({ at: event.at, issue, source: "work-started" });
+    } else if (recorded) {
+      continue;
+    } else if (event.type === "merge-started") {
       starts.push({ at: event.at, issue, source: "merge-started" });
     } else if (event.type === "review" && event.mode === "pr" && typeof event.pr === "number") {
       if (seenPrs.has(event.pr)) continue;

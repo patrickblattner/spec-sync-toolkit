@@ -52,6 +52,7 @@ describe("loadConfig (spec §5)", () => {
       blocked: "blocked",
       product: "product",
       mergeBlocker: "merge-blocker",
+      mainRed: "main-red",
       sweep: "sweep",
       pipeline: "pipeline",
       nonProduct: [],

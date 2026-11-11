@@ -35,6 +35,7 @@ spec-sync handover [--note <text>] [--reason <budget|done|red-2x|question-open|p
 spec-sync repin [--ids <a,b>] [--server <url>]
 spec-sync repin --check [--server <url>]
 spec-sync pr overlap <open-pr> --merged <merged-pr>
+spec-sync ledger start <issue> [--dry-run]
 spec-sync ledger close <issue> --reason "<text>" [--dry-run]
 spec-sync slot run --step <name> --cap <minutes> [--run <id>] -- <cmd> [args…]
 spec-sync slot status [--last <n>]
@@ -213,6 +214,11 @@ worker's call. No nightly call, nothing written; with `--check` or `--health` ex
 
 `review pr` reviews a draft PR exactly like a ready one — PRs open as drafts and Codex runs before
 ready; the pr-gate overrun is simply not measured while no check has run.
+
+`ledger start <issue>` (0.49.0) appends exactly one `work-started` event: the worker runs it when it
+begins building a ticket or a further increment of one, before the build agent starts. It is the
+start the product quota of `queue` counts. It reads nothing and calls no `gh`; `--dry-run` writes
+nothing and returns the event it would append.
 
 `ledger close <issue> --reason "<text>"` ends an orphaned `merge-started` by hand — one that
 `merge` cannot resume because its squash commit predates the current commit subject format. It
@@ -434,14 +440,19 @@ finding. A note names the count per class. The label names are configurable:
 ```
 
 The product quota sits above the class (SST-DESIGN-017 rev 11, PROC-DEV-039 rev 5 level ¼). Every
-entry carries a `slot`. `bypass` always goes first: a `P1 must` ticket with the audit or the security
-label (`review.securityLabel`), or one with `labels.mergeBlocker`. The rest is split into `product`
-(`labels.product`) and `third` (everything else; inside it `labels.pipeline` first, then the escalated
-sweep, then the due sweep, then the levels). The two are interleaved start by start: when two of
-the last three starts were not product and a product ticket is buildable, the product head comes
-next; with no buildable product ticket, the third-slot head; otherwise the better head by the
-levels. A start is a `merge-started` ledger event or the first `review` event of mode `pr` per PR
-number; its kind comes from the ticket's labels (a closed ticket costs one `gh issue view`, an
+entry carries a `slot`. `bypass` always goes first, and only three things go there (0.49.0, register
+#2030): the audit ticket of a red `main` (`labels.mainRed`, default `main-red`, set by the ticket's
+creator — never read from the title), a `P1 must` ticket with the security label
+(`review.securityLabel`), and one with `labels.mergeBlocker`. Every other audit — a failing nightly,
+night-security, night-ux, an image scan — stays P1 but takes the third slot. The rest is split into
+`product` (`labels.product`) and `third` (everything else; inside it `labels.pipeline` first, then
+the escalated sweep, then the due sweep, then the levels). The two are interleaved start by start:
+when one of the last two starts was not product and a product ticket is buildable, the product head
+comes next; with no buildable product ticket, the third-slot head; otherwise the better head by the
+levels. That yields T, P, P — at least two of every three starts product. A start is a
+`work-started` ledger event (`ledger start`); a ledger without one yet falls back to the older,
+lagging signals for the lines before its first `work-started`: a `merge-started` event or the first
+`review` event of mode `pr` per PR number. Its kind comes from the ticket's labels (a closed ticket costs one `gh issue view`, an
 unreadable one is `unknown` and counts as not product). The output carries `quota`
 (`starts`, `nonProduct`, `forced`, `head`) and a note. `--check` and `--health` do not read the
 ledger. A sweep entry carries `sweep: "escalated" | "due"`; a sweep ticket without a `Phase:`
@@ -451,6 +462,7 @@ comment counts to the current phase. A ticket in its merge gate is finished befo
 "labels": {
   "product": "product",
   "mergeBlocker": "merge-blocker",
+  "mainRed": "main-red",
   "pipeline": "pipeline",
   "sweep": "sweep",
   "nonProduct": []

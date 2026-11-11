@@ -298,6 +298,7 @@ function checkLabels(ctx: CommandContext, tools: Tools, add: Add, notes: string[
     priority: _priority,
     product: _product,
     mergeBlocker: _mergeBlocker,
+    mainRed: _mainRed,
     sweep: _sweep,
     pipeline: _pipeline,
     nonProduct: _nonProduct,

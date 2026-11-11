@@ -61,8 +61,11 @@ const labelsSchema = z.object({
   // `product` marks product work; `mergeBlocker` bypasses the quota; inside the
   // third slot `pipeline` sorts first, then `sweep`. `nonProduct` lists further
   // labels that mark a ticket as deliberately not product for `--health`.
+  // `mainRed` (0.49.0, register #2030) marks the audit ticket of a red `main`,
+  // set by its creator — the only audit that bypasses the quota.
   product: z.string().min(1).default("product"),
   mergeBlocker: z.string().min(1).default("merge-blocker"),
+  mainRed: z.string().min(1).default("main-red"),
   sweep: z.string().min(1).default("sweep"),
   pipeline: z.string().min(1).default("pipeline"),
   nonProduct: z.array(z.string().min(1)).default([]),

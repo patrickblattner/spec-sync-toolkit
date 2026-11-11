@@ -162,3 +162,35 @@ describe("ledger close", () => {
     ).toBe("--force");
   });
 });
+
+describe("ledger start (0.49.0, register #2030)", () => {
+  it("appends exactly one work-started event for the issue, without asking gh", () => {
+    const root = repo();
+    const calls: string[][] = [];
+    const result = runLedger(ctx(root, ["start", "77"]), { tools: fakeTools("OPEN", calls) });
+    expect(result.ok).toBe(true);
+    expect(calls).toEqual([]);
+    const events = readLedger(root).events;
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: "work-started", issue: 77 });
+    expect(typeof events[0]?.at).toBe("string");
+  });
+
+  it("--dry-run writes nothing and reports the event it would append", () => {
+    const root = repo();
+    const result = runLedger(ctx(root, ["start", "77"], true), { tools: fakeTools("OPEN") });
+    expect(result.data).toMatchObject({ dryRun: true, event: { type: "work-started", issue: 77 } });
+    expect(readLedger(root).events).toEqual([]);
+  });
+
+  it("refuses a bad issue number and every option it does not know", () => {
+    const root = repo();
+    const tools = fakeTools("OPEN");
+    expect(thrown(() => runLedger(ctx(root, ["start"]), { tools })).field).toBe("issue");
+    expect(thrown(() => runLedger(ctx(root, ["start", "0"]), { tools })).field).toBe("issue");
+    expect(
+      thrown(() => runLedger(ctx(root, ["start", "7", "--reason", "r"]), { tools })).field,
+    ).toBe("--reason");
+    expect(readLedger(root).events).toEqual([]);
+  });
+});

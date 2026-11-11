@@ -33,6 +33,7 @@ const config = {
     pipeline: "pipeline",
     product: "product",
     mergeBlocker: "merge-blocker",
+    mainRed: "main-red",
     nonProduct: [],
     priority: { must: "P1 must", important: "P2 important", polish: "P3 polish" },
   },
@@ -812,14 +813,14 @@ describe("product quota (SST-DESIGN-017 rev 11, PROC-DEV-039 rev 5 level ¼)", (
     mode,
   });
 
-  it("bypass: P1 audit, P1 security and a merge-blocker go ahead of product and pipeline", () => {
+  it("bypass: main-red audit, P1 security and a merge-blocker go ahead of product and pipeline", () => {
     expect(
       order([
         issue(1, ["spec-sync", "product", "P1 must"], "M1"),
         issue(2, ["spec-sync", "pipeline", "P1 must"], "M1"),
         issue(3, ["spec-sync", "merge-blocker", "P2 important"], "M3"),
         issue(4, ["spec-sync", "security", "P1 must"], "M2"),
-        issue(5, ["auto-audit", "P1 must"], "M1"),
+        issue(5, ["auto-audit", "main-red", "P1 must"], "M1"),
       ]),
     ).toEqual([5, 4, 3, 1, 2]);
   });
@@ -835,7 +836,7 @@ describe("product quota (SST-DESIGN-017 rev 11, PROC-DEV-039 rev 5 level ¼)", (
     ).toEqual([4, 3, 2, 1]);
   });
 
-  it("two of the last three starts non-product → the product head, even with a pipeline ticket open", () => {
+  it("a non-product start among the last two → the product head, even with a pipeline ticket open", () => {
     const issues = [
       issue(1, ["spec-sync", "pipeline", "P1 must"], "M1"),
       issue(2, ["spec-sync", "product", "P3 polish"], "M2"),
@@ -849,7 +850,7 @@ describe("product quota (SST-DESIGN-017 rev 11, PROC-DEV-039 rev 5 level ¼)", (
       issue(2, ["spec-sync", "product", "P2 important"], "M1"),
     ];
     expect(order(issues, [false, true, false])[0]).toBe(2);
-    expect(order(issues, [true, true, false])[0]).toBe(1);
+    expect(order(issues, [false, true, true])[0]).toBe(1);
   });
 
   it("quota has room → the better head by the levels, a non-product head allowed", () => {
@@ -859,10 +860,10 @@ describe("product quota (SST-DESIGN-017 rev 11, PROC-DEV-039 rev 5 level ¼)", (
       issue(3, ["spec-sync", "product", "P2 important"], "M1"),
       issue(4, ["spec-sync", "sweep", "P2 important"]),
     ];
-    // window [P, P, P] → pipeline (P1) first; then [P, P, N] → product 2 (P2, older
-    // than sweep 4); then [P, N, P] → product 3 by the levels; then the sweep.
+    // window [P, P] → pipeline (P1) first; then [P, N] forces product 2; [N, P]
+    // still holds a non-product start → product 3; then the sweep.
     expect(order(issues, [true, true, true])).toEqual([1, 2, 3, 4]);
-    // window [N, N] → product 2; [N, N, P] still has two non-product → product 3.
+    // window [N, N] → product 2; [N, P] still holds a non-product start → product 3.
     expect(order(issues, [false, false])).toEqual([2, 3, 1, 4]);
   });
 
@@ -925,7 +926,7 @@ describe("product quota (SST-DESIGN-017 rev 11, PROC-DEV-039 rev 5 level ¼)", (
     ]);
   });
 
-  it("queue reads the last three starts from the ledger and shows the quota state", async () => {
+  it("queue reads the last two starts from the ledger and shows the quota state", async () => {
     const { gh, calls } = fakeGh({
       issues: [
         issue(1, ["spec-sync", "pipeline", "P1 must"], "M1"),
@@ -945,7 +946,6 @@ describe("product quota (SST-DESIGN-017 rev 11, PROC-DEV-039 rev 5 level ¼)", (
     expect(queue.map((entry) => entry.issue)).toEqual([2, 7, 1]);
     expect(result.data.quota).toMatchObject({
       starts: [
-        { issue: 7, kind: "product" },
         { issue: 5, kind: "non-product" },
         { issue: 6, kind: "non-product" },
       ],
@@ -954,7 +954,7 @@ describe("product quota (SST-DESIGN-017 rev 11, PROC-DEV-039 rev 5 level ¼)", (
       head: "product",
     });
     expect(result.notes.some((note) => note.includes("head from the product slot"))).toBe(true);
-    // #4 is outside the window: no view call for it; #7 is open and read from the list.
+    // #4 and #7 are outside the window of two: no view call for them.
     expect(calls.filter((call) => call[1] === "view").map((call) => call[2])).toEqual(["5", "6"]);
   });
 
@@ -1006,6 +1006,146 @@ describe("product quota (SST-DESIGN-017 rev 11, PROC-DEV-039 rev 5 level ¼)", (
       norms,
     );
     expect(again.data.warnings).toEqual([]);
+  });
+
+  it("window 2: the third-slot head outranking product still yields T, P, P (register #2030)", () => {
+    const issues = [
+      issue(1, ["spec-sync", "pipeline", "P1 must"], "M1"),
+      issue(2, ["spec-sync", "pipeline", "P1 must"], "M1"),
+      issue(3, ["spec-sync", "product", "P3 polish"], "M2"),
+      issue(4, ["spec-sync", "product", "P3 polish"], "M2"),
+      issue(5, ["spec-sync", "product", "P3 polish"], "M2"),
+      issue(6, ["spec-sync", "product", "P3 polish"], "M2"),
+    ];
+    const slots = sweepIssues(issues, config, norms, []).queue.map((entry) =>
+      entry.slot === "product" ? "P" : "T",
+    );
+    expect(slots).toEqual(["T", "P", "P", "T", "P", "P"]);
+  });
+
+  it("one non-product start among the last two forces the product head", () => {
+    const issues = [
+      issue(1, ["spec-sync", "pipeline", "P1 must"], "M1"),
+      issue(2, ["spec-sync", "product", "P3 polish"], "M2"),
+    ];
+    expect(order(issues, [true, false])[0]).toBe(2);
+    expect(order(issues, [false, true])[0]).toBe(2);
+    expect(order(issues, [false])[0]).toBe(2);
+    // Only the last two starts count: an older non-product start is outside the window.
+    expect(order(issues, [false, true, true])[0]).toBe(1);
+  });
+
+  it("forced, but no product ticket buildable → the third-slot head goes", () => {
+    const issues = [
+      issue(1, ["spec-sync", "product", "blocked", "P1 must"], "M1"),
+      issue(2, ["spec-sync", "pipeline", "P2 important"], "M1"),
+    ];
+    expect(order(issues, [true, false])[0]).toBe(2);
+    expect(order([issue(2, ["spec-sync", "pipeline", "P2 important"], "M1")], [false])).toEqual([
+      2,
+    ]);
+  });
+
+  it("bypass only for main-red, P1 security and merge-blocker — forced quota or not", () => {
+    const sweep = sweepIssues(
+      [
+        issue(1, ["spec-sync", "product", "P1 must"], "M1"),
+        issue(2, ["auto-audit", "main-red", "P1 must"], "M1"),
+        issue(3, ["spec-sync", "security", "P1 must"], "M2"),
+        issue(4, ["spec-sync", "merge-blocker", "P2 important"], "M3"),
+        // The red-main audit bypasses on its mechanical label, before a class is backfilled.
+        issue(5, ["auto-audit", "main-red"], "M1"),
+      ],
+      config,
+      norms,
+      [false, false],
+    );
+    expect(sweep.queue.map((entry) => [entry.issue, entry.slot])).toEqual([
+      [2, "bypass"],
+      [3, "bypass"],
+      [5, "bypass"],
+      [4, "bypass"],
+      [1, "product"],
+    ]);
+  });
+
+  it("a P1 night audit without main-red takes the third slot and never bypasses", () => {
+    const issues = [
+      issue(1, ["auto-audit", "P1 must"], "M1"),
+      issue(2, ["spec-sync", "product", "P3 polish"], "M2"),
+    ];
+    const sweep = sweepIssues(issues, config, norms, [false]);
+    expect(sweep.queue.map((entry) => [entry.issue, entry.slot])).toEqual([
+      [2, "product"],
+      [1, "third"],
+    ]);
+    // With room in the quota it still heads the queue by the levels (P1, finding precedence).
+    expect(order(issues, [true, true])).toEqual([1, 2]);
+  });
+
+  it("the main-red label name is configurable", () => {
+    const custom = { ...config, labels: { ...config.labels, mainRed: "red: main" } } as Config;
+    const issues = [
+      issue(1, ["spec-sync", "product", "P1 must"], "M1"),
+      issue(2, ["auto-audit", "red: main", "P1 must"], "M2"),
+      issue(3, ["auto-audit", "main-red", "P1 must"], "M2"),
+    ];
+    expect(
+      sweepIssues(issues, custom, norms, [false]).queue.map((entry) => [entry.issue, entry.slot]),
+    ).toEqual([
+      [2, "bypass"],
+      [1, "product"],
+      [3, "third"],
+    ]);
+  });
+
+  it("starts: work-started counts from its first line on; legacy signals only before it", () => {
+    expect(
+      quotaStarts([
+        reviewPr(10, 100, "2026-11-11T01:00:00Z"),
+        { at: "2026-11-11T02:00:00Z", type: "merge-started", issue: 11, branch: "b" },
+        { at: "2026-11-11T03:00:00Z", type: "work-started", issue: 12 },
+        // After the first work-started line the lagging signals are no starts any more.
+        reviewPr(12, 120, "2026-11-11T04:00:00Z"),
+        { at: "2026-11-11T05:00:00Z", type: "merge-started", issue: 12, branch: "c" },
+        { at: "2026-11-11T06:00:00Z", type: "work-started", issue: 13 },
+        { at: "2026-11-11T07:00:00Z", type: "work-started", issue: 12, increment: 2 },
+      ]),
+    ).toEqual([
+      { at: "2026-11-11T01:00:00Z", issue: 10, source: "review-pr" },
+      { at: "2026-11-11T02:00:00Z", issue: 11, source: "merge-started" },
+      { at: "2026-11-11T03:00:00Z", issue: 12, source: "work-started" },
+      { at: "2026-11-11T06:00:00Z", issue: 13, source: "work-started" },
+      { at: "2026-11-11T07:00:00Z", issue: 12, source: "work-started" },
+    ]);
+  });
+
+  it("queue counts the quota from work-started events, not the lagging review", async () => {
+    const { gh } = fakeGh({
+      issues: [
+        issue(1, ["spec-sync", "pipeline", "P1 must"], "M1"),
+        issue(2, ["spec-sync", "product", "P3 polish"], "M1"),
+        issue(5, ["spec-sync", "product", "P2 important"], "M1"),
+        issue(6, ["spec-sync", "pipeline", "P2 important"], "M1"),
+      ],
+    });
+    // #5 (product) was started first, #6 (pipeline) second; the PR review of #5
+    // arrives last — under the old signal it would look like the newest start.
+    const ledger = () => [
+      { at: "2026-11-11T01:00:00Z", type: "work-started" as const, issue: 5 },
+      { at: "2026-11-11T02:00:00Z", type: "work-started" as const, issue: 6 },
+      reviewPr(5, 50, "2026-11-11T03:00:00Z"),
+    ];
+    const result = await runQueue(deps(gh, { ledger }), config, { check: false }, norms);
+    expect(result.data.quota).toMatchObject({
+      starts: [
+        { issue: 5, kind: "product", source: "work-started" },
+        { issue: 6, kind: "non-product", source: "work-started" },
+      ],
+      nonProduct: 1,
+      forced: true,
+      head: "product",
+    });
   });
 
   it("an escalated sweep is not counted against the p1-share threshold", async () => {

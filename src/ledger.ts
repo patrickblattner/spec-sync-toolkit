@@ -40,6 +40,10 @@ import { STATE_DIR } from "./logs.js";
  *
  * `review` (SST-DESIGN-030) is one event per `spec-sync review` run: mode,
  * model, trigger, outcome, failure class, counts, duration and `overrunMs`.
+ *
+ * `work-started` (0.49.0, register #2030) is written by `spec-sync ledger start`
+ * when the worker begins building a ticket or a further increment of it — the
+ * start the product quota of `queue` counts.
  */
 export const LEDGER_EVENT_TYPES = [
   "drift",
@@ -51,6 +55,7 @@ export const LEDGER_EVENT_TYPES = [
   "blocked",
   "context",
   "review",
+  "work-started",
 ] as const;
 
 export type LedgerEventType = (typeof LEDGER_EVENT_TYPES)[number];
