@@ -4,6 +4,7 @@ import {
   HEALTH_MAX_TICKETS,
   ISSUE_LIMIT,
   parseQueueOptions,
+  quotaStarts,
   readPhasePin,
   runQueue,
   specArea,
@@ -30,11 +31,14 @@ const config = {
     blocked: "blocked",
     sweep: "sweep",
     pipeline: "pipeline",
+    product: "product",
+    mergeBlocker: "merge-blocker",
+    nonProduct: [],
     priority: { must: "P1 must", important: "P2 important", polish: "P3 polish" },
   },
-  review: { securityLabel: "security" },
+  review: { securityLabel: "security", label: "review-codex" },
   nightlyWorkflow: "nightly.yml",
-  health: { p1MaxShare: 0.25, p1MinQueue: 8, staleBlockDays: 7 },
+  health: { p1MaxShare: 0.25, p1MinQueue: 8, staleBlockDays: 7, quotaUnclassifiedMax: 0 },
 } as unknown as Config;
 
 const norms = NORM_DEFAULTS;
@@ -55,10 +59,23 @@ function issue(
 }
 
 /** A `gh` that answers from a script and records every call it was given. */
-function fakeGh(answers: { issues?: GhIssue[]; runs?: unknown[]; runsFail?: string } = {}) {
+function fakeGh(
+  answers: {
+    issues?: GhIssue[];
+    runs?: unknown[];
+    runsFail?: string;
+    /** `gh issue view <n>` answers: the labels of a closed ticket. */
+    views?: Record<number, string[]>;
+  } = {},
+) {
   const calls: string[][] = [];
   const gh = async (args: string[]): Promise<string> => {
     calls.push(args);
+    if (args[0] === "issue" && args[1] === "view") {
+      const labels = answers.views?.[Number(args[2])];
+      if (labels === undefined) throw new Error(`no issue ${args[2] ?? ""}`);
+      return JSON.stringify({ labels: labels.map((name) => ({ name })) });
+    }
     if (args[0] === "issue") return JSON.stringify(answers.issues ?? []);
     if (args[0] === "run") {
       if (answers.runsFail !== undefined) throw new Error(answers.runsFail);
@@ -784,58 +801,90 @@ describe("priority class — sort level ½ (SST-DESIGN-017 rev 6, PROC-DEV-039 r
   });
 });
 
-describe("forced sweep ranks (SST-DESIGN-017 rev 10, PROC-DEV-006 rev 4, PROC-DEV-007 rev 6)", () => {
-  const order = (issues: GhIssue[], cfg: Config = config) =>
-    sweepIssues(issues, cfg, norms).queue.map((entry) => entry.issue);
-
-  it("an escalated sweep sorts ahead of a pipeline ticket", () => {
-    expect(
-      order([
-        issue(1, ["spec-sync", "pipeline", "P1 must"], "M1"),
-        issue(2, ["spec-sync", "sweep", "P1 must"]),
-      ]),
-    ).toEqual([2, 1]);
+describe("product quota (SST-DESIGN-017 rev 11, PROC-DEV-039 rev 5 level ¼)", () => {
+  const order = (issues: GhIssue[], recent: boolean[] = [], cfg: Config = config) =>
+    sweepIssues(issues, cfg, norms, recent).queue.map((entry) => entry.issue);
+  const reviewPr = (issueNo: number, pr: number, at: string, mode = "pr") => ({
+    at,
+    type: "review" as const,
+    issue: issueNo,
+    pr,
+    mode,
   });
 
-  it("a red-main audit and a security finding still go ahead of an escalated sweep", () => {
+  it("bypass: P1 audit, P1 security and a merge-blocker go ahead of product and pipeline", () => {
     expect(
       order([
-        issue(3, ["spec-sync", "sweep", "P1 must"]),
+        issue(1, ["spec-sync", "product", "P1 must"], "M1"),
+        issue(2, ["spec-sync", "pipeline", "P1 must"], "M1"),
+        issue(3, ["spec-sync", "merge-blocker", "P2 important"], "M3"),
         issue(4, ["spec-sync", "security", "P1 must"], "M2"),
         issue(5, ["auto-audit", "P1 must"], "M1"),
       ]),
-    ).toEqual([5, 4, 3]);
+    ).toEqual([5, 4, 3, 1, 2]);
   });
 
-  it("a due sweep sorts directly after pipeline tickets, ahead of a P1 product ticket", () => {
+  it("third slot: pipeline, escalated sweep, due sweep, then other non-product by the levels", () => {
     expect(
       order([
         issue(1, ["spec-sync", "P1 must"], "M1"),
-        issue(2, ["type: bug", "P1 must", "status: in-progress"], "M1"),
-        issue(3, ["spec-sync", "sweep", "P2 important"]),
+        issue(2, ["spec-sync", "sweep", "P2 important"]),
+        issue(3, ["spec-sync", "sweep", "P1 must"]),
         issue(4, ["spec-sync", "pipeline", "P1 must"], "M4"),
       ]),
     ).toEqual([4, 3, 2, 1]);
   });
 
-  it("full order: stop · escalated sweep · pipeline · due sweep · P1 · P2 · P3", () => {
+  it("two of the last three starts non-product → the product head, even with a pipeline ticket open", () => {
+    const issues = [
+      issue(1, ["spec-sync", "pipeline", "P1 must"], "M1"),
+      issue(2, ["spec-sync", "product", "P3 polish"], "M2"),
+    ];
+    expect(order(issues, [true, false, false])[0]).toBe(2);
+  });
+
+  it("an escalated sweep vs a product ticket: the quota decides, not the sweep label", () => {
+    const issues = [
+      issue(1, ["spec-sync", "sweep", "P1 must"]),
+      issue(2, ["spec-sync", "product", "P2 important"], "M1"),
+    ];
+    expect(order(issues, [false, true, false])[0]).toBe(2);
+    expect(order(issues, [true, true, false])[0]).toBe(1);
+  });
+
+  it("quota has room → the better head by the levels, a non-product head allowed", () => {
+    const issues = [
+      issue(1, ["spec-sync", "pipeline", "P1 must"], "M1"),
+      issue(2, ["spec-sync", "product", "P2 important"], "M1"),
+      issue(3, ["spec-sync", "product", "P2 important"], "M1"),
+      issue(4, ["spec-sync", "sweep", "P2 important"]),
+    ];
+    // window [P, P, P] → pipeline (P1) first; then [P, P, N] → product 2 (P2, older
+    // than sweep 4); then [P, N, P] → product 3 by the levels; then the sweep.
+    expect(order(issues, [true, true, true])).toEqual([1, 2, 3, 4]);
+    // window [N, N] → product 2; [N, N, P] still has two non-product → product 3.
+    expect(order(issues, [false, false])).toEqual([2, 3, 1, 4]);
+  });
+
+  it("no buildable product ticket → the third-slot head despite the quota", () => {
+    const issues = [
+      issue(1, ["spec-sync", "product", "blocked", "P1 must"], "M1"),
+      issue(2, ["spec-sync", "sweep", "P2 important"]),
+    ];
+    expect(order(issues, [false, false, false])[0]).toBe(2);
+  });
+
+  it("a repo without product labels sorts as before: every ticket in the third slot", () => {
     const sweep = sweepIssues(
-      [
-        issue(1, ["spec-sync", "P3 polish"], "M1"),
-        issue(2, ["spec-sync", "P2 important"], "M1"),
-        issue(3, ["spec-sync", "P1 must"], "M1"),
-        issue(4, ["spec-sync", "sweep", "P2 important"]),
-        issue(5, ["spec-sync", "pipeline", "P1 must"], "M1"),
-        issue(6, ["spec-sync", "sweep", "P1 must"]),
-        issue(7, ["auto-audit", "P1 must"], "M1"),
-      ],
+      [issue(1, ["spec-sync", "P3 polish"], "M1"), issue(2, ["spec-sync", "P1 must"], "M2")],
       config,
       norms,
+      [false, false, false],
     );
-    expect(sweep.queue.map((entry) => entry.issue)).toEqual([7, 6, 5, 4, 3, 2, 1]);
-    expect(sweep.queue.find((entry) => entry.issue === 6)?.sweep).toBe("escalated");
-    expect(sweep.queue.find((entry) => entry.issue === 4)?.sweep).toBe("due");
-    expect(sweep.queue.find((entry) => entry.issue === 3)?.sweep).toBeUndefined();
+    expect(sweep.queue.map((entry) => [entry.issue, entry.slot])).toEqual([
+      [2, "third"],
+      [1, "third"],
+    ]);
     expect(sweep.queue[0]).not.toHaveProperty("lane");
   });
 
@@ -845,31 +894,127 @@ describe("forced sweep ranks (SST-DESIGN-017 rev 10, PROC-DEV-006 rev 4, PROC-DE
     expect(sweep.queue[0]).toMatchObject({ issue: 8, pin: "aktuell", sweep: "due" });
   });
 
-  it("the sweep and pipeline label names are configurable", () => {
+  it("the quota label names are configurable", () => {
     const custom = {
       ...config,
-      labels: { ...config.labels, sweep: "collector-sweep", pipeline: "area: pipeline" },
+      labels: { ...config.labels, product: "kind: product", mergeBlocker: "stop-the-line" },
     } as Config;
+    const issues = [
+      issue(1, ["spec-sync", "pipeline", "P1 must"], "M1"),
+      issue(2, ["spec-sync", "kind: product", "P3 polish"], "M1"),
+      issue(3, ["spec-sync", "stop-the-line", "P3 polish"], "M1"),
+    ];
+    expect(order(issues, [false, false], custom)).toEqual([3, 2, 1]);
+  });
+
+  it("starts: merge-started each, a PR's first pr review once; rechecks and batch runs never", () => {
     expect(
-      order(
-        [
-          issue(1, ["spec-sync", "P1 must"], "M1"),
-          issue(2, ["spec-sync", "area: pipeline", "P1 must"], "M1"),
-          issue(3, ["spec-sync", "collector-sweep", "P2 important"]),
-          issue(4, ["spec-sync", "sweep", "P2 important"], "M1"),
-        ],
-        custom,
-      ),
-    ).toEqual([2, 3, 1, 4]);
+      quotaStarts([
+        reviewPr(10, 100, "2026-11-11T01:00:00Z"),
+        reviewPr(10, 100, "2026-11-11T01:10:00Z", "recheck"),
+        reviewPr(10, 100, "2026-11-11T01:20:00Z"),
+        { at: "2026-11-11T01:30:00Z", type: "review", mode: "batch" },
+        { at: "2026-11-11T02:00:00Z", type: "merge-started", issue: 11, branch: "b" },
+        { at: "2026-11-11T02:05:00Z", type: "gate", issue: 12, ok: true },
+        reviewPr(12, 101, "2026-11-11T03:00:00Z"),
+      ]),
+    ).toEqual([
+      { at: "2026-11-11T01:00:00Z", issue: 10, source: "review-pr" },
+      { at: "2026-11-11T02:00:00Z", issue: 11, source: "merge-started" },
+      { at: "2026-11-11T03:00:00Z", issue: 12, source: "review-pr" },
+    ]);
+  });
+
+  it("queue reads the last three starts from the ledger and shows the quota state", async () => {
+    const { gh, calls } = fakeGh({
+      issues: [
+        issue(1, ["spec-sync", "pipeline", "P1 must"], "M1"),
+        issue(2, ["spec-sync", "product", "P2 important"], "M1"),
+        issue(7, ["spec-sync", "product", "P2 important"], "M1"),
+      ],
+      views: { 5: ["spec-sync", "pipeline"], 6: ["spec-sync", "sweep"] },
+    });
+    const ledger = () => [
+      reviewPr(4, 40, "2026-11-10T01:00:00Z"),
+      reviewPr(7, 70, "2026-11-10T02:00:00Z"),
+      reviewPr(5, 50, "2026-11-10T03:00:00Z"),
+      reviewPr(6, 60, "2026-11-10T04:00:00Z"),
+    ];
+    const result = await runQueue(deps(gh, { ledger }), config, { check: false }, norms);
+    const queue = result.data.queue as { issue: number; slot: string }[];
+    expect(queue.map((entry) => entry.issue)).toEqual([2, 7, 1]);
+    expect(result.data.quota).toMatchObject({
+      starts: [
+        { issue: 7, kind: "product" },
+        { issue: 5, kind: "non-product" },
+        { issue: 6, kind: "non-product" },
+      ],
+      nonProduct: 2,
+      forced: true,
+      head: "product",
+    });
+    expect(result.notes.some((note) => note.includes("head from the product slot"))).toBe(true);
+    // #4 is outside the window: no view call for it; #7 is open and read from the list.
+    expect(calls.filter((call) => call[1] === "view").map((call) => call[2])).toEqual(["5", "6"]);
+  });
+
+  it("a start whose labels cannot be read counts as unknown, not product", async () => {
+    const { gh } = fakeGh({ issues: [issue(2, ["spec-sync", "product", "P2 important"], "M1")] });
+    const ledger = () => [reviewPr(9, 90, "2026-11-10T01:00:00Z")];
+    const result = await runQueue(deps(gh, { ledger }), config, { check: false }, norms);
+    expect(result.data.quota).toMatchObject({
+      starts: [{ issue: 9, kind: "unknown" }],
+      nonProduct: 1,
+    });
+  });
+
+  it("--check stays a single gh call and reads no ledger", async () => {
+    const { gh, calls } = fakeGh({ issues: [issue(2, ["spec-sync", "product"], "M1")] });
+    let read = false;
+    const ledger = () => {
+      read = true;
+      return [];
+    };
+    await runQueue(deps(gh, { ledger }), config, { check: true }, norms);
+    expect(calls).toHaveLength(1);
+    expect(read).toBe(false);
+  });
+
+  it("--health warns about tickets unclassified for the quota without failing", async () => {
+    const issues = [
+      issue(1, ["spec-sync", "product", "P2 important"], "M1"),
+      issue(2, ["spec-sync", "pipeline", "P1 must"], "M1"),
+      issue(3, ["spec-sync", "P2 important"], "M1"),
+      issue(4, ["spec-sync", "chore: norm", "P3 polish"], "M1"),
+    ];
+    const { gh } = fakeGh({ issues });
+    const result = await runQueue(deps(gh), config, { check: false, health: true }, norms);
+    expect(result.exit).toBe(EXIT.OK);
+    expect(result.data.findings).toEqual([]);
+    expect(result.data.warnings).toMatchObject([
+      { check: "quota-unclassified", tickets: [3, 4], value: 2, threshold: 0 },
+    ]);
+    const relaxed = {
+      ...config,
+      labels: { ...config.labels, nonProduct: ["chore: norm"] },
+      health: { ...config.health, quotaUnclassifiedMax: 1 },
+    } as Config;
+    const again = await runQueue(
+      deps(fakeGh({ issues }).gh),
+      relaxed,
+      { check: false, health: true },
+      norms,
+    );
+    expect(again.data.warnings).toEqual([]);
   });
 
   it("an escalated sweep is not counted against the p1-share threshold", async () => {
     const issues = [
-      issue(1, ["spec-sync", "P1 must"], "M1"),
-      issue(2, ["spec-sync", "P1 must"], "M1"),
+      issue(1, ["spec-sync", "product", "P1 must"], "M1"),
+      issue(2, ["spec-sync", "product", "P1 must"], "M1"),
       issue(3, ["spec-sync", "sweep", "P1 must"]),
       issue(4, ["spec-sync", "sweep", "P1 must"]),
-      ...[5, 6, 7, 8, 9, 10].map((n) => issue(n, ["spec-sync", "P2 important"], "M1")),
+      ...[5, 6, 7, 8, 9, 10].map((n) => issue(n, ["spec-sync", "product", "P2 important"], "M1")),
     ];
     const { gh } = fakeGh({ issues });
     const result = await runQueue(deps(gh), config, { check: false, health: true }, norms);

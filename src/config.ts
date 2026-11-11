@@ -57,11 +57,15 @@ const labelsSchema = z.object({
   // `NORM_DEFAULTS` would claim a pinned revision it was never transcribed from
   // (SST-DESIGN-015).
   blocked: z.string().min(1).default("blocked"),
-  // Forced ranks of `queue` (`SST-DESIGN-017` rev 10, `PROC-DEV-006` rev 4,
-  // `PROC-DEV-007` rev 6): a collector sweep ticket, and a pipeline or
-  // deployment ticket, each sorted into its own lane ahead of the class.
+  // Product quota of `queue` (`SST-DESIGN-017` rev 11, `PROC-DEV-039` rev 5):
+  // `product` marks product work; `mergeBlocker` bypasses the quota; inside the
+  // third slot `pipeline` sorts first, then `sweep`. `nonProduct` lists further
+  // labels that mark a ticket as deliberately not product for `--health`.
+  product: z.string().min(1).default("product"),
+  mergeBlocker: z.string().min(1).default("merge-blocker"),
   sweep: z.string().min(1).default("sweep"),
   pipeline: z.string().min(1).default("pipeline"),
+  nonProduct: z.array(z.string().min(1)).default([]),
   // Priority class labels (`SST-DESIGN-017` rev 6, `PROC-DEV-039` rev 3): the
   // first sort key of `queue`, ahead of the four tiers.
   priority: z
@@ -84,6 +88,8 @@ const healthSchema = z.object({
   p1MinQueue: z.number().int().positive().default(8),
   /** A blocked ticket whose newest comment is older than this many days is stale. */
   staleBlockDays: z.number().positive().default(7),
+  /** Open tickets neither product nor marked non-product before the warning (rev 11). */
+  quotaUnclassifiedMax: z.number().int().min(0).default(0),
 });
 
 /**

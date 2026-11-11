@@ -433,16 +433,28 @@ finding. A note names the count per class. The label names are configurable:
 "labels": { "priority": { "must": "P1 must", "important": "P2 important", "polish": "P3 polish" } }
 ```
 
-Forced lanes sit above the class (SST-DESIGN-017 rev 10, PROC-DEV-006 rev 4, PROC-DEV-007 rev 6), in
-this order: a `P1 must` ticket with the audit label or the security label (`review.securityLabel`) ·
-an escalated sweep (`labels.sweep` with `P1 must`) · a pipeline or deployment ticket
-(`labels.pipeline`) · a due sweep (`labels.sweep` without `P1 must`) · every other ticket by class.
-A sweep entry carries `sweep: "escalated" | "due"`; a sweep ticket without a `Phase:` comment counts
-to the current phase instead of landing in `needsPin`. A ticket in its merge gate is not in the
-queue's choice — the worker finishes it before taking the head.
+The product quota sits above the class (SST-DESIGN-017 rev 11, PROC-DEV-039 rev 5 level ¼). Every
+entry carries a `slot`. `bypass` always goes first: a `P1 must` ticket with the audit or the security
+label (`review.securityLabel`), or one with `labels.mergeBlocker`. The rest is split into `product`
+(`labels.product`) and `third` (everything else; inside it `labels.pipeline` first, then the escalated
+sweep, then the due sweep, then the levels). The two are interleaved start by start: when two of
+the last three starts were not product and a product ticket is buildable, the product head comes
+next; with no buildable product ticket, the third-slot head; otherwise the better head by the
+levels. A start is a `merge-started` ledger event or the first `review` event of mode `pr` per PR
+number; its kind comes from the ticket's labels (a closed ticket costs one `gh issue view`, an
+unreadable one is `unknown` and counts as not product). The output carries `quota`
+(`starts`, `nonProduct`, `forced`, `head`) and a note. `--check` and `--health` do not read the
+ledger. A sweep entry carries `sweep: "escalated" | "due"`; a sweep ticket without a `Phase:`
+comment counts to the current phase. A ticket in its merge gate is finished before the head.
 
 ```jsonc
-"labels": { "sweep": "sweep", "pipeline": "pipeline" }
+"labels": {
+  "product": "product",
+  "mergeBlocker": "merge-blocker",
+  "pipeline": "pipeline",
+  "sweep": "sweep",
+  "nonProduct": []
+}
 ```
 
 `queue --health` (SST-DESIGN-017 rev 7) runs the same sweep and judges it like a gate: exit 0 when
@@ -450,13 +462,13 @@ nothing is found, exit 1 with one `health` finding per failed check. The checks:
 (a swept ticket without a class label), `several-classes` (more than one class label),
 `p1-share` (P1 tickets above `p1MaxShare` of the swept queue, judged only from `p1MinQueue`
 tickets on; a sweep ticket never counts as P1 here) and `stale-block` (a ticket with the block label whose newest comment is older than
-`staleBlockDays`; without any comment the issue's `updatedAt` stands in); a block whose newest comment names a still-open ticket of the repo (`#<n>`) waits on that ticket and is skipped (rev 8). Each finding carries
+`staleBlockDays`; without any comment the issue's `updatedAt` stands in); a block whose newest comment names a still-open ticket of the repo (`#<n>`) waits on that ticket and is skipped (rev 8). A fifth check, `quota-unclassified`, is a warning only (`warnings`, never the exit): swept tickets with neither the product label nor a non-product marker (pipeline, sweep, merge-blocker, audit, security, review label, `labels.nonProduct`) above `quotaUnclassifiedMax`. Each finding carries
 `check`, `tickets` (at most 10 numbers, `more` counts the rest), `value` and `threshold`. It writes
 nothing — no label, comment or ledger event — and does not call the nightly. `--health` together
 with `--check` exits 4. Thresholds live in an optional `health` block, defaults as shown:
 
 ```jsonc
-"health": { "p1MaxShare": 0.25, "p1MinQueue": 8, "staleBlockDays": 7 }
+"health": { "p1MaxShare": 0.25, "p1MinQueue": 8, "staleBlockDays": 7, "quotaUnclassifiedMax": 0 }
 ```
 
 ## Map (`map extract` · `map check`)

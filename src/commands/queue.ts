@@ -6,8 +6,8 @@
  * priority class label (`P1 must` → `P2 important` → `P3 polish`, `PROC-DEV-039`
  * rev 3 "sort level ½", `SST-DESIGN-017` rev 6), then by the four tiers of
  * `foundation.dev.process` §Worker-Loop within each class, and *reports*
- * everything else. Forced lanes sit above the class (`SST-DESIGN-017` rev 10,
- * see `LANE`): P1 audit or security · escalated sweep · pipeline · due sweep.
+ * everything else. The product quota sits above the class (`SST-DESIGN-017`
+ * rev 11, see `interleave`): bypass first, then product and third slot.
  *
  *   - a ticket without a legible phase pin is **not guessed** — it lands in
  *     `needsPin` with the reason it could not be placed;
@@ -41,6 +41,7 @@ import { loadNorms, type Norms } from "../norms.js";
 import type { Command, CommandContext } from "../cli.js";
 import type { Config } from "../config.js";
 import { findSpecKeys } from "../pack/refs.js";
+import { readLedger, type LedgerEvent } from "../ledger.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -67,6 +68,8 @@ export interface QueueDeps {
   /** ISO timestamp of the newest commit on `main`, or undefined when unknown. */
   lastMainCommit: () => Promise<string | undefined>;
   now: () => Date;
+  /** The repo's ledger events, the source of the quota's starts. Absent = no starts recorded. */
+  ledger?: () => LedgerEvent[];
 }
 
 /** The shape of `gh issue list --json number,title,labels,author,comments,updatedAt`. */
@@ -128,24 +131,26 @@ const CLASS_ORDER: Record<PriorityClass, number> = {
 };
 
 /**
- * Forced lanes ahead of the class (`SST-DESIGN-017` rev 10, `PROC-DEV-006` rev 4,
- * `PROC-DEV-007` rev 6). Lower sorts first; every other ticket sorts in the lane
- * `LANE.rest` plus its class order, so a queue without sweep, pipeline or
- * security labels keeps the class-first order unchanged.
+ * The three slots of the product quota (`SST-DESIGN-017` rev 11, `PROC-DEV-039`
+ * rev 5 level ¼): `bypass` (a `P1 must` audit or security ticket, or the
+ * merge-blocker label) always first, then `product` and `third` interleaved so
+ * that at most one of every three starts is not product.
  */
-const LANE = {
-  /** `P1 must` with the audit or the security label — stops the pipeline itself. */
-  stop: 0,
-  /** Sweep label with `P1 must` — the sweep of an escalated collector area. */
-  escalatedSweep: 1,
-  /** Pipeline label — pipeline and deployment work, always `P1 must`. */
-  pipeline: 2,
-  /** Sweep label without `P1 must` — the sweep of a due area. */
-  dueSweep: 3,
-  rest: 4,
-} as const;
+export type Slot = "bypass" | "product" | "third";
 
-/** Which kind of collector sweep a queue entry is (`PROC-DEV-007` rev 6). */
+/**
+ * Order inside the third slot (`PROC-DEV-006` rev 7, `PROC-DEV-007` rev 9):
+ * pipeline, escalated sweep, due sweep, every other non-product ticket.
+ */
+const THIRD_LANE = { pipeline: 0, escalatedSweep: 1, dueSweep: 2, rest: 3 } as const;
+
+/** Starts the quota is counted over. */
+export const QUOTA_WINDOW = 3;
+
+/** Non-product starts in the window that force the next start to be product. */
+const QUOTA_NON_PRODUCT_MAX = 2;
+
+/** Which kind of collector sweep a queue entry is (`PROC-DEV-007` rev 9). */
 export type SweepKind = "escalated" | "due";
 
 export interface QueueEntry {
@@ -153,6 +158,8 @@ export interface QueueEntry {
   title: string;
   /** Priority class from the class label — the first sort key, ahead of tier 1. */
   class: PriorityClass;
+  /** Quota slot the entry was sorted in (`SST-DESIGN-017` rev 11). */
+  slot: Slot;
   /** Set on a ticket with the sweep label: `escalated` with `P1 must`, else `due`. */
   sweep?: SweepKind;
   /** 0 = `auto-audit`, 1 = `type: bug`, 2 = ordinary build ticket. Tier 1. */
@@ -315,11 +322,67 @@ function readClass(
   return { class: present[0]?.[0] ?? "unclassified", found: present.map(([, name]) => name) };
 }
 
+/** The levels ½ and (1)–(4): class, finding precedence, started, phase, age. */
+function byLevels(a: LevelKeys, b: LevelKeys): number {
+  return (
+    CLASS_ORDER[a.class] - CLASS_ORDER[b.class] ||
+    a.rank - b.rank ||
+    Number(b.started) - Number(a.started) ||
+    a.phase - b.phase ||
+    a.issue - b.issue
+  );
+}
+
+interface LevelKeys {
+  issue: number;
+  class: PriorityClass;
+  rank: number;
+  started: boolean;
+  phase: number;
+}
+
+/**
+ * Places the three slots (`PROC-DEV-039` rev 5 level ¼). `bypass` goes first.
+ * Then, start by start: when two of the last three starts were not product and
+ * a product ticket is buildable, the product head; with no buildable product
+ * ticket, the third-slot head; else the better of the two heads by the levels.
+ * A blocked entry is placed but starts nothing, so it does not move the window. `recent` is the product flag of the last
+ * recorded starts, oldest first; `sorted` is ordered by lane, then levels.
+ */
+function interleave<T extends LevelKeys & { slot: Slot; blocked?: true }>(
+  sorted: T[],
+  recent: boolean[],
+): T[] {
+  const product = sorted.filter((entry) => entry.slot === "product");
+  const third = sorted.filter((entry) => entry.slot === "third");
+  const out = sorted.filter((entry) => entry.slot === "bypass");
+  const window = recent.slice(-QUOTA_WINDOW);
+  while (product.length > 0 || third.length > 0) {
+    const forced = window.filter((isProduct) => !isProduct).length >= QUOTA_NON_PRODUCT_MAX;
+    const buildable = product.some((entry) => entry.blocked !== true);
+    const p = product[0];
+    const t = third[0];
+    const takeProduct =
+      t === undefined || (p !== undefined && buildable && (forced || byLevels(p, t) <= 0));
+    const next = takeProduct ? product.shift() : third.shift();
+    if (next === undefined) break;
+    out.push(next);
+    if (next.blocked !== true) window.push(next.slot === "product");
+    if (window.length > QUOTA_WINDOW) window.shift();
+  }
+  return out;
+}
+
 /**
  * Sweeps the open issues into the five lists of §7.2. Pure over its input, so
  * the sorting rules are testable without touching a repo.
  */
-export function sweepIssues(issues: GhIssue[], config: Config, norms: Norms): Sweep {
+export function sweepIssues(
+  issues: GhIssue[],
+  config: Config,
+  norms: Norms,
+  recent: boolean[] = [],
+): Sweep {
   const {
     audit,
     bug,
@@ -328,6 +391,8 @@ export function sweepIssues(issues: GhIssue[], config: Config, norms: Norms): Sw
     blocked: blockedLabel,
     sweep: sweepLabel,
     pipeline: pipelineLabel,
+    product: productLabel,
+    mergeBlocker: mergeBlockerLabel,
     priority,
   } = config.labels;
   const hold = norms.hold;
@@ -346,6 +411,7 @@ export function sweepIssues(issues: GhIssue[], config: Config, norms: Norms): Sw
     pin: string;
     phase: number | typeof CURRENT_PHASE;
     blocked: boolean;
+    slot: Slot;
     lane: number;
     sweep?: SweepKind;
   }[] = [];
@@ -424,16 +490,22 @@ export function sweepIssues(issues: GhIssue[], config: Config, norms: Norms): Sw
 
     const isMust = priorityClass.class === "must";
     const isSecurity = labels.includes(config.review.securityLabel);
+    const slot: Slot =
+      (isMust && (isAudit || isSecurity)) || labels.includes(mergeBlockerLabel)
+        ? "bypass"
+        : labels.includes(productLabel)
+          ? "product"
+          : "third";
     const lane =
-      isMust && (isAudit || isSecurity)
-        ? LANE.stop
-        : isSweep && isMust
-          ? LANE.escalatedSweep
-          : labels.includes(pipelineLabel)
-            ? LANE.pipeline
-            : isSweep
-              ? LANE.dueSweep
-              : LANE.rest + CLASS_ORDER[priorityClass.class];
+      slot !== "third"
+        ? 0
+        : labels.includes(pipelineLabel)
+          ? THIRD_LANE.pipeline
+          : isSweep
+            ? isMust
+              ? THIRD_LANE.escalatedSweep
+              : THIRD_LANE.dueSweep
+            : THIRD_LANE.rest;
 
     pinned.push({
       issue,
@@ -443,6 +515,7 @@ export function sweepIssues(issues: GhIssue[], config: Config, norms: Norms): Sw
       pin,
       phase,
       blocked: labels.includes(blockedLabel),
+      slot,
       lane,
       ...(isSweep ? { sweep: isMust ? ("escalated" as const) : ("due" as const) } : {}),
     });
@@ -456,11 +529,12 @@ export function sweepIssues(issues: GhIssue[], config: Config, norms: Norms): Sw
     .filter((phase): phase is number => typeof phase === "number");
   const currentPhase = numeric.length === 0 ? 0 : Math.min(...numeric);
 
-  const queue = pinned
+  const sorted = pinned
     .map((entry) => ({
       issue: entry.issue.number,
       title: entry.issue.title,
       class: entry.class,
+      slot: entry.slot,
       ...(entry.sweep === undefined ? {} : { sweep: entry.sweep }),
       lane: entry.lane,
       rank: entry.rank,
@@ -479,18 +553,14 @@ export function sweepIssues(issues: GhIssue[], config: Config, norms: Norms): Sw
     // order. Half-integrated increments on `main` are a state, not a backlog.
     // Tiers 3 and 4 then order within each of the two groups, unchanged.
     // The class (sort level ½) sits above all four tiers; without class labels
-    // every entry is P2 and the order is exactly the four-tier order. The forced
-    // lanes (`LANE`) sit above the class.
-    .sort(
-      (a, b) =>
-        a.lane - b.lane ||
-        CLASS_ORDER[a.class] - CLASS_ORDER[b.class] ||
-        a.rank - b.rank ||
-        Number(b.started) - Number(a.started) ||
-        a.phase - b.phase ||
-        a.issue - b.issue,
-    )
-    .map(({ lane: _lane, ...entry }, index) => ({ ...entry, position: index + 1 }));
+    // every entry is P2 and the order is exactly the four-tier order. The lane
+    // orders only inside the third slot; `interleave` places the slots.
+    .sort((a, b) => a.lane - b.lane || byLevels(a, b));
+
+  const queue = interleave(sorted, recent).map(({ lane: _lane, ...entry }, index) => ({
+    ...entry,
+    position: index + 1,
+  }));
 
   const unclassified = queue
     .filter((entry) => entry.class === "unclassified")
@@ -616,7 +686,8 @@ export async function nightlyFindings(
 }
 
 /** The four checks of `queue --health` (`SST-DESIGN-017` rev 7). */
-export type HealthCheck = "unclassified" | "several-classes" | "p1-share" | "stale-block";
+export type HealthCheck =
+  "unclassified" | "several-classes" | "p1-share" | "stale-block" | "quota-unclassified";
 
 export interface HealthFinding {
   kind: "health";
@@ -718,7 +789,7 @@ export function healthFindings(
   sweep: Sweep,
   config: Config,
   now: Date,
-): { findings: HealthFinding[]; notes: string[] } {
+): { findings: HealthFinding[]; warnings: HealthFinding[]; notes: string[] } {
   const { p1MaxShare, p1MinQueue, staleBlockDays } = config.health;
   const byNumber = new Map(issues.map((issue) => [issue.number, issue]));
   const findings: HealthFinding[] = [];
@@ -814,7 +885,39 @@ export function healthFindings(
     );
   }
 
-  return { findings, notes };
+  // (5) quota-unclassified (rev 11) — a warning, never an exit: a swept ticket
+  // with neither the product label nor a label that marks it non-product.
+  const { labels } = config;
+  const markers = new Set([
+    labels.product,
+    labels.pipeline,
+    labels.sweep,
+    labels.mergeBlocker,
+    labels.audit,
+    config.review.securityLabel,
+    config.review.label,
+    ...labels.nonProduct,
+  ]);
+  const unmarked = queue
+    .filter((entry) => {
+      const issue = byNumber.get(entry.issue);
+      return issue !== undefined && !labelNames(issue).some((name) => markers.has(name));
+    })
+    .map((entry) => entry.issue);
+  const warnings: HealthFinding[] = [];
+  if (unmarked.length > config.health.quotaUnclassifiedMax) {
+    warnings.push(
+      healthFinding(
+        "quota-unclassified",
+        unmarked,
+        unmarked.length,
+        config.health.quotaUnclassifiedMax,
+        `${unmarked.length} ticket(s) unclassified for the quota — neither "${labels.product}" nor a non-product label (threshold ${config.health.quotaUnclassifiedMax})`,
+      ),
+    );
+  }
+
+  return { findings, warnings, notes };
 }
 
 export interface BundleProposal {
@@ -944,6 +1047,72 @@ export function proposeBundle(
   };
 }
 
+/** One start of a work unit as the ledger records it (`SST-DESIGN-017` rev 11). */
+export interface QuotaStart {
+  at: string;
+  issue: number | null;
+  source: "merge-started" | "review-pr";
+}
+
+/**
+ * The starts the quota counts, oldest first. A start is one work unit — a
+ * ticket or a further increment of one — and the ledger records each one
+ * exactly once in one of two shapes: a `merge-started` event (local merge
+ * model) or the first `review` event of mode `pr` for a PR number (PR model;
+ * a recheck or a re-review of the same PR is not a new start).
+ */
+export function quotaStarts(events: LedgerEvent[]): QuotaStart[] {
+  const seenPrs = new Set<number>();
+  const starts: QuotaStart[] = [];
+  for (const event of events) {
+    const issue = typeof event.issue === "number" ? event.issue : null;
+    if (event.type === "merge-started") {
+      starts.push({ at: event.at, issue, source: "merge-started" });
+    } else if (event.type === "review" && event.mode === "pr" && typeof event.pr === "number") {
+      if (seenPrs.has(event.pr)) continue;
+      seenPrs.add(event.pr);
+      starts.push({ at: event.at, issue, source: "review-pr" });
+    }
+  }
+  return starts;
+}
+
+export type StartKind = "product" | "non-product" | "unknown";
+
+/**
+ * The last `QUOTA_WINDOW` starts with their kind. An open ticket is read from
+ * the sweep's own issue list; a closed one costs one `gh issue view`. A start
+ * without a ticket or with unreadable labels is `unknown` and counts as not
+ * product.
+ */
+async function classifyStarts(
+  starts: QuotaStart[],
+  issues: GhIssue[],
+  gh: GhRunner,
+  productLabel: string,
+): Promise<(QuotaStart & { kind: StartKind })[]> {
+  const open = new Map(issues.map((issue) => [issue.number, labelNames(issue)]));
+  const classified: (QuotaStart & { kind: StartKind })[] = [];
+  for (const start of starts.slice(-QUOTA_WINDOW)) {
+    let labels: string[] | undefined;
+    if (start.issue !== null) {
+      labels = open.get(start.issue);
+      if (labels === undefined) {
+        try {
+          const raw = await gh(["issue", "view", String(start.issue), "--json", "labels"]);
+          labels = labelNames(JSON.parse(raw) as GhIssue);
+        } catch {
+          labels = undefined;
+        }
+      }
+    }
+    const kind: StartKind =
+      labels === undefined ? "unknown" : labels.includes(productLabel) ? "product" : "non-product";
+    classified.push({ ...start, kind });
+  }
+  return classified;
+}
+
 export interface QueueResult {
   ok: boolean;
   exit?: ExitCode;
@@ -967,7 +1136,24 @@ export async function runQueue(
   norms: Norms = loadNorms().norms,
 ): Promise<QueueResult> {
   const issues = await fetchIssues(deps.gh, options.bundle === true);
-  const sweep = sweepIssues(issues, config, norms);
+
+  // `--check` stays one roundtrip and `--health` judges labels, not order: only
+  // the full queue and `--bundle` read the quota's starts.
+  const withQuota = !options.check && options.health !== true;
+  const starts = withQuota
+    ? await classifyStarts(
+        quotaStarts(deps.ledger?.() ?? []),
+        issues,
+        deps.gh,
+        config.labels.product,
+      )
+    : [];
+  const sweep = sweepIssues(
+    issues,
+    config,
+    norms,
+    starts.map((start) => start.kind === "product"),
+  );
 
   if (options.check) {
     return {
@@ -990,11 +1176,12 @@ export async function runQueue(
       exit: healthy ? EXIT.OK : EXIT.FAILED,
       notes: [
         ...health.notes,
+        ...health.warnings.map((warning) => `warning: ${warning.detail}`),
         healthy
           ? `queue healthy: ${sweep.queue.length} swept ticket(s), no finding`
           : `${health.findings.length} health finding(s) — reported, nothing changed`,
       ],
-      data: { swept: sweep.queue.length, findings: health.findings },
+      data: { swept: sweep.queue.length, findings: health.findings, warnings: health.warnings },
     };
   }
 
@@ -1066,6 +1253,23 @@ export async function runQueue(
     );
   }
 
+  const nonProduct = starts.filter((start) => start.kind !== "product").length;
+  const quota = {
+    starts: starts.map(({ issue, kind, source, at }) => ({ issue, kind, source, at })),
+    nonProduct,
+    forced: nonProduct >= QUOTA_NON_PRODUCT_MAX,
+    head: sweep.queue[0]?.slot ?? null,
+  };
+  notes.push(
+    `quota: last ${starts.length} start(s) ` +
+      (starts.length === 0
+        ? "none recorded"
+        : starts
+            .map((start) => `${start.issue === null ? "?" : `#${start.issue}`} ${start.kind}`)
+            .join(", ")) +
+      ` — head from the ${quota.head ?? "empty"} slot`,
+  );
+
   if (sweep.queue.length > 0) {
     const count = (cls: PriorityClass) => sweep.queue.filter((entry) => entry.class === cls).length;
     notes.push(
@@ -1079,6 +1283,7 @@ export async function runQueue(
     notes,
     data: {
       queue: sweep.queue,
+      quota,
       needsPin: sweep.needsPin,
       held: sweep.held,
       deferred: sweep.deferred,
@@ -1134,6 +1339,7 @@ export function lastMainCommitReader(repoRoot: string): () => Promise<string | u
 export function queueDeps(ctx: CommandContext): QueueDeps {
   return {
     gh: ghRunner(ctx.repoRoot),
+    ledger: () => readLedger(ctx.repoRoot).events,
     lastMainCommit: lastMainCommitReader(ctx.repoRoot),
     now: () => new Date(),
   };

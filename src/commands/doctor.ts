@@ -293,8 +293,16 @@ function checkLabels(ctx: CommandContext, tools: Tools, add: Add, notes: string[
   // The priority class labels (`labels.priority`, SST-DESIGN-017 rev 6) are
   // optional by design — a repo without them sorts exactly as before — so their
   // absence is not a doctor finding; only the flat label fields are checked.
-  // The forced-lane labels `sweep` and `pipeline` (rev 10) are optional the same way.
-  const { priority: _priority, sweep: _sweep, pipeline: _pipeline, ...flat } = config.labels;
+  // The quota labels (rev 11) are optional the same way.
+  const {
+    priority: _priority,
+    product: _product,
+    mergeBlocker: _mergeBlocker,
+    sweep: _sweep,
+    pipeline: _pipeline,
+    nonProduct: _nonProduct,
+    ...flat
+  } = config.labels;
   const missing = Object.entries(flat).filter(([, label]) => !known.has(label));
   for (const [key, label] of missing) add("labels", `${key} label "${label}" does not exist here`);
   if (missing.length === 0) notes.push(`${Object.keys(flat).length} configured labels exist`);

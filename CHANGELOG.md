@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.48.0
+
+`queue` replaces the forced sweep lanes of 0.47.0 with the product quota (SST-DESIGN-017 rev 11,
+PROC-DEV-039 rev 5 level ¼, PROC-DEV-006 rev 7, PROC-DEV-007 rev 9).
+
+### Changed
+
+- Order: `bypass` (P1 audit, P1 security, `merge-blocker`) first, then `product` and `third`
+  interleaved — two of the last three starts not product and a product ticket buildable → the
+  product head; no buildable product → the third-slot head; otherwise the better head by the
+  levels. Inside the third slot: pipeline, escalated sweep, due sweep, the rest. The 0.47.0 rule
+  that put sweeps ahead of pipeline and product is gone.
+- Starts are read from the ledger: each `merge-started` event and the first `review` event of mode
+  `pr` per PR number. Closed tickets are classified with one `gh issue view` each (at most three).
+- Norm pin `PROC-DEV-039` rev 4 → rev 5.
+
+### Added
+
+- Every queue entry carries `slot`; the output carries `quota` (`starts` with `kind`,
+  `nonProduct`, `forced`, `head`) and a `quota:` note.
+- `queue --health` warning `quota-unclassified` (in `warnings`, never the exit) with threshold
+  `health.quotaUnclassifiedMax` (default 0).
+- Optional config `labels.product` (default `product`), `labels.mergeBlocker` (default
+  `merge-blocker`) and `labels.nonProduct` (default `[]`); `doctor` does not report them missing.
+
+### How to adopt (app repos)
+
+Pin bump (also clears the `PROC-DEV-039` doctor finding). Create the labels `product`,
+`merge-blocker` and `pipeline` if missing; label open product tickets `product` and pipeline or
+deployment tickets `pipeline`. Without any `product` label every ticket sorts in the third slot,
+exactly as before.
+
 ## 0.47.0
 
 `queue` forces the rank of collector sweep tickets (SST-DESIGN-017 rev 10, PROC-DEV-006 rev 4,

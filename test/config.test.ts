@@ -50,8 +50,11 @@ describe("loadConfig (spec §5)", () => {
       hold: "owner-hold",
       started: "status: in-progress",
       blocked: "blocked",
+      product: "product",
+      mergeBlocker: "merge-blocker",
       sweep: "sweep",
       pipeline: "pipeline",
+      nonProduct: [],
       priority: { must: "P1 must", important: "P2 important", polish: "P3 polish" },
     });
     expect(config.lenses).toEqual({});
@@ -62,11 +65,13 @@ describe("loadConfig (spec §5)", () => {
       p1MaxShare: 0.25,
       p1MinQueue: 8,
       staleBlockDays: 7,
+      quotaUnclassifiedMax: 0,
     });
     expect(loadConfig(repoWith({ ...valid, health: { p1MinQueue: 12 } })).health).toEqual({
       p1MaxShare: 0.25,
       p1MinQueue: 12,
       staleBlockDays: 7,
+      quotaUnclassifiedMax: 0,
     });
   });
 

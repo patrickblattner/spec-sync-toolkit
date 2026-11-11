@@ -208,6 +208,7 @@ describe("the Zielabgleich content (§7.6)", () => {
         issue: 8,
         title: "next",
         class: "unclassified" as const,
+        slot: "third" as const,
         rank: 2,
         started: false,
         phase: 3,
