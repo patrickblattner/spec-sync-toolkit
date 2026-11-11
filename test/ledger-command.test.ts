@@ -194,3 +194,75 @@ describe("ledger start (0.49.0, register #2030)", () => {
     expect(readLedger(root).events).toEqual([]);
   });
 });
+
+describe("ledger build (train 2026-11-15, Fable C2)", () => {
+  const build = (root: string, args: string[], dryRun = false) =>
+    runLedger(ctx(root, ["build", ...args], dryRun), { tools: fakeTools("OPEN") });
+
+  it("records build agents 1 to 3 of an increment and names the third as the last", () => {
+    const root = repo([{ type: "work-started", issue: 40 }]);
+    expect(build(root, ["40", "--agent", "impl"]).data).toMatchObject({ count: 1, max: 3 });
+    expect(build(root, ["40"]).data).toMatchObject({ count: 2 });
+    const third = build(root, ["40", "--agent", "impl-deep"]);
+    expect(third.data).toMatchObject({ count: 3 });
+    expect(third.notes?.[0]).toMatch(/the last one for this increment.*re-cut/);
+    const agents = readLedger(root).events.filter((event) => event.type === "build-agent");
+    expect(agents.map((event) => [event.issue, event.n, event.agent])).toEqual([
+      [40, 1, "impl"],
+      [40, 2, undefined],
+      [40, 3, "impl-deep"],
+    ]);
+  });
+
+  it("refuses the fourth with exit 4 naming the re-cut, and writes nothing", () => {
+    const root = repo([{ type: "work-started", issue: 40 }]);
+    for (let i = 0; i < 3; i += 1) build(root, ["40"]);
+    const before = readLedger(root).events.length;
+    const error = thrown(() => build(root, ["40"]));
+    expect(error.exit).toBe(EXIT.PRECONDITION);
+    expect(error.message).toMatch(/3 build agents already spent on this increment/);
+    expect(error.message).toMatch(/re-cut the ticket into smaller slices/);
+    expect(readLedger(root).events).toHaveLength(before);
+  });
+
+  it("counts per increment: a new work-started of the same ticket starts at zero", () => {
+    const root = repo([{ type: "work-started", issue: 40 }]);
+    for (let i = 0; i < 3; i += 1) build(root, ["40"]);
+    runLedger(ctx(root, ["start", "40"]), { tools: fakeTools("OPEN") });
+    expect(build(root, ["40"]).data).toMatchObject({ count: 1 });
+  });
+
+  it("counts per ticket number: agents of another ticket do not count", () => {
+    const root = repo([
+      { type: "work-started", issue: 40 },
+      { type: "work-started", issue: 41 },
+    ]);
+    for (let i = 0; i < 3; i += 1) build(root, ["41"]);
+    expect(build(root, ["40"]).data).toMatchObject({ count: 1 });
+  });
+
+  it("without any work-started counts every build agent of the ticket", () => {
+    const root = repo([
+      { type: "build-agent", issue: 40 },
+      { type: "build-agent", issue: 40 },
+      { type: "build-agent", issue: 40 },
+    ]);
+    expect(thrown(() => build(root, ["40"])).message).toMatch(/since its first event/);
+  });
+
+  it("--dry-run writes nothing and reports the event it would append", () => {
+    const root = repo([{ type: "work-started", issue: 40 }]);
+    const result = build(root, ["40"], true);
+    expect(result.data).toMatchObject({ dryRun: true, count: 1, event: { type: "build-agent" } });
+    expect(readLedger(root).events).toHaveLength(1);
+  });
+
+  it("refuses a bad issue number, an unknown agent type and unknown options", () => {
+    const root = repo();
+    expect(thrown(() => build(root, [])).field).toBe("issue");
+    expect(thrown(() => build(root, ["0"])).field).toBe("issue");
+    expect(thrown(() => build(root, ["7", "--agent", "investigate"])).field).toBe("--agent");
+    expect(thrown(() => build(root, ["7", "--reason", "r"])).field).toBe("--reason");
+    expect(readLedger(root).events).toEqual([]);
+  });
+});

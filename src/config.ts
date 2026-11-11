@@ -196,6 +196,59 @@ const reviewSchema = z.object({
   maxDiffBytes: z.number().int().positive().default(400000),
 });
 
+/**
+ * The `fastLane` block (train 2026-11-15, Fable B4): a diff below `maxLines`
+ * changed lines that touches no product path gets no review lens and no Codex
+ * pass — never a skipped gate. A file is a product path unless it matches
+ * `toolingGlobs` (tests, CI config, scripts and tooling); a file matching
+ * `productGlobs` or any `review.riskGlobs` area is a product path whatever the
+ * tooling globs say. Every key defaults on its own.
+ */
+const fastLaneSchema = z.object({
+  /** The lane takes diffs of FEWER changed lines than this; 0 turns it off. */
+  maxLines: z.number().int().min(0).default(30),
+  toolingGlobs: z
+    .array(z.string().min(1))
+    .default([
+      "**/*.test.*",
+      "**/*.spec.*",
+      "**/__tests__/**",
+      "**/__mocks__/**",
+      "**/test/**",
+      "**/tests/**",
+      "**/e2e/**",
+      ".github/**",
+      ".husky/**",
+      "scripts/**",
+      "tools/**",
+      "*.config.{js,cjs,mjs,ts}",
+      "spec-sync.config.json",
+      "spec-pins.json",
+      ".spec-sync/drift-coverage.jsonl",
+    ]),
+  /** Always a product path: dependency manifests and lockfiles. */
+  productGlobs: z
+    .array(z.string().min(1))
+    .default(["**/package.json", "**/package-lock.json", "**/pnpm-lock.yaml", "**/yarn.lock"]),
+});
+
+/**
+ * The `cadence` block (train 2026-11-15, Fable C4): release and Codex review
+ * cadence for repos that opt in (suite-ui). Without the block nothing changes:
+ * no tag limit, no review limit, the clean tag review keeps its record issue.
+ * Days are local calendar days of the machine.
+ */
+const cadenceSchema = z.object({
+  /** Release tags per day; `cadence tag` refuses past it. Unset = no limit. */
+  tagsPerDay: z.number().int().positive().optional(),
+  /** The tags `cadence tag` counts (git for-each-ref pattern under refs/tags/). */
+  tagPattern: z.string().min(1).default("v*"),
+  /** Codex runs of `review tag` and `review batch` per day; later ones defer. Unset = no limit. */
+  reviewsPerDay: z.number().int().positive().optional(),
+  /** False: a `review tag` run without any finding opens no issue (the ledger records it). */
+  cleanReviewIssue: z.boolean().default(true),
+});
+
 /** The `e2eSelect` block (`PROC-REL-071`): what `e2e-select` reads from a diff. */
 const e2eSelectSchema = z.object({
   /** E2E spec files a PR may touch (picomatch, repo-relative). */
@@ -253,6 +306,8 @@ const configSchema = z
     overlap: overlapSchema.prefault({}),
     bundle: bundleSchema.prefault({}),
     e2eSelect: e2eSelectSchema.prefault({}),
+    fastLane: fastLaneSchema.prefault({}),
+    cadence: cadenceSchema.prefault({}),
   })
   .superRefine((config, ctx) => {
     // A profile may only name phases that exist — otherwise `gate --profile x`
@@ -277,6 +332,8 @@ export type ReviewConfig = z.infer<typeof reviewSchema>;
 export type OverlapConfig = z.infer<typeof overlapSchema>;
 export type BundleConfig = z.infer<typeof bundleSchema>;
 export type E2eSelectConfig = z.infer<typeof e2eSelectSchema>;
+export type FastLaneConfig = z.infer<typeof fastLaneSchema>;
+export type CadenceConfig = z.infer<typeof cadenceSchema>;
 
 /**
  * Loads and validates the config. Every failure path — missing file, broken

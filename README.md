@@ -36,6 +36,7 @@ spec-sync repin [--ids <a,b>] [--server <url>]
 spec-sync repin --check [--server <url>]
 spec-sync pr overlap <open-pr> --merged <merged-pr>
 spec-sync ledger start <issue> [--dry-run]
+spec-sync ledger build <issue> [--agent impl|impl-fast|impl-deep] [--dry-run]
 spec-sync ledger close <issue> --reason "<text>" [--dry-run]
 spec-sync slot run --step <name> --cap <minutes> [--run <id>] -- <cmd> [args…]
 spec-sync slot status [--last <n>]
@@ -51,6 +52,7 @@ spec-sync review verdict <pr|issue> <n> <id> (accepted (fixed|ticket <t>|collect
 spec-sync review growth --metrics <file.json> [--since <date>] [--out <file>] [--dry-run]
 spec-sync licence-inventory [--allowlist <file>]
 spec-sync e2e-select [--format json|lines]
+spec-sync cadence tag
 ```
 
 `licence-inventory` (SST-FEATURE-001) replaces `license-checker`: it inventories the production
@@ -219,6 +221,32 @@ ready; the pr-gate overrun is simply not measured while no check has run.
 begins building a ticket or a further increment of one, before the build agent starts. It is the
 start the product quota of `queue` counts. It reads nothing and calls no `gh`; `--dry-run` writes
 nothing and returns the event it would append.
+
+`ledger build <issue>` (train 2026-11-15) runs right before the worker spawns a build agent
+(`impl`, `impl-fast`, `impl-deep`). It counts the `build-agent` events of the current increment
+— after the newest `work-started` of the ticket — and appends one more. The third agent is the last:
+a fourth is refused with exit 4 and nothing is written; the worker re-cuts the ticket into smaller
+slices with their own acceptance criteria. A new `ledger start` for a further increment or slice
+starts the count again.
+
+**Fast lane** (train 2026-11-15): `lenses` selects no lens and `review pr` makes no Codex call
+(trigger `fast-lane`) for a diff of fewer than `fastLane.maxLines` changed lines (default 30) that
+touches no product path. A file is a product path unless it matches `fastLane.toolingGlobs`
+(tests, CI config, scripts, root tooling config); `fastLane.productGlobs` (manifests and
+lockfiles) and every `review.riskGlobs` area always are, and a binary file keeps a diff out of the
+lane. The gate always runs. `fastLane.maxLines: 0` turns the lane off.
+
+**Cadence** (train 2026-11-15, opt-in, e.g. suite-ui): the optional `cadence` block limits the
+releases and Codex reviews of a repo per local day. `cadence tag` exits 4 once `tagsPerDay` tags
+matching `tagPattern` (default `v*`) were made today. With `reviewsPerDay`, a `review tag` or
+`review batch` run past the day's Codex reviews is `deferred` (exit 0, no call, no issue; the batch
+marker stays, and the next `review tag` widens its range back to the end of the last reviewed one).
+`cleanReviewIssue: false` opens no issue for a `review tag` run without any finding; the ledger
+event (`tag`, `toSha`) stops a rerun. Without the block nothing changes.
+
+```json
+"cadence": { "tagsPerDay": 1, "reviewsPerDay": 1, "cleanReviewIssue": false }
+```
 
 `ledger close <issue> --reason "<text>"` ends an orphaned `merge-started` by hand — one that
 `merge` cannot resume because its squash commit predates the current commit subject format. It

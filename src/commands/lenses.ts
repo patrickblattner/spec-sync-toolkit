@@ -10,6 +10,10 @@
  * Files matching `review.textGlobs` select no lens (PROC-DEV-002: a diff of only
  * texts or translation files gets none), whatever the lens globs say.
  *
+ * Fast lane (train 2026-11-15, Fable B4): a diff under `fastLane.maxLines`
+ * changed lines that touches no product path selects no lens at all, and says
+ * so in `fastLane`. The gate is never part of that decision.
+ *
  * The command reports applicability, never a verdict (spec §2) — an applicable
  * lens still says nothing about what the review will find.
  */
@@ -20,6 +24,8 @@ import type { Config } from "../config.js";
 import { EXIT, ToolkitError } from "../output.js";
 import { checkFlags, valueFlag } from "../pack/args.js";
 import { defaultTools, failureLine, type Tools } from "../pack/exec.js";
+import { decideFastLane } from "../review/fastlane.js";
+import { parseNumstat } from "../review/triage.js";
 
 /** Branch a ticket is reviewed against unless the caller names another. */
 const DEFAULT_BASE = "main";
@@ -49,11 +55,19 @@ export function runLenses(ctx: CommandContext, tools: Tools): CommandResult {
   const textGlobs = config.review.textGlobs;
   const lensFiles = files.filter((file) => !picomatch.isMatch(file, textGlobs));
 
+  const lane = decideFastLane(
+    parseNumstat(diffOrThrow(tools, ["--numstat", "--no-renames"], base)),
+    config.fastLane,
+    config.review.riskGlobs,
+  );
+  if (lane.fast) notes.push(`fast lane: ${lane.reason}`);
+
   const applicable: string[] = [];
   const skipped: string[] = [];
   for (const [lens, globs] of configured) {
-    if (lensFiles.some((file) => picomatch.isMatch(file, globs))) applicable.push(lens);
-    else skipped.push(lens);
+    if (!lane.fast && lensFiles.some((file) => picomatch.isMatch(file, globs))) {
+      applicable.push(lens);
+    } else skipped.push(lens);
   }
 
   return {
@@ -64,6 +78,7 @@ export function runLenses(ctx: CommandContext, tools: Tools): CommandResult {
       changedFiles: files.length,
       lenses: applicable,
       skipped,
+      fastLane: lane,
     },
   };
 }
@@ -73,7 +88,14 @@ export function runLenses(ctx: CommandContext, tools: Tools): CommandResult {
  * commits that only landed on the base afterwards do not pull a lens in.
  */
 function changedFiles(tools: Tools, base: string): string[] {
-  const diff = tools.run("git", ["diff", "--name-only", `${base}...HEAD`]);
+  return diffOrThrow(tools, ["--name-only"], base)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+}
+
+function diffOrThrow(tools: Tools, format: string[], base: string): string {
+  const diff = tools.run("git", ["diff", ...format, `${base}...HEAD`]);
   if (!diff.ok) {
     throw new ToolkitError(
       `git diff against ${base} failed: ${failureLine(diff)}`,
@@ -83,10 +105,7 @@ function changedFiles(tools: Tools, base: string): string[] {
       },
     );
   }
-  return diff.stdout
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line !== "");
+  return diff.stdout;
 }
 
 function dirtyWorkingTree(tools: Tools): boolean {

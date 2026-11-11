@@ -44,6 +44,11 @@ import { STATE_DIR } from "./logs.js";
  * `work-started` (0.49.0, register #2030) is written by `spec-sync ledger start`
  * when the worker begins building a ticket or a further increment of it — the
  * start the product quota of `queue` counts.
+ *
+ * `build-agent` (train 2026-11-15) is written by `spec-sync ledger build` right
+ * before the worker spawns a build agent (`impl`, `impl-fast`, `impl-deep`). The
+ * agents of one increment — everything after its `work-started` — are capped
+ * (`MAX_BUILD_AGENTS`); past the cap the increment is re-cut, not built again.
  */
 export const LEDGER_EVENT_TYPES = [
   "drift",
@@ -56,6 +61,7 @@ export const LEDGER_EVENT_TYPES = [
   "context",
   "review",
   "work-started",
+  "build-agent",
 ] as const;
 
 export type LedgerEventType = (typeof LEDGER_EVENT_TYPES)[number];
@@ -341,4 +347,30 @@ export function latestGate(
   return candidates.reduce((newest, event) =>
     Date.parse(event.at) >= Date.parse(newest.at) ? event : newest,
   );
+}
+
+/** Build agents one increment may spend before it is re-cut (train 2026-11-15, Fable C2). */
+export const MAX_BUILD_AGENTS = 3;
+
+/**
+ * The build agents spent on the CURRENT increment of a ticket: the `build-agent`
+ * events after its newest `work-started`, or after none when the ticket has no
+ * start yet. Counting per increment, not per ticket, keeps a sweep ticket or a
+ * feature cut into slices from tripping the cap by design — every slice starts
+ * with its own `work-started`. File order is event order (append-only).
+ */
+export function buildAgentsOfIncrement(
+  events: LedgerEvent[],
+  issue: number,
+): { count: number; since?: string } {
+  let count = 0;
+  let since: string | undefined;
+  for (const event of events) {
+    if (event.issue !== issue) continue;
+    if (event.type === "work-started") {
+      count = 0;
+      since = event.at;
+    } else if (event.type === "build-agent") count += 1;
+  }
+  return since === undefined ? { count } : { count, since };
 }

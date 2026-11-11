@@ -1,5 +1,50 @@
 # Changelog
 
+## Unreleased (train 2026-11-15)
+
+Three cost items of the Fable analysis (register #2028/#2032, plan step 3): a cap on build agents
+per increment (C2), a fast lane for small test and tooling diffs (B4), and a release and review
+cadence for repos that opt in (C4). No version bump yet — released with the train on 15.11.
+
+### Added
+
+- `spec-sync ledger build <issue> [--agent impl|impl-fast|impl-deep] [--dry-run]` (C2): run right
+  before a build agent is spawned. Appends one `build-agent` event and counts the agents of the
+  current increment — after the newest `work-started` of the ticket, so sweep tickets and sliced
+  features are counted per slice. The third agent is the last (the note says so); a fourth is
+  refused with exit 4 and nothing written, naming the re-cut into smaller slices with their own
+  acceptance criteria.
+- Config block `fastLane` (B4): `maxLines` (default 30; the lane takes fewer, `0` = off),
+  `toolingGlobs` (tests, CI config, scripts, root tooling config, pins), `productGlobs`
+  (manifests and lockfiles). `lenses` selects no lens and `review pr` makes no Codex call
+  (trigger `fast-lane`, outcome `not-triaged`) for a diff under the limit that touches no product
+  path; every `review.riskGlobs` area is a product path, a binary file keeps a diff out of the
+  lane. `lenses` reports the decision as `fastLane`. The gate is never skipped.
+- `spec-sync cadence tag` and the optional config block `cadence` (C4): `tagsPerDay`,
+  `tagPattern` (default `v*`), `reviewsPerDay`, `cleanReviewIssue` (default `true`). `cadence tag`
+  exits 4 once `tagsPerDay` matching tags were made on the current local day. With
+  `reviewsPerDay`, `review tag` and `review batch` defer (outcome `deferred`, exit 0, no Codex call,
+  no issue, batch marker stays) once that many `tag`/`batch` reviews reached Codex today, and the
+  next `review tag` widens its range back to the end of the last reviewed tag range.
+  `cleanReviewIssue: false` opens no issue for a `review tag` run without any finding.
+
+### Changed
+
+- `review tag` writes `tag` and `toSha` into its ledger event and stops a rerun of a tag the
+  ledger already shows as reviewed when GitHub has no issue for it. Without a `cadence` block its behaviour
+  is otherwise unchanged (the clean record issue stays).
+
+### How to adopt
+
+- App repos: pin bump only. The fast lane applies with the defaults; a repo whose tests or
+  tooling live elsewhere adds `fastLane.toolingGlobs`, one that wants the lane off sets
+  `fastLane.maxLines: 0`. No `cadence` block — releases and reviews unchanged.
+- suite-ui: add `"cadence": { "tagsPerDay": 1, "reviewsPerDay": 1, "cleanReviewIssue": false }`;
+  `scripts/release.ts tag` calls `npx spec-sync cadence tag` before tagging and stops on a non-zero
+  exit, and treats the new `review tag` outcome `deferred` like `already reviewed` in its log line.
+- Worker skill: `npx spec-sync ledger build <nr> --agent <type>` before every build-agent spawn;
+  exit 4 = stop and re-cut.
+
 ## 0.49.1
 
 Pins `PROC-DEV-039` rev 6, the norm text matching 0.49.0 (quota window 2 / max 1, `work-started` as the

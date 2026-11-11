@@ -14,7 +14,7 @@ import { describe, expect, it } from "vitest";
 import type { CommandContext, CommandResult } from "../src/cli.js";
 import { loadConfig } from "../src/config.js";
 import { runReview } from "../src/commands/review.js";
-import { readLedger } from "../src/ledger.js";
+import { appendEvent, readLedger } from "../src/ledger.js";
 import { EXIT, ToolkitError } from "../src/output.js";
 import { runProcess, type RunResult, type Tools } from "../src/pack/exec.js";
 import { assignFindings, dedupeKey, type RawFinding } from "../src/review/findings.js";
@@ -467,6 +467,40 @@ describe("review pr (acceptance 3, 4)", () => {
     ).toMatchObject({
       outcome: "not-triaged",
     });
+  });
+
+  it("fast lane: a small tests-only diff gets no codex call even where triage would call (Fable B4)", async () => {
+    const r = repo({ modulesRoot: "server" });
+    sh(r.root, ["checkout", "-q", "-b", "feat"]);
+    const head = commit(r.root, { "server/billing/a.test.ts": "x\n" }, "test in a new dir");
+    const codex = fakeCodex({});
+    const { tools: t, gh } = tools(r.root, { prHead: head });
+    const result = await runReview(context(r.root, ["pr", "12", "--issue", "7"]), {
+      tools: t,
+      codexEnv: codex.env,
+    });
+    expect(result.exit).toBe(EXIT.OK);
+    expect(result.data).toMatchObject({ outcome: "not-triaged", trigger: "fast-lane" });
+    expect(result.notes?.join(" ")).toMatch(/the gate still runs/);
+    expect(codex.calls()).toHaveLength(0);
+    expect(gh.bodies).toEqual([]);
+    expect(reviewEvents(r.root)).toEqual([
+      expect.objectContaining({ issue: 7, trigger: "fast-lane", outcome: "not-triaged" }),
+    ]);
+  });
+
+  it("fast lane never covers a risk path, even for a test file", async () => {
+    const r = repo({ riskGlobs: { auth: ["server/auth/**"] } });
+    sh(r.root, ["checkout", "-q", "-b", "feat"]);
+    const head = commit(r.root, { "server/auth/x.test.ts": "x\n" }, "auth test");
+    const codex = fakeCodex({});
+    const { tools: t } = tools(r.root, { prHead: head });
+    const result = await runReview(context(r.root, ["pr", "12"]), {
+      tools: t,
+      codexEnv: codex.env,
+    });
+    expect(result.data).toMatchObject({ trigger: "risk:auth" });
+    expect(codex.calls()).toHaveLength(1);
   });
 
   it("--recheck re-asks the marker's model about its findings only", async () => {
@@ -922,6 +956,182 @@ describe("review tag (acceptance 6)", () => {
 });
 
 // ----------------------------------------------------------------- verdict
+
+// ----------------------------------------------------------------- cadence (Fable C4)
+
+/** Adds a top-level `cadence` block to the repo's config (read fresh by `context`). */
+function withCadence(root: string, cadence: Record<string, unknown>): void {
+  const file = join(root, "spec-sync.config.json");
+  const config = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+  writeFileSync(file, JSON.stringify({ ...config, cadence }));
+}
+
+const daysAgo = (days: number): string => new Date(Date.now() - days * 86_400_000).toISOString();
+
+describe("review cadence (train 2026-11-15, Fable C4)", () => {
+  it("cleanReviewIssue false: a clean tag review opens no issue, the ledger stops the rerun", async () => {
+    const r = repo();
+    withCadence(r.root, { cleanReviewIssue: false });
+    sh(r.root, ["tag", "v1.0.0"]);
+    commit(r.root, { "src/b.ts": "b\n" }, "b");
+    sh(r.root, ["tag", "v1.1.0"]);
+    const codex = fakeCodex({});
+    const first = tools(r.root, {});
+    const result = await runReview(context(r.root, ["tag", "v1.0.0..v1.1.0"]), {
+      tools: first.tools,
+      codexEnv: codex.env,
+    });
+    expect(result.exit).toBe(EXIT.OK);
+    expect(result.data).toMatchObject({ outcome: "clean", issue: null });
+    expect(first.gh.calls.filter((c) => c[1] === "create" || c[1] === "close")).toEqual([]);
+    expect(reviewEvents(r.root)).toEqual([
+      expect.objectContaining({
+        mode: "tag",
+        tag: "v1.1.0",
+        toSha: sh(r.root, ["rev-parse", "v1.1.0"]),
+        outcome: "clean",
+      }),
+    ]);
+
+    const again = tools(r.root, {});
+    const second = await runReview(context(r.root, ["tag", "v1.0.0..v1.1.0"]), {
+      tools: again.tools,
+      codexEnv: codex.env,
+    });
+    expect(second.data).toMatchObject({ outcome: "already-reviewed" });
+    expect(again.gh.calls.filter((c) => c[1] !== "list")).toEqual([]);
+    expect(codex.calls()).toHaveLength(1);
+  });
+
+  it("cleanReviewIssue false still opens the issue of a review with findings", async () => {
+    const r = repo();
+    withCadence(r.root, { cleanReviewIssue: false });
+    sh(r.root, ["tag", "v1.0.0"]);
+    commit(r.root, { "src/b.ts": "b\n" }, "b");
+    sh(r.root, ["tag", "v1.1.0"]);
+    const codex = fakeCodex({
+      answers: [JSON.stringify({ findings: [highFinding], recheck: [] })],
+    });
+    const t = tools(r.root, {});
+    const result = await runReview(context(r.root, ["tag", "v1.0.0..v1.1.0"]), {
+      tools: t.tools,
+      codexEnv: codex.env,
+    });
+    expect(result.data).toMatchObject({ outcome: "findings" });
+    expect(t.gh.calls.filter((c) => c[1] === "create")).toHaveLength(1);
+  });
+
+  it("reviewsPerDay 1: a second tag review on the same day defers — no codex, no issue", async () => {
+    const r = repo();
+    withCadence(r.root, { reviewsPerDay: 1 });
+    sh(r.root, ["tag", "v1.0.0"]);
+    commit(r.root, { "src/b.ts": "b\n" }, "b");
+    sh(r.root, ["tag", "v1.1.0"]);
+    commit(r.root, { "src/c.ts": "c\n" }, "c");
+    sh(r.root, ["tag", "v1.2.0"]);
+    const codex = fakeCodex({});
+    await runReview(context(r.root, ["tag", "v1.0.0..v1.1.0"]), {
+      tools: tools(r.root, {}).tools,
+      codexEnv: codex.env,
+    });
+    const t = tools(r.root, {});
+    const second = await runReview(context(r.root, ["tag", "v1.1.0..v1.2.0"]), {
+      tools: t.tools,
+      codexEnv: codex.env,
+    });
+    expect(second.exit).toBe(EXIT.OK);
+    expect(second.data).toMatchObject({ outcome: "deferred" });
+    expect(t.gh.calls.filter((c) => c[1] === "create")).toEqual([]);
+    expect(codex.calls()).toHaveLength(1);
+    expect(reviewEvents(r.root).at(-1)).toMatchObject({
+      mode: "tag",
+      tag: "v1.2.0",
+      outcome: "deferred",
+    });
+  });
+
+  it("the next day's tag review widens its range back to the end of the last reviewed one", async () => {
+    const r = repo();
+    withCadence(r.root, { reviewsPerDay: 1, cleanReviewIssue: false });
+    sh(r.root, ["tag", "v1.0.0"]);
+    commit(r.root, { "src/b.ts": "deferred-change\n" }, "b");
+    sh(r.root, ["tag", "v1.1.0"]);
+    commit(r.root, { "src/c.ts": "c\n" }, "c");
+    sh(r.root, ["tag", "v1.2.0"]);
+    const reviewed = sh(r.root, ["rev-parse", "v1.0.0"]);
+    appendEvent(r.root, {
+      at: daysAgo(2),
+      type: "review",
+      mode: "tag",
+      tag: "v1.0.0",
+      toSha: reviewed,
+      trigger: "size",
+      outcome: "clean",
+    });
+    appendEvent(r.root, {
+      at: daysAgo(2),
+      type: "review",
+      mode: "tag",
+      tag: "v1.1.0",
+      trigger: "cadence",
+      outcome: "deferred",
+    });
+    const codex = fakeCodex({});
+    const result = await runReview(context(r.root, ["tag", "v1.1.0..v1.2.0"]), {
+      tools: tools(r.root, {}).tools,
+      codexEnv: codex.env,
+    });
+    expect(result.data).toMatchObject({
+      outcome: "clean",
+      range: `${reviewed.slice(0, 12)}..v1.2.0`,
+    });
+    expect(result.notes?.join(" ")).toMatch(/range widened/);
+    expect(codex.calls()[0]?.input).toContain("deferred-change");
+  });
+
+  it("reviewsPerDay 1: the batch defers after a tag review today and keeps its marker", async () => {
+    const r = batchRepo();
+    withCadence(r.root, { reviewsPerDay: 1 });
+    appendEvent(r.root, { type: "review", mode: "tag", trigger: "size", outcome: "findings" });
+    const codex = fakeCodex({});
+    const { tools: t } = tools(r.root, {});
+    const result = await runReview(context(r.root, ["batch"]), { tools: t, codexEnv: codex.env });
+    expect(result.exit).toBe(EXIT.OK);
+    expect(result.data).toMatchObject({ outcome: "deferred" });
+    expect(codex.calls()).toHaveLength(0);
+    expect(remoteTag(r)).toBe(r.marker);
+    expect(reviewEvents(r.root).at(-1)).toMatchObject({ mode: "batch", outcome: "deferred" });
+  });
+
+  it("without a cadence block nothing defers and a clean tag review keeps its record issue", async () => {
+    const r = batchRepo();
+    appendEvent(r.root, { type: "review", mode: "tag", trigger: "size", outcome: "clean" });
+    appendEvent(r.root, { type: "review", mode: "batch", trigger: "size", outcome: "clean" });
+    const codex = fakeCodex({});
+    const { tools: t } = tools(r.root, {});
+    const result = await runReview(context(r.root, ["batch"]), { tools: t, codexEnv: codex.env });
+    expect(result.data).toMatchObject({ outcome: "clean", markerMoved: true });
+    expect(codex.calls()).toHaveLength(1);
+  });
+
+  it("a skipped or deferred run does not use up the day", async () => {
+    const r = batchRepo();
+    withCadence(r.root, { reviewsPerDay: 1 });
+    appendEvent(r.root, { type: "review", mode: "tag", trigger: "size", outcome: "skipped" });
+    appendEvent(r.root, { type: "review", mode: "tag", trigger: "cadence", outcome: "deferred" });
+    appendEvent(r.root, {
+      at: daysAgo(1),
+      type: "review",
+      mode: "batch",
+      trigger: "size",
+      outcome: "clean",
+    });
+    const codex = fakeCodex({});
+    const { tools: t } = tools(r.root, {});
+    const result = await runReview(context(r.root, ["batch"]), { tools: t, codexEnv: codex.env });
+    expect(result.data).toMatchObject({ outcome: "clean" });
+  });
+});
 
 describe("review verdict", () => {
   async function verdict(args: string[]): Promise<{ result: CommandResult; gh: GhLog }> {

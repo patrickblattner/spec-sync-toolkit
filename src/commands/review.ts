@@ -16,6 +16,13 @@
  * code, never merges, never calls the spec server, and never falls back to
  * another model.
  *
+ * Cadence (train 2026-11-15, Fable C4), only with a `cadence` block in the
+ * config: `cadence.reviewsPerDay` defers a `tag` or `batch` run once that many
+ * Codex runs of the two modes reached Codex today (outcome `deferred`, exit 0,
+ * nothing lost: the batch marker stays, and the next `tag` run widens its range
+ * back to the end of the last reviewed one); `cadence.cleanReviewIssue: false`
+ * opens no issue for a `tag` run without any finding — the ledger records it.
+ *
  * Exit: 0 ran (clean, non-blocking findings, skipped, not triaged) · 1 a
  * critical or high finding is open · 4 precondition failed. A skip is never 2.
  */
@@ -24,7 +31,8 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { Command, CommandContext, CommandResult } from "../cli.js";
 import type { Config, ReviewConfig } from "../config.js";
-import { appendEvent, readLedger } from "../ledger.js";
+import { codexReviewsOfDay, lastTagReview, localDay, tagReviewed } from "../cadence.js";
+import { appendEvent, readLedger, type LedgerEvent } from "../ledger.js";
 import { createLogDir, protectedLogDirs } from "../logs.js";
 import { EXIT, ToolkitError } from "../output.js";
 import { checkFlags, positionals, valueFlag } from "../pack/args.js";
@@ -72,6 +80,7 @@ import {
   readMetrics,
   renderGrowthPrompt,
 } from "../review/growth.js";
+import { decideFastLane } from "../review/fastlane.js";
 import { renderPrompt } from "../review/prompt.js";
 import { decide, decideAlways, newModule, parseNumstat, sizeOf } from "../review/triage.js";
 
@@ -96,7 +105,7 @@ export const reviewCommand: Command = {
   run: (ctx) => runReview(ctx, { tools: defaultTools(ctx.repoRoot) }),
 };
 
-type Outcome = "findings" | "clean" | "skipped" | "not-triaged";
+type Outcome = "findings" | "clean" | "skipped" | "not-triaged" | "deferred";
 
 interface Run {
   ctx: CommandContext;
@@ -185,6 +194,20 @@ async function runPr(run: Run, pos: string[]): Promise<CommandResult> {
       prior.effort ?? (model === review.models.risk ? review.effort.risk : review.effort.size);
     areas = [];
   } else {
+    // Fast lane (train 2026-11-15, Fable B4): a small tests/CI/tooling diff gets
+    // no Codex pass; the nightly batch still covers it like any untriaged PR.
+    const lane = decideFastLane(entries, run.config.fastLane, review.riskGlobs);
+    if (lane.fast) {
+      if (!ctx.flags.dryRun) {
+        ledger(run, { issue, pr, mode, trigger: "fast-lane", outcome: "not-triaged" });
+      }
+      return {
+        ok: true,
+        exit: EXIT.OK,
+        notes: [`fast lane: ${lane.reason}`],
+        data: { ...base, outcome: "not-triaged", trigger: "fast-lane" },
+      };
+    }
     const decision = decide(entries, isNewModule(deps.tools, review, range), review);
     if (!decision.triaged) {
       if (!ctx.flags.dryRun) {
@@ -454,6 +477,17 @@ async function runBatch(run: Run, pos: string[]): Promise<CommandResult> {
     };
   }
 
+  const deferred = deferral(run, readLedger(ctx.repoRoot).events);
+  if (deferred !== undefined) {
+    if (!ctx.flags.dryRun) ledger(run, { mode: "batch", trigger: "cadence", outcome: "deferred" });
+    return {
+      ok: true,
+      exit: EXIT.OK,
+      notes: [`${deferred}; marker stays at ${from.slice(0, 12)}`],
+      data: { ...base, included: included.length, outcome: "deferred" },
+    };
+  }
+
   const chunks = buildChunks(tools, from, to, included, included.length === commits.length, review);
   const files = [...new Set(chunks.flatMap((chunk) => chunk.files))];
   const { model, effort, trigger, areas } = decideAlways(files, review);
@@ -715,10 +749,11 @@ async function runTag(run: Run, pos: string[]): Promise<CommandResult> {
   const fromRef = match?.[1] as string;
   const toRef = match?.[2] as string;
   const tools = deps.tools;
-  const from = git(tools, ["rev-parse", "--verify", `${fromRef}^{commit}`], "range").stdout.trim();
+  let from = git(tools, ["rev-parse", "--verify", `${fromRef}^{commit}`], "range").stdout.trim();
   const to = git(tools, ["rev-parse", "--verify", `${toRef}^{commit}`], "range").stdout.trim();
 
   const title = tagIssueTitle(toRef);
+  const events = readLedger(ctx.repoRoot).events;
   const existing = gh(
     tools,
     [
@@ -740,13 +775,32 @@ async function runTag(run: Run, pos: string[]): Promise<CommandResult> {
   const already = parseJson<{ number: number; title: string }[]>(existing.stdout, "gh").find(
     (issue) => issue.title === title,
   );
-  const base = { mode: "tag", range: spec, title };
+  let range = spec;
+  const notes: string[] = [];
+  const last = run.config.cadence.reviewsPerDay === undefined ? undefined : lastTagReview(events);
+  if (last?.toSha !== undefined && last.toSha !== from && isAncestor(tools, last.toSha, from)) {
+    from = last.toSha;
+    range = `${last.toSha.slice(0, 12)}..${toRef}`;
+    notes.push(
+      `range widened to ${range}: it also covers what a deferred review left since ${last.tag ?? "the last review"}`,
+    );
+  }
+  const base = { mode: "tag", range, title };
   if (already !== undefined) {
     return {
       ok: true,
       exit: EXIT.OK,
       notes: [`tag ${toRef} already reviewed in #${already.number} — one issue per tag`],
       data: { ...base, outcome: "already-reviewed", issue: already.number },
+    };
+  }
+  // A clean review without an issue (cadence.cleanReviewIssue false) leaves only its ledger event.
+  if (tagReviewed(events, toRef)) {
+    return {
+      ok: true,
+      exit: EXIT.OK,
+      notes: [`tag ${toRef} already reviewed (ledger) — one review per tag`],
+      data: { ...base, outcome: "already-reviewed" },
     };
   }
 
@@ -761,6 +815,18 @@ async function runTag(run: Run, pos: string[]): Promise<CommandResult> {
       data: { ...base, outcome: "not-triaged" },
     };
   }
+  const deferred = deferral(run, events);
+  if (deferred !== undefined) {
+    if (!ctx.flags.dryRun) {
+      ledger(run, { mode: "tag", trigger: "cadence", outcome: "deferred", tag: toRef, toSha: to });
+    }
+    return {
+      ok: true,
+      exit: EXIT.OK,
+      notes: [...notes, `${deferred}; no issue — the next tag review covers ${toRef}`],
+      data: { ...base, outcome: "deferred" },
+    };
+  }
   const chunks = buildChunks(tools, from, to, commits, true, review);
   const files = [...new Set(chunks.flatMap((chunk) => chunk.files))];
   const { model, effort, trigger, areas } = decideAlways(files, review);
@@ -769,7 +835,7 @@ async function runTag(run: Run, pos: string[]): Promise<CommandResult> {
   if (ctx.flags.dryRun) {
     return {
       ok: true,
-      notes: ["dry run — no Codex call, no issue"],
+      notes: [...notes, "dry run — no Codex call, no issue"],
       data: { ...plan, outcome: "dry-run" },
     };
   }
@@ -779,6 +845,8 @@ async function runTag(run: Run, pos: string[]): Promise<CommandResult> {
   if (result.skipped !== undefined) {
     ledger(run, {
       mode: "tag",
+      tag: toRef,
+      toSha: to,
       model,
       effort,
       trigger,
@@ -789,6 +857,7 @@ async function runTag(run: Run, pos: string[]): Promise<CommandResult> {
       ok: true,
       exit: EXIT.OK,
       notes: [
+        ...notes,
         `skipped — ${result.skipped.class}: ${result.skipped.detail}; no issue opened, rerun to review ${toRef}`,
       ],
       logDir,
@@ -800,7 +869,7 @@ async function runTag(run: Run, pos: string[]): Promise<CommandResult> {
   const body = renderTagIssue({
     model,
     trigger,
-    range: spec,
+    range,
     files: files.length,
     durationMs: Date.now() - run.startedAt,
     counts,
@@ -810,18 +879,25 @@ async function runTag(run: Run, pos: string[]): Promise<CommandResult> {
   // Without a critical, high or medium finding the issue is only a record: it is
   // opened and closed at once — the closed issue is what stops a rerun (the
   // existence check reads state all).
+  // With `cadence.cleanReviewIssue: false` a run without any finding opens no
+  // issue at all; the ledger event (tag and toSha) is what stops a rerun.
   const ticketed = result.findings.filter(isTicketed);
-  const labels = ticketed.length === 0 ? [review.label] : findingLabels(run, ticketed);
-  const issue = createIssue(tools, run, logDir, title, body, labels, "tag");
-  if (ticketed.length === 0) gh(tools, ["issue", "close", issue], "gh");
+  let issue: string | null = null;
+  if (result.findings.length > 0 || run.config.cadence.cleanReviewIssue) {
+    const labels = ticketed.length === 0 ? [review.label] : findingLabels(run, ticketed);
+    issue = createIssue(tools, run, logDir, title, body, labels, "tag");
+    if (ticketed.length === 0) gh(tools, ["issue", "close", issue], "gh");
+  } else {
+    notes.push("clean — no issue (cadence.cleanReviewIssue false); the ledger records the review");
+  }
 
   const outcome: Outcome = result.findings.length > 0 ? "findings" : "clean";
-  ledger(run, { mode: "tag", model, effort, trigger, outcome, counts });
+  ledger(run, { mode: "tag", tag: toRef, toSha: to, model, effort, trigger, outcome, counts });
   const blocking = result.findings.some(isBlocking);
   return {
     ok: !blocking,
     exit: blocking ? EXIT.FAILED : EXIT.OK,
-    notes: [],
+    notes,
     logDir,
     data: {
       ...plan,
@@ -1083,6 +1159,9 @@ interface ReviewEvent {
   issue?: number;
   pr?: number;
   mode: string;
+  /** tag mode: the tag reviewed and the commit its range ended at (cadence, Fable C4). */
+  tag?: string;
+  toSha?: string;
   model?: string;
   effort?: string;
   trigger: string;
@@ -1092,6 +1171,25 @@ interface ReviewEvent {
   /** growth mode: kept and dropped item counts. */
   items?: { growth: number; cleanness: number; dropped: number };
   overrunMs?: number;
+}
+
+/**
+ * The deferral line when `cadence.reviewsPerDay` Codex runs of `tag` and
+ * `batch` already reached Codex today, otherwise `undefined` (no limit set,
+ * or room left).
+ */
+function deferral(run: Run, events: readonly LedgerEvent[]): string | undefined {
+  const limit = run.config.cadence.reviewsPerDay;
+  if (limit === undefined) return undefined;
+  const day = localDay(new Date(run.startedAt));
+  const done = codexReviewsOfDay(events, day).length;
+  if (done < limit) return undefined;
+  return `deferred — ${done} Codex review(s) ran today (${day}), cadence.reviewsPerDay is ${limit}`;
+}
+
+/** Is `ancestor` a proper ancestor of `commit`? Unknown commits answer no. */
+function isAncestor(tools: Tools, ancestor: string, commit: string): boolean {
+  return tools.run("git", ["merge-base", "--is-ancestor", ancestor, commit]).ok;
 }
 
 /** One ledger event per run (SST-DESIGN-030 §Ledger). */
