@@ -347,7 +347,7 @@ interface LevelKeys {
 }
 
 /**
- * Places the three slots (`PROC-DEV-039` rev 5 level ¼). `bypass` goes first.
+ * Places the three slots (`PROC-DEV-039` rev 6 level ¼). `bypass` goes first.
  * Then, start by start: when one of the last two starts was not product and
  * a product ticket is buildable, the product head; with no buildable product
  * ticket, the third-slot head; else the better of the two heads by the levels.

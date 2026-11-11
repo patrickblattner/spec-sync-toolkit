@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.49.1
+
+Pins `PROC-DEV-039` rev 6, the norm text matching 0.49.0 (quota window 2 / max 1, `work-started` as the
+start event, bypass only `main-red` / security / `merge-blocker`; register #2030). No behaviour change.
+
 ## 0.49.0
 
 Corrects the product quota of 0.48.0 (register #2030, owner 11.11.; corrects how register #2028

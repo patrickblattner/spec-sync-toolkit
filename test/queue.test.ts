@@ -802,7 +802,7 @@ describe("priority class — sort level ½ (SST-DESIGN-017 rev 6, PROC-DEV-039 r
   });
 });
 
-describe("product quota (SST-DESIGN-017 rev 11, PROC-DEV-039 rev 5 level ¼)", () => {
+describe("product quota (SST-DESIGN-017 rev 11, PROC-DEV-039 rev 6 level ¼)", () => {
   const order = (issues: GhIssue[], recent: boolean[] = [], cfg: Config = config) =>
     sweepIssues(issues, cfg, norms, recent).queue.map((entry) => entry.issue);
   const reviewPr = (issueNo: number, pr: number, at: string, mode = "pr") => ({

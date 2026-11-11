@@ -57,7 +57,7 @@ const labelsSchema = z.object({
   // `NORM_DEFAULTS` would claim a pinned revision it was never transcribed from
   // (SST-DESIGN-015).
   blocked: z.string().min(1).default("blocked"),
-  // Product quota of `queue` (`SST-DESIGN-017` rev 11, `PROC-DEV-039` rev 5):
+  // Product quota of `queue` (`SST-DESIGN-017` rev 11, `PROC-DEV-039` rev 6):
   // `product` marks product work; `mergeBlocker` bypasses the quota; inside the
   // third slot `pipeline` sorts first, then `sweep`. `nonProduct` lists further
   // labels that mark a ticket as deliberately not product for `--health`.
