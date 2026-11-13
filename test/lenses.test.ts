@@ -39,13 +39,14 @@ function fakeTools(
         return { ok: false, code: 128, stdout: "", stderr: options.diffFails };
       }
       if (args.includes("--numstat")) {
+        expect(args).toContain("-z");
         return ok(
           files
             .map((file) => {
               const lines = options.lines?.[file] ?? 10;
-              return lines === "-" ? `-\t-\t${file}` : `${lines}\t0\t${file}`;
+              return lines === "-" ? `-\t-\t${file}\0` : `${lines}\t0\t${file}\0`;
             })
-            .join("\n"),
+            .join(""),
         );
       }
       return ok(files.join("\n"));
@@ -203,6 +204,27 @@ describe("lenses — fast lane (train 2026-11-15, Fable B4)", () => {
     );
     expect(binary.data?.fastLane).toMatchObject({ fast: false });
     expect(String((binary.data?.fastLane as { reason: string }).reason)).toMatch(/binary/);
+  });
+
+  it("a non-ASCII path under a risk glob keeps the diff out of the lane (numstat -z)", () => {
+    const root = mkdtempSync(join(tmpdir(), "spec-sync-lenses-"));
+    writeFileSync(
+      join(root, "spec-sync.config.json"),
+      JSON.stringify({
+        ...config,
+        review: { ...config.review, riskGlobs: { auth: ["server/auth/**"] } },
+      }),
+    );
+    const ctx: CommandContext = {
+      flags: { human: false, dryRun: false },
+      args: [],
+      repoRoot: root,
+      config: loadConfig(root),
+    };
+    const file = "server/auth/über.test.ts";
+    const result = runLenses(ctx, fakeTools([file], { lines: { [file]: 2 } }));
+    expect(result.data?.fastLane).toMatchObject({ fast: false, productFiles: [file] });
+    expect(result.data?.lenses).toContain("security");
   });
 
   it("is off with fastLane.maxLines 0", () => {

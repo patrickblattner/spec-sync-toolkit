@@ -503,6 +503,20 @@ describe("review pr (acceptance 3, 4)", () => {
     expect(codex.calls()).toHaveLength(1);
   });
 
+  it("fast lane never covers a non-ASCII risk path that git would quote", async () => {
+    const r = repo({ riskGlobs: { auth: ["server/auth/**"] } });
+    sh(r.root, ["checkout", "-q", "-b", "feat"]);
+    const head = commit(r.root, { "server/auth/über.test.ts": "x\n" }, "auth test");
+    const codex = fakeCodex({});
+    const { tools: t } = tools(r.root, { prHead: head });
+    const result = await runReview(context(r.root, ["pr", "12"]), {
+      tools: t,
+      codexEnv: codex.env,
+    });
+    expect(result.data).toMatchObject({ trigger: "risk:auth" });
+    expect(codex.calls()).toHaveLength(1);
+  });
+
   it("--recheck re-asks the marker's model about its findings only", async () => {
     const r = prRepo({});
     const { findings } = assignFindings([highFinding]);

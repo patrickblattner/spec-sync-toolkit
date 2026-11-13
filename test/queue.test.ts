@@ -1120,6 +1120,19 @@ describe("product quota (SST-DESIGN-017 rev 11, PROC-DEV-039 rev 6 level ¼)", (
     ]);
   });
 
+  it("starts: a resumed work-started (continuation) is no new start", () => {
+    expect(
+      quotaStarts([
+        { at: "2026-11-11T03:00:00Z", type: "work-started", issue: 12 },
+        { at: "2026-11-11T03:20:00Z", type: "work-started", issue: 12, resumed: true },
+        { at: "2026-11-11T04:00:00Z", type: "work-started", issue: 13 },
+      ]),
+    ).toEqual([
+      { at: "2026-11-11T03:00:00Z", issue: 12, source: "work-started" },
+      { at: "2026-11-11T04:00:00Z", issue: 13, source: "work-started" },
+    ]);
+  });
+
   it("queue counts the quota from work-started events, not the lagging review", async () => {
     const { gh } = fakeGh({
       issues: [

@@ -43,7 +43,9 @@ import { STATE_DIR } from "./logs.js";
  *
  * `work-started` (0.49.0, register #2030) is written by `spec-sync ledger start`
  * when the worker begins building a ticket or a further increment of it — the
- * start the product quota of `queue` counts.
+ * start the product quota of `queue` counts. A start while the ticket's
+ * increment is still open (session renewal, context-out) carries
+ * `resumed: true`: a continuation, neither a quota start nor a new increment.
  *
  * `build-agent` (train 2026-11-15) is written by `spec-sync ledger build` right
  * before the worker spawns a build agent (`impl`, `impl-fast`, `impl-deep`). The
@@ -90,6 +92,8 @@ export interface LedgerEvent {
   ok?: boolean;
   /** Gate profile the event belongs to — the merge precondition reads this. */
   profile?: string;
+  /** `work-started` only: a continuation of the open increment, not a new start. */
+  resumed?: boolean;
   /** Model turns spent since the last event of this ticket. Reported, never observed. */
   turns?: number;
   /** Free-form payload: spec unit, section, commit, reason, … */
@@ -352,12 +356,44 @@ export function latestGate(
 /** Build agents one increment may spend before it is re-cut (train 2026-11-15, Fable C2). */
 export const MAX_BUILD_AGENTS = 3;
 
+/** A `work-started` with `resumed: true` — a continuation, not a new start. */
+export function isResumedStart(event: LedgerEvent): boolean {
+  return event.type === "work-started" && event.resumed === true;
+}
+
+/**
+ * The open increment of a ticket: the timestamp of its newest `work-started`
+ * that is not itself a continuation, when no event since then ended the
+ * increment — else `undefined`. An increment ends with a `review` event of mode
+ * `pr` for the ticket (PR model; fast-lane and not-triaged PR reviews write one
+ * too) or a `merge-started`/`merge-completed` for it (local merge model). A
+ * `ledger start` while an increment is open is a continuation (session renewal,
+ * context-out). File order is event order (append-only).
+ */
+export function openIncrement(events: LedgerEvent[], issue: number): string | undefined {
+  let open: string | undefined;
+  for (const event of events) {
+    if (event.issue !== issue) continue;
+    if (event.type === "work-started") {
+      if (!isResumedStart(event)) open = event.at;
+    } else if (
+      (event.type === "review" && event.mode === "pr") ||
+      event.type === "merge-started" ||
+      event.type === "merge-completed"
+    ) {
+      open = undefined;
+    }
+  }
+  return open;
+}
+
 /**
  * The build agents spent on the CURRENT increment of a ticket: the `build-agent`
- * events after its newest `work-started`, or after none when the ticket has no
- * start yet. Counting per increment, not per ticket, keeps a sweep ticket or a
- * feature cut into slices from tripping the cap by design — every slice starts
- * with its own `work-started`. File order is event order (append-only).
+ * events after its newest `work-started` that is not a continuation
+ * (`resumed: true` resets nothing), or after none when the ticket has no start
+ * yet. Counting per increment, not per ticket, keeps a sweep ticket or a feature
+ * cut into slices from tripping the cap by design — every slice starts with its
+ * own `work-started`. File order is event order (append-only).
  */
 export function buildAgentsOfIncrement(
   events: LedgerEvent[],
@@ -367,7 +403,7 @@ export function buildAgentsOfIncrement(
   let since: string | undefined;
   for (const event of events) {
     if (event.issue !== issue) continue;
-    if (event.type === "work-started") {
+    if (event.type === "work-started" && !isResumedStart(event)) {
       count = 0;
       since = event.at;
     } else if (event.type === "build-agent") count += 1;

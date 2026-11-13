@@ -167,7 +167,7 @@ async function runPr(run: Run, pos: string[]): Promise<CommandResult> {
 
   const range = `${PR_BASE}...HEAD`;
   const entries = parseNumstat(
-    git(deps.tools, ["diff", "--numstat", "--no-renames", range], PR_BASE).stdout,
+    git(deps.tools, ["diff", "--numstat", "-z", "--no-renames", range], PR_BASE).stdout,
   );
   const files = entries.map((entry) => entry.file);
   const size = sizeOf(entries, review.textGlobs);

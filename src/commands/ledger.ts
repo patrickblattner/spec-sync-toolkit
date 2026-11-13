@@ -1,15 +1,19 @@
 /**
  * `ledger` — writes to the ledger that no other command makes.
  *
- *   spec-sync ledger start <issue> [--dry-run]
+ *   spec-sync ledger start <issue> [--new-increment] [--dry-run]
  *   spec-sync ledger build <issue> [--agent impl|impl-fast|impl-deep] [--dry-run]
  *   spec-sync ledger close <issue> --reason "<text>" [--dry-run]
  *
  * `start` (0.49.0, register #2030) records that the worker begins building a
  * ticket or a further increment of it: exactly one `work-started` event. It is
  * the start the product quota of `queue` counts; the older signals
- * (`merge-started`, the first PR review) lag one unit behind. It reads nothing
- * and asks nothing — the worker knows which ticket it starts.
+ * (`merge-started`, the first PR review) lag one unit behind. It asks nothing —
+ * the worker knows which ticket it starts — and reads only the ledger: a start
+ * while the ticket's increment is still open (no PR review, no merge since its
+ * last real start) is a continuation (`resumed: true`, train 2026-11-15) that
+ * neither counts as a quota start nor resets the build-agent count;
+ * `--new-increment` forces a fresh start after a re-cut.
  *
  * `build` (train 2026-11-15, Fable C2) is run right before the worker spawns a
  * build agent. It counts the agents already spent on the current increment
@@ -39,6 +43,7 @@ import {
   buildAgentsOfIncrement,
   interruptedMerge,
   MAX_BUILD_AGENTS,
+  openIncrement,
   readLedger,
   type LedgerEventInput,
 } from "../ledger.js";
@@ -48,7 +53,7 @@ import { defaultTools, failureLine, type Tools } from "../pack/exec.js";
 
 const VALUE_FLAGS = ["--reason"];
 const USAGE = 'usage: spec-sync ledger close <issue> --reason "<text>" [--dry-run]';
-const START_USAGE = "usage: spec-sync ledger start <issue> [--dry-run]";
+const START_USAGE = "usage: spec-sync ledger start <issue> [--new-increment] [--dry-run]";
 const BUILD_USAGE =
   "usage: spec-sync ledger build <issue> [--agent impl|impl-fast|impl-deep] [--dry-run]";
 /** The agent types that build (spec-sync skill, effort table). */
@@ -140,29 +145,44 @@ export function runLedger(ctx: CommandContext, deps: LedgerDeps): CommandResult 
   };
 }
 
-/** `ledger start <issue>`: one `work-started` event, nothing else. */
+/**
+ * `ledger start <issue>`: one `work-started` event, nothing else. While the
+ * ticket's increment is still open the event carries `resumed: true` — a
+ * continuation; `--new-increment` forces a fresh start (the re-cut case).
+ */
 function runStart(ctx: CommandContext): CommandResult {
-  checkFlags(ctx.args, []);
+  checkFlags(ctx.args, [], ["--new-increment"]);
   const pos = positionals(ctx.args, []);
   if (pos.length !== 2 || !/^\d+$/.test(pos[1] as string) || Number(pos[1]) < 1) {
     throw new ToolkitError(START_USAGE, EXIT.PRECONDITION, { field: "issue" });
   }
   const issue = Number(pos[1]);
-  const event: LedgerEventInput = { type: "work-started", issue };
+  const open = ctx.args.includes("--new-increment")
+    ? undefined
+    : openIncrement(readLedger(ctx.repoRoot).events, issue);
+  const event: LedgerEventInput =
+    open === undefined
+      ? { type: "work-started", issue }
+      : { type: "work-started", issue, resumed: true };
+  const note =
+    open === undefined
+      ? `#${issue}: work-started recorded`
+      : `#${issue}: continuation of the increment started at ${open} — not a new start; ` +
+        `the build-agent count carries over`;
 
   if (ctx.flags.dryRun) {
     return {
       ok: true,
-      notes: [`dry run: would append work-started for #${issue} — nothing written`],
-      data: { issue, dryRun: true, event },
+      notes: [`dry run: would append work-started for #${issue} — nothing written`, note],
+      data: { issue, resumed: open !== undefined, dryRun: true, event },
     };
   }
 
   const written = appendEvent(ctx.repoRoot, event);
   return {
     ok: true,
-    notes: [`#${issue}: work-started recorded`],
-    data: { issue, dryRun: false, event: written },
+    notes: [note],
+    data: { issue, resumed: open !== undefined, dryRun: false, event: written },
   };
 }
 

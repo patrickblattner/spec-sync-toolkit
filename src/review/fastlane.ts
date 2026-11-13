@@ -23,14 +23,29 @@ export interface FastLaneDecision {
   reason: string;
 }
 
-/** Is a file a product path? Risk areas and `productGlobs` always are. */
+/**
+ * Dependency manifests and lockfiles at any depth, hidden directories included.
+ * Always product paths — not configurable, `productGlobs` only adds to them.
+ */
+const MANIFEST_GLOBS = [
+  "**/package.json",
+  "**/package-lock.json",
+  "**/npm-shrinkwrap.json",
+  "**/pnpm-lock.yaml",
+  "**/yarn.lock",
+];
+
+/** Is a file a product path? Manifests, risk areas and `productGlobs` always are. */
 export function isProductPath(
   file: string,
   lane: FastLaneConfig,
   riskGlobs: Record<string, string[]>,
 ): boolean {
+  if (picomatch.isMatch(file, MANIFEST_GLOBS, { dot: true })) return true;
   if (riskAreas([file], riskGlobs).length > 0) return true;
-  if (lane.productGlobs.length > 0 && picomatch.isMatch(file, lane.productGlobs)) return true;
+  if (lane.productGlobs.length > 0 && picomatch.isMatch(file, lane.productGlobs, { dot: true })) {
+    return true;
+  }
   return lane.toolingGlobs.length === 0 || !picomatch.isMatch(file, lane.toolingGlobs);
 }
 

@@ -30,12 +30,14 @@ export type TriageDecision =
   | { triaged: false; trigger: "not-triaged"; areas: [] };
 
 /**
- * Parses `git diff --numstat --no-renames`. A binary file shows `-\t-\t<path>`
- * and counts as 0 lines.
+ * Parses `git diff --numstat -z --no-renames`: NUL-terminated records
+ * `<added>\t<deleted>\t<path>`, the path unquoted (without `-z` git quotes and
+ * octal-escapes non-ASCII paths, which would slip past the globs). A binary
+ * file shows `-\t-\t<path>` and counts as 0 lines.
  */
 export function parseNumstat(text: string): NumstatEntry[] {
   const entries: NumstatEntry[] = [];
-  for (const line of text.split("\n")) {
+  for (const line of text.split("\0")) {
     if (line.trim() === "") continue;
     const [added, deleted, ...rest] = line.split("\t");
     const file = rest.join("\t");

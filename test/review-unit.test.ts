@@ -137,7 +137,7 @@ describe("triage (acceptance 1)", () => {
         "700\t0\tdocs/guide.md",
         "650\t0\tlocales/de.json",
         "3\t2\tsrc/a.ts",
-      ].join("\n"),
+      ].join("\0") + "\0",
     );
     expect(entries[0]).toEqual({ file: "assets/logo.png", lines: 0, binary: true });
     expect(sizeOf(entries, ["locales/**"])).toEqual({ files: 2, lines: 5 });
@@ -151,6 +151,18 @@ describe("triage (acceptance 1)", () => {
         review,
       ).triaged,
     ).toBe(false);
+  });
+
+  it("parses the NUL-delimited numstat -z form with unquoted paths and binaries", () => {
+    const entries = parseNumstat(
+      "4\t1\tsrc/auth/über.test.ts\0-\t-\tassets/a b.png\0" + "2\t0\tsrc/tab\there.ts\0",
+    );
+    expect(entries).toEqual([
+      { file: "src/auth/über.test.ts", lines: 5, binary: false },
+      { file: "assets/a b.png", lines: 0, binary: true },
+      { file: "src/tab\there.ts", lines: 2, binary: false },
+    ]);
+    expect(parseNumstat("")).toEqual([]);
   });
 
   it("batch and tag always pick a model", () => {

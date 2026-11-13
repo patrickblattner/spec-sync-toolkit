@@ -16,7 +16,7 @@ cadence for repos that opt in (C4). No version bump yet — released with the tr
   acceptance criteria.
 - Config block `fastLane` (B4): `maxLines` (default 30; the lane takes fewer, `0` = off),
   `toolingGlobs` (tests, CI config, scripts, root tooling config, pins), `productGlobs`
-  (manifests and lockfiles). `lenses` selects no lens and `review pr` makes no Codex call
+  (additional product paths; manifests and lockfiles always are, see Fixed). `lenses` selects no lens and `review pr` makes no Codex call
   (trigger `fast-lane`, outcome `not-triaged`) for a diff under the limit that touches no product
   path; every `review.riskGlobs` area is a product path, a binary file keeps a diff out of the
   lane. `lenses` reports the decision as `fastLane`. The gate is never skipped.
@@ -33,6 +33,19 @@ cadence for repos that opt in (C4). No version bump yet — released with the tr
 - `review tag` writes `tag` and `toSha` into its ledger event and stops a rerun of a tag the
   ledger already shows as reviewed when GitHub has no issue for it. Without a `cadence` block its behaviour
   is otherwise unchanged (the clean record issue stays).
+
+### Fixed (Codex review of the train)
+
+- Fast lane: dependency manifests and lockfiles (`package.json`, `package-lock.json`,
+  `npm-shrinkwrap.json`, `pnpm-lock.yaml`, `yarn.lock`) are always product paths — a fixed list,
+  matched at any depth including hidden directories (`.github/actions/x/package.json`); a configured
+  `fastLane.productGlobs` only adds to it (default now empty, matched with dotfiles too).
+- `lenses` and `review pr` read `git diff --numstat -z`: non-ASCII paths are no longer quoted and
+  octal-escaped, so they match the risk globs and cannot slip into the fast lane.
+- `ledger start` on a ticket whose increment is still open (no PR review, no merge since its last
+  real start — session renewal, context-out) appends `work-started` with `resumed: true`: the
+  build-agent count carries over and `queue` counts no new quota start. `--new-increment` forces a
+  fresh start (re-cut after the cap).
 
 ### How to adopt
 

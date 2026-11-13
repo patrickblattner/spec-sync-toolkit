@@ -41,7 +41,7 @@ import { loadNorms, type Norms } from "../norms.js";
 import type { Command, CommandContext } from "../cli.js";
 import type { Config } from "../config.js";
 import { findSpecKeys } from "../pack/refs.js";
-import { readLedger, type LedgerEvent } from "../ledger.js";
+import { isResumedStart, readLedger, type LedgerEvent } from "../ledger.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -1067,7 +1067,7 @@ export interface QuotaStart {
  * ticket or a further increment of one. Since 0.49.0 (register #2030) the
  * worker records each one as a `work-started` event when it begins building
  * (`spec-sync ledger start`). From the first `work-started` line on, only those
- * count. Before it — a ledger written by an older toolkit — the two lagging
+ * count — except a continuation (`resumed: true`), which is no new start. Before it — a ledger written by an older toolkit — the two lagging
  * signals stand in: a `merge-started` event (local merge model) or the first
  * `review` event of mode `pr` for a PR number (PR model; a recheck or a
  * re-review of the same PR is not a new start).
@@ -1078,6 +1078,7 @@ export function quotaStarts(events: LedgerEvent[]): QuotaStart[] {
   let recorded = false;
   for (const event of events) {
     const issue = typeof event.issue === "number" ? event.issue : null;
+    if (isResumedStart(event)) continue;
     if (event.type === "work-started") {
       recorded = true;
       starts.push({ at: event.at, issue, source: "work-started" });

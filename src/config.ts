@@ -226,10 +226,11 @@ const fastLaneSchema = z.object({
       "spec-pins.json",
       ".spec-sync/drift-coverage.jsonl",
     ]),
-  /** Always a product path: dependency manifests and lockfiles. */
-  productGlobs: z
-    .array(z.string().min(1))
-    .default(["**/package.json", "**/package-lock.json", "**/pnpm-lock.yaml", "**/yarn.lock"]),
+  /**
+   * Additional product paths. Dependency manifests and lockfiles are product
+   * paths in any case — a fixed list in the fast lane, not configurable here.
+   */
+  productGlobs: z.array(z.string().min(1)).default([]),
 });
 
 /**

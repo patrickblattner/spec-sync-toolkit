@@ -35,7 +35,7 @@ spec-sync handover [--note <text>] [--reason <budget|done|red-2x|question-open|p
 spec-sync repin [--ids <a,b>] [--server <url>]
 spec-sync repin --check [--server <url>]
 spec-sync pr overlap <open-pr> --merged <merged-pr>
-spec-sync ledger start <issue> [--dry-run]
+spec-sync ledger start <issue> [--new-increment] [--dry-run]
 spec-sync ledger build <issue> [--agent impl|impl-fast|impl-deep] [--dry-run]
 spec-sync ledger close <issue> --reason "<text>" [--dry-run]
 spec-sync slot run --step <name> --cap <minutes> [--run <id>] -- <cmd> [args…]
@@ -219,21 +219,27 @@ ready; the pr-gate overrun is simply not measured while no check has run.
 
 `ledger start <issue>` (0.49.0) appends exactly one `work-started` event: the worker runs it when it
 begins building a ticket or a further increment of one, before the build agent starts. It is the
-start the product quota of `queue` counts. It reads nothing and calls no `gh`; `--dry-run` writes
-nothing and returns the event it would append.
+start the product quota of `queue` counts. It calls no `gh`; `--dry-run` writes nothing and returns
+the event it would append. A start while the ticket's increment is still open — no `review` of mode
+`pr`, no `merge-started`/`merge-completed` for it since its last real start (session renewal,
+context-out) — is a continuation: the event carries `resumed: true`, counts as no quota start and
+keeps the build-agent count. `--new-increment` forces a fresh start (re-cut after the cap, no PR).
 
 `ledger build <issue>` (train 2026-11-15) runs right before the worker spawns a build agent
 (`impl`, `impl-fast`, `impl-deep`). It counts the `build-agent` events of the current increment
 — after the newest `work-started` of the ticket — and appends one more. The third agent is the last:
 a fourth is refused with exit 4 and nothing is written; the worker re-cuts the ticket into smaller
 slices with their own acceptance criteria. A new `ledger start` for a further increment or slice
-starts the count again.
+(after the PR review or merge, or with `--new-increment`) starts the count again; a continuation
+does not.
 
 **Fast lane** (train 2026-11-15): `lenses` selects no lens and `review pr` makes no Codex call
 (trigger `fast-lane`) for a diff of fewer than `fastLane.maxLines` changed lines (default 30) that
 touches no product path. A file is a product path unless it matches `fastLane.toolingGlobs`
-(tests, CI config, scripts, root tooling config); `fastLane.productGlobs` (manifests and
-lockfiles) and every `review.riskGlobs` area always are, and a binary file keeps a diff out of the
+(tests, CI config, scripts, root tooling config); dependency manifests and lockfiles at any depth
+(`package.json`, `package-lock.json`, `npm-shrinkwrap.json`, `pnpm-lock.yaml`, `yarn.lock`, hidden
+directories included — a fixed list), `fastLane.productGlobs` (an addition, default empty) and
+every `review.riskGlobs` area always are, and a binary file keeps a diff out of the
 lane. The gate always runs. `fastLane.maxLines: 0` turns the lane off.
 
 **Cadence** (train 2026-11-15, opt-in, e.g. suite-ui): the optional `cadence` block limits the

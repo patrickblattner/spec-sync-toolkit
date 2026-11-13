@@ -191,6 +191,9 @@ describe("ledger start (0.49.0, register #2030)", () => {
     expect(
       thrown(() => runLedger(ctx(root, ["start", "7", "--reason", "r"]), { tools })).field,
     ).toBe("--reason");
+    expect(thrown(() => runLedger(ctx(root, ["start", "7", "--new-incr"]), { tools })).field).toBe(
+      "--new-incr",
+    );
     expect(readLedger(root).events).toEqual([]);
   });
 });
@@ -225,11 +228,68 @@ describe("ledger build (train 2026-11-15, Fable C2)", () => {
     expect(readLedger(root).events).toHaveLength(before);
   });
 
-  it("counts per increment: a new work-started of the same ticket starts at zero", () => {
+  const start = (root: string, args: string[]) =>
+    runLedger(ctx(root, ["start", ...args]), { tools: fakeTools("OPEN") });
+
+  it("counts per increment: a start after the PR review of the ticket starts at zero", () => {
     const root = repo([{ type: "work-started", issue: 40 }]);
     for (let i = 0; i < 3; i += 1) build(root, ["40"]);
-    runLedger(ctx(root, ["start", "40"]), { tools: fakeTools("OPEN") });
+    appendEvent(root, { type: "review", mode: "pr", issue: 40, pr: 9, outcome: "clean" });
+    const result = start(root, ["40"]);
+    expect(result.data).toMatchObject({ resumed: false });
+    expect(readLedger(root).events.at(-1)).not.toHaveProperty("resumed");
     expect(build(root, ["40"]).data).toMatchObject({ count: 1 });
+  });
+
+  it("a merge-started of the ticket also ends the increment", () => {
+    const root = repo([{ type: "work-started", issue: 40 }]);
+    appendEvent(root, { type: "merge-started", issue: 40 });
+    expect(start(root, ["40"]).data).toMatchObject({ resumed: false });
+  });
+
+  it("a second start without a PR review in between is a continuation: the count carries over", () => {
+    const root = repo([{ type: "work-started", issue: 40, at: "2026-11-13T08:00:00.000Z" }]);
+    for (let i = 0; i < 3; i += 1) build(root, ["40"]);
+    const result = start(root, ["40"]);
+    expect(result.data).toMatchObject({ resumed: true });
+    expect(result.notes?.[0]).toMatch(
+      /continuation of the increment started at 2026-11-13T08:00:00.000Z — not a new start; the build-agent count carries over/,
+    );
+    expect(readLedger(root).events.at(-1)).toMatchObject({
+      type: "work-started",
+      issue: 40,
+      resumed: true,
+    });
+    const error = thrown(() => build(root, ["40"]));
+    expect(error.exit).toBe(EXIT.PRECONDITION);
+    expect(error.message).toMatch(/since work-started at 2026-11-13T08:00:00.000Z/);
+  });
+
+  it("a third start is still a continuation of the first, and a recheck review ends nothing", () => {
+    const root = repo([{ type: "work-started", issue: 40, at: "2026-11-13T08:00:00.000Z" }]);
+    start(root, ["40"]);
+    appendEvent(root, { type: "review", mode: "recheck", issue: 40, pr: 9 });
+    const result = start(root, ["40"]);
+    expect(result.notes?.[0]).toMatch(/started at 2026-11-13T08:00:00.000Z/);
+  });
+
+  it("--new-increment forces a fresh start: no resumed flag, the count starts at zero", () => {
+    const root = repo([{ type: "work-started", issue: 40 }]);
+    for (let i = 0; i < 3; i += 1) build(root, ["40"]);
+    const result = start(root, ["40", "--new-increment"]);
+    expect(result.data).toMatchObject({ resumed: false });
+    expect(readLedger(root).events.at(-1)).not.toHaveProperty("resumed");
+    expect(build(root, ["40"]).data).toMatchObject({ count: 1 });
+  });
+
+  it("interleaved starts and PR reviews of another ticket do not end the increment", () => {
+    const root = repo([{ type: "work-started", issue: 40 }]);
+    build(root, ["40"]);
+    start(root, ["41"]);
+    appendEvent(root, { type: "review", mode: "pr", issue: 41, pr: 10 });
+    appendEvent(root, { type: "merge-completed", issue: 41 });
+    expect(start(root, ["40"]).data).toMatchObject({ resumed: true });
+    expect(build(root, ["40"]).data).toMatchObject({ count: 2 });
   });
 
   it("counts per ticket number: agents of another ticket do not count", () => {

@@ -56,7 +56,7 @@ export function runLenses(ctx: CommandContext, tools: Tools): CommandResult {
   const lensFiles = files.filter((file) => !picomatch.isMatch(file, textGlobs));
 
   const lane = decideFastLane(
-    parseNumstat(diffOrThrow(tools, ["--numstat", "--no-renames"], base)),
+    parseNumstat(diffOrThrow(tools, ["--numstat", "-z", "--no-renames"], base)),
     config.fastLane,
     config.review.riskGlobs,
   );

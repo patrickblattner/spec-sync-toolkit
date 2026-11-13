@@ -53,6 +53,33 @@ describe("fast lane product paths (defaults)", () => {
     }
   });
 
+  it("a manifest in a hidden directory is a product path", () => {
+    expect(product(".github/actions/build/package.json")).toBe(true);
+    expect(product(".github/actions/build/package-lock.json")).toBe(true);
+    expect(product(".github/workflows/ci.yml")).toBe(false);
+  });
+
+  it("configured productGlobs add to the fixed manifest list, never replace it", () => {
+    const own = config({ fastLane: { productGlobs: ["src/**"] } });
+    const ownProduct = (file: string): boolean => isProductPath(file, own.fastLane, {});
+    for (const file of [
+      "scripts/package.json",
+      "scripts/npm-shrinkwrap.json",
+      "tools/yarn.lock",
+      "tools/pnpm-lock.yaml",
+      "src/a.ts",
+    ]) {
+      expect(ownProduct(file), file).toBe(true);
+    }
+    expect(ownProduct("scripts/check.mjs")).toBe(false);
+    const lane = decideFastLane(
+      [{ file: "scripts/npm-shrinkwrap.json", lines: 2, binary: false }],
+      own.fastLane,
+      {},
+    );
+    expect(lane.fast).toBe(false);
+  });
+
   it("an empty toolingGlobs makes every file a product path", () => {
     const off = config({ fastLane: { toolingGlobs: [] } });
     expect(isProductPath("test/a.test.ts", off.fastLane, {})).toBe(true);
