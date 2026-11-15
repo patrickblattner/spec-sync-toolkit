@@ -5,8 +5,7 @@ CLI toolkit that executes the mechanical parts of the worker loop — `gate`, `q
 sequences. Consumed as a pinned devDependency; `bin` name is `spec-sync`.
 
 **The spec is authoritative, not this file.** Read it from the spec server
-(`http://localhost:8788/mcp` during the v2 transition — the final flip puts it back on
-`8787`; the URL lives in `.mcp.json`), project `spec-sync-toolkit`: `SST-VISION-001` with
+(`http://localhost:8787/mcp`; the URL lives in `.mcp.json`), project `spec-sync-toolkit`: `SST-VISION-001` with
 its `SST-DESIGN-0xx` leaves, plus the `SST-ADR-0xx` subtree. Enter through `spec_usage`,
 then `spec_tree`/`spec_search`, then `spec_get`/`spec_get_many` — leaves are small, so read
 the ones you need instead of a whole level. Never from local files — the toolkit has no

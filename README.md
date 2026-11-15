@@ -34,6 +34,8 @@ spec-sync budget [--session <id|path>] [--label <text>]
 spec-sync handover [--note <text>] [--reason <budget|done|red-2x|question-open|pause|unexpected>] [--session <id|path>]
 spec-sync repin [--ids <a,b>] [--server <url>]
 spec-sync repin --check [--server <url>]
+spec-sync drift [--server <url>]
+spec-sync cover <key>[,<key>…] (--ticket <n> | --editorial "<reason>") [--server <url>] [--dry-run]
 spec-sync pr overlap <open-pr> --merged <merged-pr>
 spec-sync ledger start <issue> [--new-increment] [--dry-run]
 spec-sync ledger build <issue> [--agent impl|impl-fast|impl-deep] [--dry-run]
@@ -217,7 +219,7 @@ worker's call. No nightly call, nothing written; with `--check` or `--health` ex
 `review pr` reviews a draft PR exactly like a ready one — PRs open as drafts and Codex runs before
 ready; the pr-gate overrun is simply not measured while no check has run.
 
-`ledger start <issue>` (0.49.0) appends exactly one `work-started` event: the worker runs it when it
+`ledger start <issue>` appends exactly one `work-started` event: the worker runs it when it
 begins building a ticket or a further increment of one, before the build agent starts. It is the
 start the product quota of `queue` counts. It calls no `gh`; `--dry-run` writes nothing and returns
 the event it would append. A start while the ticket's increment is still open — no `review` of mode
@@ -225,7 +227,7 @@ the event it would append. A start while the ticket's increment is still open �
 context-out) — is a continuation: the event carries `resumed: true`, counts as no quota start and
 keeps the build-agent count. `--new-increment` forces a fresh start (re-cut after the cap, no PR).
 
-`ledger build <issue>` (train 2026-11-15) runs right before the worker spawns a build agent
+`ledger build <issue>` runs right before the worker spawns a build agent
 (`impl`, `impl-fast`, `impl-deep`). It counts the `build-agent` events of the current increment
 — after the newest `work-started` of the ticket — and appends one more. The third agent is the last:
 a fourth is refused with exit 4 and nothing is written; the worker re-cuts the ticket into smaller
@@ -233,16 +235,25 @@ slices with their own acceptance criteria. A new `ledger start` for a further in
 (after the PR review or merge, or with `--new-increment`) starts the count again; a continuation
 does not.
 
-**Fast lane** (train 2026-11-15): `lenses` selects no lens and `review pr` makes no Codex call
+**Fast lane**: `lenses` selects no lens and `review pr` makes no Codex call
 (trigger `fast-lane`) for a diff of fewer than `fastLane.maxLines` changed lines (default 30) that
 touches no product path. A file is a product path unless it matches `fastLane.toolingGlobs`
 (tests, CI config, scripts, root tooling config); dependency manifests and lockfiles at any depth
 (`package.json`, `package-lock.json`, `npm-shrinkwrap.json`, `pnpm-lock.yaml`, `yarn.lock`, hidden
 directories included — a fixed list), `fastLane.productGlobs` (an addition, default empty) and
 every `review.riskGlobs` area always are, and a binary file keeps a diff out of the
-lane. The gate always runs. `fastLane.maxLines: 0` turns the lane off.
+lane. The gate always runs. `fastLane.maxLines: 0` turns the lane off. Optional `fastLane` block,
+defaults as shown (`toolingGlobs` shortened here; the full list is in `src/config.ts`):
 
-**Cadence** (train 2026-11-15, opt-in, e.g. suite-ui): the optional `cadence` block limits the
+```jsonc
+"fastLane": {
+  "maxLines": 30,
+  "toolingGlobs": ["**/*.test.*", "**/*.spec.*", "**/test/**", "**/e2e/**", ".github/**", "scripts/**", "…"],
+  "productGlobs": []
+}
+```
+
+**Cadence** (opt-in): the optional `cadence` block limits the
 releases and Codex reviews of a repo per local day. `cadence tag` exits 4 once `tagsPerDay` tags
 matching `tagPattern` (default `v*`) were made today. With `reviewsPerDay`, a `review tag` or
 `review batch` run past the day's Codex reviews is `deferred` (exit 0, no call, no issue; the batch
@@ -253,6 +264,17 @@ event (`tag`, `toSha`) stops a rerun. Without the block nothing changes.
 ```json
 "cadence": { "tagsPerDay": 1, "reviewsPerDay": 1, "cleanReviewIssue": false }
 ```
+
+`drift` compares the server's pins with `spec-pins.json` and writes nothing. It lists every moved
+key (changed, added, removed) with `covered`: whether `.spec-sync/drift-coverage.jsonl` already
+holds a receipt for exactly that transition. Exit 0 without moved keys, 1 with moved keys, 2 when
+the spec server is unreachable (never "no drift"), 4 without a pin file (run `repin` first). Keys
+matching `pinExclude` never count as drift.
+
+`cover` writes that receipt: one line per named key in `.spec-sync/drift-coverage.jsonl`, with the
+`from` and `to` revisions taken from the pin↔server comparison. It takes exactly one disposition,
+`--ticket <n>` or `--editorial "<reason>"`, for all named keys. A key that has not moved is exit 4,
+and then nothing is written. `--dry-run` writes nothing.
 
 `ledger close <issue> --reason "<text>"` ends an orphaned `merge-started` by hand — one that
 `merge` cannot resume because its squash commit predates the current commit subject format. It
@@ -353,7 +375,26 @@ consuming repo re-includes it in its `.gitignore`. It never commits and never to
 a PR comment (`pr`), as deduplicated issues (`batch`, over `review/last..origin/main`) or as one issue
 per tag (`tag`). Every engine failure is a skip with exit 0 — never another model. Exit 1 means a
 critical or high finding is open. Configuration lives in the optional `review` block of
-`spec-sync.config.json`.
+`spec-sync.config.json`; unknown keys are ignored. Defaults as shown:
+
+```jsonc
+"review": {
+  "riskGlobs": {},                 // {area: [glob]}: a touched area sends the diff to models.risk
+  "models": { "risk": "gpt-6-astra", "size": "gpt-5.6-sol" },
+  "effort": { "risk": "high", "size": "medium" }, // low | medium | high; xhigh is rejected
+  "size": { "files": 15, "lines": 600 },          // at or above either → models.size
+  "textGlobs": [],                 // files that do not count toward size, on top of *.md
+  "modulesRoot": null,             // optional; a new directory directly under it is a new module
+  "marker": "review/last",         // the tag `review batch` reviews from and moves
+  "label": "review-codex",         // label of every finding issue
+  "securityLabel": "security",     // added to an issue with a security finding; read by `queue`
+  "priorityCap": null,             // optional: critical | high | medium, the highest priority label a finding issue gets
+  "timeoutMs": 900000,             // per Codex call
+  "maxDiffBytes": 400000           // larger batch diffs are split per commit
+}
+```
+
+`modulesRoot` and `priorityCap` have no default; leave them out instead of writing `null`.
 
 `review growth` (SST-DESIGN-040, PROC-REL-080) is the Monday first opinion on the weekly growth
 metrics: no triage, always `models.size` at `effort.risk`. The prompt carries the metrics file,
@@ -606,13 +647,23 @@ They are configured through the files of the consuming repo
 
 Node ≥ 22, `git`, and `gh` on the `PATH`. Some commands read a spec server over HTTP; its
 endpoint comes from the `spec` entry in `.mcp.json` (`--server` overrides, both accept the
-full endpoint or the base URL).
+full endpoint or the base URL). On this setup the spec server is `http://localhost:8787/mcp`.
 
-**Spec server port during the v2 cutover:** `.mcp.json` points at
-`http://localhost:8788/mcp`. **Final flip → 8787**: once v2 takes over the regular port,
-this entry is reverted. The value lives in this one place only — the file
-is strict JSON (`JSON.parse` in `src/commands/repin.ts`), so it tolerates no comment,
-which is why the note is here.
+## Install and build on a new machine
+
+```bash
+git clone https://github.com/patrickblattner/spec-sync-toolkit.git ~/projects/spec-sync-toolkit
+cd ~/projects/spec-sync-toolkit
+mise install            # Node 26.12.1, pinned in mise.toml
+mise x -- npm install   # the prepare script runs tsup and builds dist/
+```
+
+`npm install` builds `dist/cli.js` (the `spec-sync` binary) and the three hook binaries in
+`dist/hooks/`: `stop-check.js`, `subagent-stop-check.js` and `architect-stop-check.js`, bundled
+from `src/hooks/` by the entries in `tsup.config.ts`. The app repos register
+`stop-check.js` and `subagent-stop-check.js` by absolute path into this checkout
+(`~/projects/spec-sync-toolkit/dist/hooks/`) in their tracked `.claude/settings.json`, so the
+clone must sit at exactly that path. After a pull, rebuild with `mise x -- npm run build`.
 
 ## Licence
 
