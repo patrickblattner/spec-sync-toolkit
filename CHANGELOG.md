@@ -1,10 +1,13 @@
 # Changelog
 
-## Unreleased (train 2026-11-15)
+## 0.50.0
 
 Three cost items of the Fable analysis (register #2028/#2032, plan step 3): a cap on build agents
 per increment (C2), a fast lane for small test and tooling diffs (B4), and a release and review
-cadence for repos that opt in (C4). No version bump yet — released with the train on 15.11.
+cadence for repos that opt in (C4).
+
+Pins `PROC-DEV-039` rev 7 (a continuation of a started increment is no start; `queue` before every
+start).
 
 ### Added
 
