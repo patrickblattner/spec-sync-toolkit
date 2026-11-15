@@ -5,8 +5,8 @@ easy to break. This file adds only what is specific to working here as an agent.
 
 ## Source of truth
 
-The spec server at the URL in `.mcp.json` (`http://localhost:8787/mcp`), project
-`spec-sync-toolkit`:
+The spec server at the URL in `.mcp.json` (`http://localhost:8788/mcp` during the v2
+transition, back to `8787` after the final flip), project `spec-sync-toolkit`:
 `SST-VISION-001` with its `SST-DESIGN-0xx` leaves and the `SST-ADR-0xx` subtree. Enter
 through `spec_usage`, then `spec_tree`/`spec_search`, then `spec_get`/`spec_get_many` — a
 leaf is small and self-contained, so read the ones you need, never a whole level. The
@@ -28,8 +28,7 @@ Response payloads stay small: the guideline is under 15 lines formatted, and `ga
 ## Gate
 
 `npm run build && npm run lint && npm test` must be green before every commit — locally, on
-this machine. There is no CI to fall back on: the remote on GitHub is a mirror and runs no
-checks.
+this machine. There is no CI to fall back on; this repo has no remote.
 
 ## Boundaries
 
