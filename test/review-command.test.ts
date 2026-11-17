@@ -291,6 +291,10 @@ function prRepo(review: Record<string, unknown> = { riskGlobs: { auth: ["server/
 
 // ----------------------------------------------------------------- pr
 
+/** Codex's own refusal of a prompt above its input limit, as seen in production. */
+const INPUT_TOO_LARGE =
+  'Error: turn/start: turn/start failed: Input exceeds the maximum length of 1048576 characters. (code -32602), data: {"input_error_code":"input_too_large","max_chars":1048576,"actual_chars":2312501}';
+
 describe("review pr (acceptance 3, 4)", () => {
   it("calls codex read-only with -m and the prompt on stdin, posts one marked comment, exit 1 on high", async () => {
     const r = prRepo();
@@ -381,6 +385,7 @@ describe("review pr (acceptance 3, 4)", () => {
     ],
     ["model-switch", { headerModel: "gpt-4-other" }, {}, {}],
     ["effort-mismatch", { headerEffort: "xhigh" }, {}, {}],
+    ["input-too-large", { exit: 1, noOutput: true, stderr: INPUT_TOO_LARGE }, {}, {}],
     ["unparsable", { answers: ["Here are my findings: none"] }, {}, {}],
     ["unparsable", { exit: 1, noOutput: true, stderr: "boom" }, {}, {}],
   ])(
@@ -974,6 +979,160 @@ describe("review tag (acceptance 6)", () => {
 // ----------------------------------------------------------------- cadence (Fable C4)
 
 /** Adds a top-level `cadence` block to the repo's config (read fresh by `context`). */
+// ----------------------------------------------------------------- SST-DESIGN-041
+
+/** Diff of one new one-line file is ~130 bytes of header plus the content. */
+const BIG_A = `${"a".repeat(500)}\n`;
+const BIG_B = `${"b".repeat(500)}\n`;
+const HUGE = `${"h".repeat(2000)}\n`;
+
+/** Inputs (prompts) of all codex calls that carry `text`. */
+const carrying = (calls: { input: string }[], text: string): number =>
+  calls.filter((call) => call.input.includes(text)).length;
+
+describe("review chunks never exceed the diff limit (SST-DESIGN-041)", () => {
+  it("batch: an oversized commit is split by file, every file in exactly one chunk; findings of all chunks count, marker moves (acceptance 1)", async () => {
+    const r = batchRepo({ maxDiffBytes: 800 });
+    const big = commit(
+      r.root,
+      { "src/big-a.ts": BIG_A, "src/big-b.ts": BIG_B, "src/small.ts": "small\n" },
+      "big (#3)",
+    );
+    push(r);
+    const codex = fakeCodex({
+      answers: [
+        answer([{ ...highFinding, severity: "low" }]),
+        answer([{ ...highFinding, severity: "low", claim: "two" }]),
+        answer([{ ...highFinding, severity: "low", claim: "three" }]),
+      ],
+    });
+    const { tools: t } = tools(r.root, {});
+    const result = await runReview(context(r.root, ["batch"]), { tools: t, codexEnv: codex.env });
+
+    const calls = codex.calls();
+    // c1+c2 grouped as before, then the big commit in two parts.
+    expect(result.data).toMatchObject({ chunks: 3, omitted: [], outcome: "findings" });
+    expect(calls).toHaveLength(3);
+    expect(carrying(calls, `${big.slice(0, 12)} (part 1/2)`)).toBe(1);
+    expect(carrying(calls, `${big.slice(0, 12)} (part 2/2)`)).toBe(1);
+    for (const content of [BIG_A, BIG_B, "small\n"]) {
+      expect(carrying(calls, `+${content}`)).toBe(1);
+    }
+    expect(carrying(calls, BIG_A) + carrying(calls, BIG_B)).toBe(2);
+    expect(calls.some((call) => call.input.includes(BIG_A) && call.input.includes(BIG_B))).toBe(
+      false,
+    );
+    expect(result.data?.low as string[]).toHaveLength(3);
+    expect(result.data).toMatchObject({ markerMoved: true });
+    expect(remoteTag(r)).toBe(big);
+  });
+
+  it("batch: a file above the limit is omitted and listed, the rest is reviewed, no skip, marker moves (acceptance 2)", async () => {
+    const r = batchRepo({ maxDiffBytes: 800 });
+    const big = commit(r.root, { "src/huge.ts": HUGE, "src/small.ts": "small\n" }, "huge (#3)");
+    push(r);
+    const codex = fakeCodex({});
+    const { tools: t } = tools(r.root, {});
+    const omitted = [`${big.slice(0, 12)}:src/huge.ts`];
+
+    const dry = await runReview(context(r.root, ["batch"], true), {
+      tools: t,
+      codexEnv: codex.env,
+    });
+    expect(dry.data).toMatchObject({ outcome: "dry-run", omitted });
+    expect(codex.calls()).toHaveLength(0);
+
+    const result = await runReview(context(r.root, ["batch"]), { tools: t, codexEnv: codex.env });
+    expect(result.exit).toBe(EXIT.OK);
+    expect(result.data).toMatchObject({ outcome: "clean", omitted, markerMoved: true });
+    expect(result.notes).toEqual(
+      expect.arrayContaining([expect.stringMatching(/^1 file\(s\) omitted/)]),
+    );
+    const calls = codex.calls();
+    expect(carrying(calls, `${big.slice(0, 12)} (part 1/1)`)).toBe(1);
+    expect(carrying(calls, "+small")).toBe(1);
+    expect(carrying(calls, HUGE)).toBe(0);
+    expect(remoteTag(r)).toBe(big);
+  });
+
+  it("tag: the same split and omission apply (acceptance 3)", async () => {
+    const r = repo({ maxDiffBytes: 800 });
+    sh(r.root, ["tag", "v1.0.0"]);
+    const big = commit(
+      r.root,
+      {
+        "src/big-a.ts": BIG_A,
+        "src/big-b.ts": BIG_B,
+        "src/huge.ts": HUGE,
+        "src/small.ts": "small\n",
+      },
+      "big",
+    );
+    sh(r.root, ["tag", "v1.1.0"]);
+    const codex = fakeCodex({});
+    const { tools: t } = tools(r.root, {});
+    const result = await runReview(context(r.root, ["tag", "v1.0.0..v1.1.0"]), {
+      tools: t,
+      codexEnv: codex.env,
+    });
+    const calls = codex.calls();
+    expect(result.data).toMatchObject({
+      outcome: "clean",
+      chunks: 2,
+      omitted: [`${big.slice(0, 12)}:src/huge.ts`],
+    });
+    expect(calls).toHaveLength(2);
+    expect(carrying(calls, HUGE)).toBe(0);
+    for (const content of [BIG_A, BIG_B, "small\n"]) {
+      expect(carrying(calls, `+${content}`)).toBe(1);
+    }
+    expect(result.notes).toEqual(
+      expect.arrayContaining([expect.stringMatching(/^1 file\(s\) omitted/)]),
+    );
+  });
+
+  it("engine: codex refusing the input size → skipped with class input-too-large, exit 0, one ledger line, marker stays (acceptance 4)", async () => {
+    const r = batchRepo();
+    const codex = fakeCodex({ exit: 1, noOutput: true, stderr: INPUT_TOO_LARGE });
+    const { tools: t } = tools(r.root, {});
+    const result = await runReview(context(r.root, ["batch"]), { tools: t, codexEnv: codex.env });
+    expect(result.exit).toBe(EXIT.OK);
+    expect(result.data).toMatchObject({
+      outcome: "skipped",
+      class: "input-too-large",
+      markerMoved: false,
+    });
+    expect(result.notes?.[0]).toContain("input_too_large");
+    expect(remoteTag(r)).toBe(r.marker);
+    expect(reviewEvents(r.root)).toEqual([
+      expect.objectContaining({ mode: "batch", outcome: "skipped", class: "input-too-large" }),
+    ]);
+  });
+
+  it("a range that fits is one chunk; commits each below the limit are grouped as before (acceptance 5)", async () => {
+    const fits = batchRepo();
+    const one = fakeCodex({});
+    const first = await runReview(context(fits.root, ["batch"]), {
+      tools: tools(fits.root, {}).tools,
+      codexEnv: one.env,
+    });
+    expect(first.data).toMatchObject({ chunks: 1, omitted: [] });
+    expect(carrying(one.calls(), `${fits.marker.slice(0, 12)}..${fits.c2.slice(0, 12)}`)).toBe(1);
+
+    const split = batchRepo({ maxDiffBytes: 200 });
+    const two = fakeCodex({});
+    const second = await runReview(context(split.root, ["batch"]), {
+      tools: tools(split.root, {}).tools,
+      codexEnv: two.env,
+    });
+    expect(second.data).toMatchObject({ chunks: 2, omitted: [] });
+    const calls = two.calls();
+    expect(carrying(calls, "(part ")).toBe(0);
+    expect(carrying(calls, `Range: ${split.c1.slice(0, 12)}\n`)).toBe(1);
+    expect(carrying(calls, `Range: ${split.c2.slice(0, 12)}\n`)).toBe(1);
+  });
+});
+
 function withCadence(root: string, cadence: Record<string, unknown>): void {
   const file = join(root, "spec-sync.config.json");
   const config = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;

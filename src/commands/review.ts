@@ -488,7 +488,14 @@ async function runBatch(run: Run, pos: string[]): Promise<CommandResult> {
     };
   }
 
-  const chunks = buildChunks(tools, from, to, included, included.length === commits.length, review);
+  const { chunks, omitted } = buildChunks(
+    tools,
+    from,
+    to,
+    included,
+    included.length === commits.length,
+    review,
+  );
   const files = [...new Set(chunks.flatMap((chunk) => chunk.files))];
   const { model, effort, trigger, areas } = decideAlways(files, review);
   const plan = {
@@ -498,19 +505,21 @@ async function runBatch(run: Run, pos: string[]): Promise<CommandResult> {
     model,
     effort,
     trigger,
+    omitted,
   };
+  const omittedNote = omissionNote(omitted, review.maxDiffBytes);
 
   if (ctx.flags.dryRun) {
     return {
       ok: true,
-      notes: ["dry run — no Codex call, no issues, marker stays"],
+      notes: [...omittedNote, "dry run — no Codex call, no issues, marker stays"],
       data: { ...plan, outcome: "dry-run" },
     };
   }
 
   const logDir = newLogDir(run);
   const result = runChunks(run, logDir, "batch", chunks, model, effort, areas);
-  const notes: string[] = [];
+  const notes: string[] = [...omittedNote];
   if (result.skipped !== undefined) {
     notes.push(
       `skipped — ${result.skipped.class}: ${result.skipped.detail}; marker stays at ${from.slice(0, 12)}`,
@@ -636,6 +645,13 @@ async function runBatch(run: Run, pos: string[]): Promise<CommandResult> {
   };
 }
 
+/** One note naming the count of files left out for their size; none without any. */
+function omissionNote(omitted: readonly string[], max: number): string[] {
+  return omitted.length === 0
+    ? []
+    : [`${omitted.length} file(s) omitted — own diff above maxDiffBytes (${max}); see omitted`];
+}
+
 function moveOrThrow(tools: Tools, marker: string, target: string): void {
   const moved = moveMarker(tools, marker, target);
   if (!moved.ok) throw new Error(moved.detail);
@@ -644,7 +660,9 @@ function moveOrThrow(tools: Tools, marker: string, target: string): void {
 /**
  * One chunk for the whole range when every commit is included and the diff
  * fits `maxDiffBytes`; otherwise one diff per commit, grouped greedily up to
- * `maxDiffBytes` (a single commit larger than that is sent alone).
+ * `maxDiffBytes`. A single commit larger than that is split by file into
+ * parts of at most `maxDiffBytes`; a file whose own diff is larger is left
+ * out and listed as `<sha12>:<path>` in `omitted` (SST-DESIGN-041).
  */
 function buildChunks(
   tools: Tools,
@@ -653,17 +671,21 @@ function buildChunks(
   commits: readonly string[],
   whole: boolean,
   review: ReviewConfig,
-): Chunk[] {
+): { chunks: Chunk[]; omitted: string[] } {
   if (whole) {
     const diff = git(tools, ["diff", `${from}..${to}`], "range").stdout;
     if (Buffer.byteLength(diff) <= review.maxDiffBytes) {
       const files = lines(
         git(tools, ["diff", "--name-only", "--no-renames", `${from}..${to}`], "range").stdout,
       );
-      return [{ range: `${from.slice(0, 12)}..${to.slice(0, 12)}`, files, diff }];
+      return {
+        chunks: [{ range: `${from.slice(0, 12)}..${to.slice(0, 12)}`, files, diff }],
+        omitted: [],
+      };
     }
   }
   const chunks: Chunk[] = [];
+  const omitted: string[] = [];
   let current: { shas: string[]; files: Set<string>; diff: string } | undefined;
   const flush = (): void => {
     if (current === undefined) return;
@@ -684,6 +706,19 @@ function buildChunks(
     const files = lines(
       git(tools, ["diff", "--name-only", "--no-renames", `${sha}^1`, sha], "range").stdout,
     );
+    if (Buffer.byteLength(diff) > review.maxDiffBytes) {
+      flush();
+      const parts = splitCommit(tools, sha, review.maxDiffBytes);
+      omitted.push(...parts.omitted);
+      for (const [index, part] of parts.parts.entries()) {
+        chunks.push({
+          range: `${sha.slice(0, 12)} (part ${index + 1}/${parts.parts.length})`,
+          files: part.files,
+          diff: part.diff,
+        });
+      }
+      continue;
+    }
     if (
       current !== undefined &&
       Buffer.byteLength(current.diff) + Buffer.byteLength(diff) > review.maxDiffBytes
@@ -696,7 +731,41 @@ function buildChunks(
     current.diff += diff;
   }
   flush();
-  return chunks;
+  return { chunks, omitted };
+}
+
+/** Per-file diffs of one commit, grouped in order into parts of at most `max` bytes. */
+function splitCommit(
+  tools: Tools,
+  sha: string,
+  max: number,
+): { parts: { files: string[]; diff: string }[]; omitted: string[] } {
+  const files = git(tools, ["diff", "--name-only", "-z", "--no-renames", `${sha}^1`, sha], "range")
+    .stdout.split("\0")
+    .filter((file) => file !== "");
+  const parts: { files: string[]; diff: string }[] = [];
+  const omitted: string[] = [];
+  let current: { files: string[]; diff: string } | undefined;
+  for (const file of files) {
+    const diff = git(
+      tools,
+      ["--literal-pathspecs", "diff", "--no-renames", `${sha}^1`, sha, "--", file],
+      "range",
+    ).stdout;
+    if (Buffer.byteLength(diff) > max) {
+      omitted.push(`${sha.slice(0, 12)}:${file}`);
+      continue;
+    }
+    if (current !== undefined && Buffer.byteLength(current.diff) + Buffer.byteLength(diff) > max) {
+      parts.push(current);
+      current = undefined;
+    }
+    current ??= { files: [], diff: "" };
+    current.files.push(file);
+    current.diff += diff;
+  }
+  if (current !== undefined) parts.push(current);
+  return { parts, omitted };
 }
 
 interface ChunkResult {
@@ -827,10 +896,19 @@ async function runTag(run: Run, pos: string[]): Promise<CommandResult> {
       data: { ...base, outcome: "deferred" },
     };
   }
-  const chunks = buildChunks(tools, from, to, commits, true, review);
+  const { chunks, omitted } = buildChunks(tools, from, to, commits, true, review);
   const files = [...new Set(chunks.flatMap((chunk) => chunk.files))];
   const { model, effort, trigger, areas } = decideAlways(files, review);
-  const plan = { ...base, files: files.length, chunks: chunks.length, model, effort, trigger };
+  const plan = {
+    ...base,
+    files: files.length,
+    chunks: chunks.length,
+    model,
+    effort,
+    trigger,
+    omitted,
+  };
+  notes.push(...omissionNote(omitted, review.maxDiffBytes));
 
   if (ctx.flags.dryRun) {
     return {

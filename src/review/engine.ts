@@ -19,7 +19,13 @@ import { join } from "node:path";
 import { RESULT_SCHEMA } from "./prompt.js";
 
 export type FailureClass =
-  "unreachable" | "timeout" | "limit" | "model-switch" | "effort-mismatch" | "unparsable";
+  | "unreachable"
+  | "timeout"
+  | "limit"
+  | "model-switch"
+  | "effort-mismatch"
+  | "input-too-large"
+  | "unparsable";
 
 export interface EngineRequest {
   model: string;
@@ -46,6 +52,8 @@ export type EngineResult =
 /** Codex reports exhausted quota with these markers (stderr, or JSONL events). */
 const LIMIT_PATTERN =
   /usage_limit_reached|rate_limit_exceeded|usageLimitExceeded|usage limit|rate limit|try again at/i;
+/** Codex refusing the prompt for its size (SST-DESIGN-041). */
+const INPUT_TOO_LARGE_PATTERN = /input_too_large|Input exceeds the maximum length/i;
 /** Codex switching the model on its own, e.g. "Automatically switched to … due to usage limits". */
 const SWITCH_PATTERN = /automatically switched to|switched (?:the )?model/i;
 
@@ -144,6 +152,9 @@ export function runCodex(request: EngineRequest): EngineResult {
   }
 
   if (result.status !== 0 || raw === undefined) {
+    if (INPUT_TOO_LARGE_PATTERN.test(own)) {
+      return fail("input-too-large", firstMatchLine(own, INPUT_TOO_LARGE_PATTERN));
+    }
     if (LIMIT_PATTERN.test(own)) return fail("limit", firstMatchLine(own, LIMIT_PATTERN));
     return fail(
       "unparsable",

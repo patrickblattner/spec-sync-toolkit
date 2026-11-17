@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.50.1
+
+Fix for the nightly Codex batch (SST-DESIGN-041, register #2080). Pins `SST-DESIGN-041` rev 2.
+
+### Fixed
+
+- `review batch` and `review tag` sent a single commit above `review.maxDiffBytes` as one chunk.
+  A 2 MB commit produced a prompt above Codex's input limit of 1,048,576 characters; Codex refused
+  it, the run was classified `unparsable` and skipped, and in both app repos the batch was skipped
+  every night since 11.11. with the marker never moving.
+- Chunking: no chunk carries more than `maxDiffBytes` of diff. A commit above the limit is split by
+  file into parts of at most `maxDiffBytes`, each its own chunk with the range `<sha12> (part i/n)`
+  and only its files. A file whose own diff is above the limit is left out: the output (also
+  `--dry-run`) lists it under `omitted` as `<sha12>:<path>`, with one note naming the count. An
+  omitted file never causes a skip, and the batch marker moves as usual. A range that fits, and
+  commits each below the limit, chunk exactly as before.
+- New failure class `input-too-large`: Codex refusing the prompt for its size (`input_too_large` /
+  "Input exceeds the maximum length" in its own output) is reported as such — `skipped`, exit 0,
+  ledger `class: "input-too-large"` — instead of `unparsable`.
+
+### How to adopt (app repos)
+
+- Raise the pin to `v0.50.1`. No config change needed.
+- The first `review batch` after the raise reviews the whole backlog since the stuck marker (in
+  both app repos since 11.11.) — expect more chunks and Codex calls than a usual night.
+
 ## 0.50.0
 
 Three cost items of the Fable analysis (register #2028/#2032, plan step 3): a cap on build agents
