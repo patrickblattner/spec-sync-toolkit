@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.51.0
 
 Security fix: no toolkit call through `npx` may fetch from the registry.
 
