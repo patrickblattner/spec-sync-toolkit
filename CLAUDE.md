@@ -63,7 +63,8 @@ and emission are the dispatcher's job, not the command's.
 The toolkit carries the foundation rules that name it: gate and profiles (`PROC-REL-012`),
 hygiene (`GL-CODE-002`), review engine (`PROC-DEV-049`), licence inventory (`SST-FEATURE-001`).
 It carries no norm on how a lead organises the work (`PROC-DEV-001`): `queue`, `handover`,
-`budget`, `repin` and `drift` are optional, and no hook or gate asks for their result.
+`budget`, `repin` and `drift` are optional, and no hook or gate asks for their result. The
+toolkit ships no Stop or SubagentStop hook (`PROC-CC-011`).
 `src/norms.ts` holds the plain defaults of those commands (sort tiers, labels, merge model);
 nothing tracks them against the spec server.
 

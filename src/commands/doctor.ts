@@ -1,59 +1,41 @@
 /**
- * `doctor` — the environment against the norm (spec §7.7, SST-DESIGN-022).
+ * `doctor` — three checks and the leftovers of aborted runs (spec §7.7,
+ * SST-DESIGN-022 rev 5).
  *
  * `spec-sync doctor`
  *
- * Checks, no repairs: the agent types of the effort table exist with a
- * valid `effort:` frontmatter, the skill table is internally sound, the repo
- * knows the configured labels, a `spec-pins.json` the repo keeps is a valid
- * map, and the pause flag is absent. A repo with workflows (it lands through PRs)
- * is also checked against the push flow of PROC-DEV-005: the pre-push hook runs
- * the merge pre-run, and the merge profile has a `unit-static` phase — the last one a warning, which
- * is listed under `warnings` and never turns the exit red. Every repo is also
- * scanned for any `npx … spec-sync` (with or without `--no-install`) in its
- * pre-push hook, workflows, `scripts/` and the files agents act on, and the
- * user's npx cache for a copy of the public npm package `spec-sync`. Findings
- * are reported, never fixed — repairing
- * a drifted norm would decide something the owner has not decided (spec §2).
+ * Checks exactly: every `npx … spec-sync` (with or without `--no-install`) in
+ * the GL-SEC-011 places — pre-push hook, workflows, `scripts/`, `package.json`,
+ * `CLAUDE.md`, `AGENTS.md`, the Claude settings — and a copy of the public npm
+ * package `spec-sync` in the user's npx cache; a `spec-pins.json` that exists
+ * but is not a valid map; a lying `.spec-sync-pause`. Agent types, skill
+ * tables, labels, pins as a duty and norm revisions are the lead's business
+ * (PROC-DEV-001), not doctor's. Findings are reported, never fixed.
  *
  * Exit 1 on at least one finding.
  */
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import picomatch from "picomatch";
 import { homedir } from "node:os";
-import { isAbsolute, join, relative as relativeTo } from "node:path";
+import { join, relative as relativeTo } from "node:path";
 import type { Command, CommandContext, CommandResult } from "../cli.js";
-import { CONFIG_FILENAME, LEGACY_REVIEW_KEYS, loadConfig, type Config } from "../config.js";
 import { readLedger } from "../ledger.js";
 import { createLogDir, protectedLogDirs, writePhaseLog } from "../logs.js";
 import { EXIT } from "../output.js";
 import { checkFlags } from "../pack/args.js";
-import { defaultTools, failureLine, type Tools } from "../pack/exec.js";
+import { defaultTools, type Tools } from "../pack/exec.js";
 import { findOrphans } from "../pack/orphans.js";
 import { readPinsFile } from "../pins.js";
-
-/** Where the norm expects the agent definitions and the skill, below `$HOME`. */
-const AGENTS_DIR = join(".claude", "agents");
-const SKILL_FILE = join(".claude", "skills", "spec-sync", "SKILL.md");
-
-/** The foundation spec that (used to) carry the effort table (PROC-DEV-042). */
-export const EFFORT_TABLE_KEY = "PROC-DEV-042";
 
 const PINS_FILE = "spec-pins.json";
 const PAUSE_FILE = ".spec-sync-pause";
 const WORKFLOWS_DIR = join(".github", "workflows");
-
-/** `effort:` values the agent loader accepts (foundation.dev.process §Worker-Loop). */
-const EFFORT_VALUES = new Set(["low", "medium", "high", "xhigh", "max"]);
 
 /** How many findings the response itself carries; the rest lives in the log. */
 const MAX_LISTED_FINDINGS = 8;
 
 export interface DoctorDeps {
   tools: Tools;
-  /** Home directory holding `.claude/agents` and `.claude/skills` — a seam for tests. */
-  home: string;
   /** The npm cache root whose `_npx/` folders are scanned — a seam for tests. */
   npmCache: string;
 }
@@ -65,12 +47,11 @@ export function defaultNpmCache(env: NodeJS.ProcessEnv = process.env, home = hom
 
 export const doctorCommand: Command = {
   name: "doctor",
-  summary: "Check the environment against the norm",
+  summary: "Report npx calls of spec-sync, an invalid pin file, the pause flag and leftovers",
   needsConfig: false,
   run: (ctx) =>
     runDoctor(ctx, {
       tools: defaultTools(ctx.repoRoot),
-      home: homedir(),
       npmCache: defaultNpmCache(),
     }),
 };
@@ -87,42 +68,13 @@ export async function runDoctor(ctx: CommandContext, deps: DoctorDeps): Promise<
   const notes: string[] = [];
   const details: string[] = [];
   const add = (check: string, detail: string): void => void findings.push({ check, detail });
-  // A warning is reported like a finding but does not turn the exit red.
-  const warnings: Finding[] = [];
-  const warn = (check: string, detail: string): void => void warnings.push({ check, detail });
 
-  const specSection = await readNormSection(deps.tools, add);
-  if (specSection === undefined) {
-    notes.push("agent-effort and skill-table checks need the spec-mcp server and were skipped");
-  } else {
-    const specTable = parseEffortTable(specSection);
-    if (specTable.length === 0) {
-      // PROC-DEV-042 (the v2 successor of §Worker-Loop's effort table) is
-      // prose, not a table — the cross-check against the foundation source is
-      // not possible in this shape. Fall back to checking the skill's own
-      // table for internal soundness against the installed agent definitions.
-      notes.push(
-        `${EFFORT_TABLE_KEY} carries no parseable effort table — checking the skill against installed agent definitions only`,
-      );
-      const skillTable = readSkillTable(deps.home, add);
-      if (skillTable !== undefined) checkAgentDefinitions(skillTable, deps.home, add);
-    } else {
-      checkAgentDefinitions(specTable, deps.home, add);
-      checkSkillTable(specTable, deps.home, add);
-    }
-  }
-
-  checkLabels(ctx, deps.tools, add, notes);
-  checkReview(ctx, deps.tools, add);
   checkPins(ctx.repoRoot, add);
   checkPause(ctx.repoRoot, add);
-  checkNightly(ctx, add);
-  checkPushFlow(ctx, add, warn);
   checkNpxCalls(ctx.repoRoot, add);
   checkNpxCache(deps.npmCache, add);
 
-  // Leftovers of aborted runs (spec §7.7). They need to know which tickets are
-  // still open, so this runs after the checks that already reported a broken `gh`.
+  // Leftovers of aborted runs (spec §7.7): worktrees and branches.
   const orphans = findOrphans({
     tools: deps.tools,
     repoRoot: ctx.repoRoot,
@@ -148,223 +100,11 @@ export async function runDoctor(ctx: CommandContext, deps: DoctorDeps): Promise<
     exit: findings.length === 0 ? EXIT.OK : EXIT.FAILED,
     notes,
     logDir,
-    data: {
-      findings: listed,
-      ...(warnings.length === 0
-        ? {}
-        : { warnings: warnings.map((warning) => `${warning.check}: ${warning.detail}`) }),
-    },
+    data: { findings: listed },
   };
 }
 
 type Add = (check: string, detail: string) => void;
-
-/** The spec that (used to) carry the effort table — source the other checks compare against. */
-async function readNormSection(tools: Tools, add: Add): Promise<string | undefined> {
-  try {
-    return await tools.spec("spec_get", { key: EFFORT_TABLE_KEY });
-  } catch (error) {
-    add("spec-mcp", error instanceof Error ? error.message : String(error));
-    return undefined;
-  }
-}
-
-export interface EffortRow {
-  agent: string;
-  effort: string;
-}
-
-/**
- * The effort table of a markdown document: rows whose agent cell names an agent
- * in backticks. The row for "the worker itself" carries no such cell and is not
- * an agent type, so it drops out on its own — as do header and separator rows.
- */
-export function parseEffortTable(markdown: string): EffortRow[] {
-  const rows: EffortRow[] = [];
-
-  for (const line of markdown.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith("|")) continue;
-
-    const cells = trimmed.split("|").slice(1, -1);
-    if (cells.length < 3) continue;
-
-    const agent = /`([a-z][a-z0-9-]*)`/u.exec(cells[1] ?? "")?.[1];
-    if (agent === undefined) continue;
-
-    const effort = (cells[2] ?? "").replace(/[`*]/gu, "").trim();
-    if (!rows.some((row) => row.agent === agent)) rows.push({ agent, effort });
-  }
-
-  return rows;
-}
-
-/**
- * Every agent type of the table exists as a definition with a valid `effort:`
- * frontmatter. A file without frontmatter is not an agent type at all — it is
- * never registered, so a spawn against it silently runs at the parent's level.
- */
-function checkAgentDefinitions(table: EffortRow[], home: string, add: Add): void {
-  for (const row of table) {
-    const relative = join(AGENTS_DIR, `${row.agent}.md`);
-    const path = join(home, relative);
-
-    if (!existsSync(path)) {
-      add("agent-type", `${row.agent}: no ~/${relative}`);
-      continue;
-    }
-
-    const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---/u.exec(readFileSync(path, "utf8"))?.[1];
-    if (frontmatter === undefined) {
-      add("agent-type", `${row.agent}: ~/${relative} has no frontmatter — not an agent type`);
-      continue;
-    }
-
-    const effort = /^effort:\s*(\S+)/mu.exec(frontmatter)?.[1];
-    if (effort === undefined) {
-      add("agent-type", `${row.agent}: ~/${relative} has no effort: field — not an agent type`);
-      continue;
-    }
-    if (!EFFORT_VALUES.has(effort) && !/^\d+$/u.test(effort)) {
-      add("agent-type", `${row.agent}: effort "${effort}" is not a valid level`);
-      continue;
-    }
-    if (effort !== row.effort) {
-      add(
-        "agent-type",
-        `${row.agent}: effort ${effort} in the definition, ${row.effort} in the spec`,
-      );
-    }
-  }
-}
-
-/** Reads the skill's own effort table. `undefined` (with a finding) when it has none. */
-function readSkillTable(home: string, add: Add): EffortRow[] | undefined {
-  const path = join(home, SKILL_FILE);
-  if (!existsSync(path)) {
-    add("skill-table", `no ~/${SKILL_FILE}`);
-    return undefined;
-  }
-
-  const skillTable = parseEffortTable(readFileSync(path, "utf8"));
-  if (skillTable.length === 0) {
-    add("skill-table", `~/${SKILL_FILE} carries no effort table`);
-    return undefined;
-  }
-  return skillTable;
-}
-
-/** The skill's table against the spec's — the drift the ADR names by example. */
-function checkSkillTable(specTable: EffortRow[], home: string, add: Add): void {
-  const skillTable = readSkillTable(home, add);
-  if (skillTable === undefined) return;
-
-  const inSkill = new Map(skillTable.map((row) => [row.agent, row.effort]));
-  const inSpec = new Map(specTable.map((row) => [row.agent, row.effort]));
-
-  for (const row of specTable) {
-    const effort = inSkill.get(row.agent);
-    if (effort === undefined)
-      add("skill-table", `${row.agent} is in the spec table, not in the skill`);
-    else if (effort !== row.effort) {
-      add("skill-table", `${row.agent}: ${effort} in the skill, ${row.effort} in the spec`);
-    }
-  }
-  for (const row of skillTable) {
-    if (!inSpec.has(row.agent))
-      add("skill-table", `${row.agent} is in the skill table, not in the spec`);
-  }
-}
-
-/** Does the repo know its configured labels? A missing config is itself a finding. */
-function checkLabels(ctx: CommandContext, tools: Tools, add: Add, notes: string[]): void {
-  let config: Config;
-  try {
-    config = loadConfig(ctx.repoRoot, ctx.flags.config);
-  } catch (error) {
-    add("config", error instanceof Error ? error.message : String(error));
-    return;
-  }
-
-  const result = tools.run("gh", ["label", "list", "--limit", "200", "--json", "name"]);
-  if (!result.ok) {
-    add("labels", `gh label list failed: ${failureLine(result)}`);
-    return;
-  }
-
-  let known: Set<string>;
-  try {
-    known = new Set(
-      (JSON.parse(result.stdout) as { name?: string }[]).flatMap((label) =>
-        label.name === undefined ? [] : [label.name],
-      ),
-    );
-  } catch {
-    add("labels", "gh label list returned no JSON");
-    return;
-  }
-
-  // The priority class labels (`labels.priority`, SST-DESIGN-017 rev 6) are
-  // optional by design — a repo without them sorts exactly as before — so their
-  // absence is not a doctor finding; only the flat label fields are checked.
-  // The quota labels (rev 11) are optional the same way.
-  const {
-    priority: _priority,
-    product: _product,
-    mergeBlocker: _mergeBlocker,
-    mainRed: _mainRed,
-    sweep: _sweep,
-    pipeline: _pipeline,
-    nonProduct: _nonProduct,
-    ...flat
-  } = config.labels;
-  const missing = Object.entries(flat).filter(([, label]) => !known.has(label));
-  for (const [key, label] of missing) add("labels", `${key} label "${label}" does not exist here`);
-  if (missing.length === 0) notes.push(`${Object.keys(flat).length} configured labels exist`);
-}
-
-/**
- * The `review` block (SST-DESIGN-030 §Config): legacy keys of the former
- * per-repo review scripts are ignored by the schema, so they are reported here;
- * and a risk glob that matches no tracked file guards nothing. A config that
- * does not load is already a finding of `checkLabels`.
- */
-function checkReview(ctx: CommandContext, tools: Tools, add: Add): void {
-  let raw: unknown;
-  let config: Config;
-  try {
-    const path = ctx.flags.config ?? CONFIG_FILENAME;
-    raw = JSON.parse(readFileSync(isAbsolute(path) ? path : join(ctx.repoRoot, path), "utf8"));
-    config = loadConfig(ctx.repoRoot, ctx.flags.config);
-  } catch {
-    return;
-  }
-
-  const block = (raw as { review?: unknown }).review;
-  if (block !== null && typeof block === "object" && !Array.isArray(block)) {
-    for (const key of LEGACY_REVIEW_KEYS) {
-      if (key in block) {
-        add("review-config", `review.${key} is a legacy key and is ignored — remove it`);
-      }
-    }
-  }
-
-  const areas = Object.entries(config.review.riskGlobs);
-  if (areas.length === 0) return;
-  const listed = tools.run("git", ["ls-files"]);
-  if (!listed.ok) {
-    add("review-globs", `git ls-files failed: ${failureLine(listed)}`);
-    return;
-  }
-  const files = listed.stdout.split("\n").filter((line) => line !== "");
-  for (const [area, globs] of areas) {
-    for (const glob of globs) {
-      if (!files.some((file) => picomatch.isMatch(file, glob))) {
-        add("review-globs", `riskGlobs.${area} "${glob}" matches no file`);
-      }
-    }
-  }
-}
 
 /** Whether a repo keeps a pin file is its lead's call (SST-DESIGN-025 rev 6); one it keeps must parse. */
 function checkPins(repoRoot: string, add: Add): void {
@@ -374,80 +114,10 @@ function checkPins(repoRoot: string, add: Add): void {
   }
 }
 
+/** A lying pause flag is reported, never removed (SST-DESIGN-022 rev 5). */
 function checkPause(repoRoot: string, add: Add): void {
   if (existsSync(join(repoRoot, PAUSE_FILE))) {
     add("pause", `${PAUSE_FILE} exists — the loop is paused`);
-  }
-}
-
-/**
- * An unset `nightlyWorkflow` silently switches the red-main check of `queue`
- * off. A repo without workflows has nothing to check; a repo with workflows
- * must name the one that builds main.
- */
-function checkNightly(ctx: CommandContext, add: Add): void {
-  let config: Config;
-  try {
-    config = loadConfig(ctx.repoRoot, ctx.flags.config);
-  } catch {
-    return;
-  }
-  if (config.nightlyWorkflow !== undefined) return;
-  if (hasWorkflows(ctx.repoRoot)) {
-    add(
-      "nightly",
-      `no \`nightlyWorkflow\` in the config, but ${WORKFLOWS_DIR} has workflows — the red-main check is off`,
-    );
-  }
-}
-
-function hasWorkflows(repoRoot: string): boolean {
-  const dir = join(repoRoot, WORKFLOWS_DIR);
-  return existsSync(dir) && readdirSync(dir).some((file) => /\.ya?ml$/.test(file));
-}
-
-/**
- * The pre-run every push must pass (PROC-DEV-005 rev 7 §Preflight on every
- * push, light): the toolkit's wrapper, which skips code-free pushes and caps
- * the run, fed with the hook's stdin.
- */
-export const PREFLIGHT_COMMAND = "node_modules/.bin/spec-sync prepush";
-
-/**
- * The same pre-run from a Node hook script: the toolkit's CLI file run by the
- * current Node, never through npx (an npx cache may hold the unrelated public
- * package `spec-sync`).
- */
-export const PREFLIGHT_NODE_CALL =
-  'spawnSync(process.execPath, [fileURLToPath(import.meta.resolve("spec-sync-toolkit/dist/cli.js")), "prepush"], { input: stdin, stdio: ["pipe", "inherit", "inherit"] })';
-export const UNIT_STATIC_PHASE = "unit-static";
-
-/**
- * The push flow of PROC-DEV-005, for a repo that lands through PRs — one with
- * workflows, the same signal `checkNightly` reads. A repo without workflows
- * (this toolkit) pushes straight to main and has no PR flow to check.
- */
-function checkPushFlow(ctx: CommandContext, add: Add, warn: Add): void {
-  if (!hasWorkflows(ctx.repoRoot)) return;
-  checkPrePushHook(ctx.repoRoot, add);
-
-  let config: Config;
-  try {
-    config = loadConfig(ctx.repoRoot, ctx.flags.config);
-  } catch {
-    return;
-  }
-  const merge = config.gate.profiles.merge;
-  if (merge === undefined) {
-    warn(
-      "unit-static",
-      `no \`merge\` profile in the config — PROC-DEV-005 runs a fast \`${UNIT_STATIC_PHASE}\` phase in it`,
-    );
-  } else if (!merge.includes(UNIT_STATIC_PHASE)) {
-    warn(
-      "unit-static",
-      `the merge profile has no \`${UNIT_STATIC_PHASE}\` phase — add one for the source-scan, rule and registry tests that need no database, image or browser (PROC-DEV-005)`,
-    );
   }
 }
 
@@ -521,69 +191,6 @@ export function prePushSources(repoRoot: string): HookSource[] {
     }
   }
   return sources;
-}
-
-/**
- * Does the text invoke `spec-sync gate` with `--profile merge` and
- * `--preflight`? Quotes, commas and brackets are flattened first, so the
- * argument array of a `spawnSync("npx", ["spec-sync", "gate", …])` reads like a
- * shell line.
- */
-export function invokesPreflight(text: string): boolean {
-  const flat = text.replace(/["'`,[\]()]/gu, " ").replace(/\s+/gu, " ");
-  for (const match of flat.matchAll(/spec-sync gate((?: (?!spec-sync\b)\S+){0,12})/gu)) {
-    const args = match[1] ?? "";
-    if (/ --preflight\b/u.test(args) && /--profile[ =]merge\b/u.test(args)) return true;
-  }
-  return false;
-}
-
-/**
- * Does the text invoke the light preflight `spec-sync prepush` (PROC-DEV-005
- * rev 7)? Any shell form counts (`node_modules/.bin/spec-sync prepush`, the
- * older npx forms — those are reported by the npx check instead), and so does
- * the Node form that runs the resolved `spec-sync-toolkit/dist/cli.js`.
- */
-export function invokesLightPreflight(text: string): boolean {
-  const flat = text.replace(/["'`,[\]()]/gu, " ").replace(/\s+/gu, " ");
-  return /(?:spec-sync|spec-sync-toolkit\/dist\/cli\.js) prepush\b/u.test(flat);
-}
-
-function checkPrePushHook(repoRoot: string, add: Add): void {
-  const sources = prePushSources(repoRoot);
-  if (sources.length === 0) {
-    add(
-      "pre-push",
-      `no pre-push hook (.husky/pre-push, .githooks/pre-push or package.json "simple-git-hooks") — add one that runs \`${PREFLIGHT_COMMAND}\` (PROC-DEV-005)`,
-    );
-    return;
-  }
-  if (sources.some((source) => invokesLightPreflight(source.text))) return;
-
-  // The plain gate call of rev 6: no skip for code-free pushes, no cap.
-  const plain = sources.find((source) => invokesPreflight(source.text));
-  if (plain !== undefined) {
-    add(
-      "pre-push",
-      `pre-push hook lacks the light preflight (PROC-DEV-005 rev 7) — ${plain.file} calls \`spec-sync gate --profile merge --preflight\` directly; call \`spec-sync prepush\` instead and hand it the hook's stdin`,
-    );
-    return;
-  }
-
-  // Name the file a reader edits: the script the hook delegates to, else the entry.
-  const target =
-    sources.find((source) => /\.(?:mjs|cjs|js|ts)$/u.test(source.file)) ??
-    sources.find((source) => !source.file.startsWith("package.json")) ??
-    (sources[0] as HookSource);
-  const line = /\.(?:mjs|cjs|js|ts)$/u.test(target.file)
-    ? PREFLIGHT_NODE_CALL
-    : target.file === "package.json"
-      ? `"pre-push": "${PREFLIGHT_COMMAND} && …"`
-      : PREFLIGHT_COMMAND;
-  add(
-    "pre-push",
-    `${target.file} does not run the merge pre-run — add \`${line}\` and refuse the push on a non-zero exit (PROC-DEV-005 rev 7)`,
-  );
 }
 
 /**
@@ -704,8 +311,7 @@ function checkNpxCache(npmCache: string, add: Add): void {
 
 /**
  * Open issue numbers, for the leftover checks. `undefined` when `gh` cannot
- * answer — the caller then judges nothing by ticket instead of guessing. A
- * failing `gh` is already a finding of the label check; it is not repeated here.
+ * answer — the caller then judges nothing by ticket instead of guessing.
  */
 function openIssues(tools: Tools): Set<number> | undefined {
   const result = tools.run("gh", [

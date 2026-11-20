@@ -16,7 +16,6 @@
 
 import { statSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { readLedger } from "../ledger.js";
 import type { Tools } from "./exec.js";
 
 /** A branch or worktree is judged against `main` — the only branch a merge targets (§7.4). */
@@ -68,7 +67,6 @@ export function findOrphans(input: OrphanInput): OrphanReport {
   const report: OrphanReport = { findings: [], notes: [], details: [], partial: 0 };
   checkWorktrees(input, report);
   checkBranches(input, report);
-  checkIncompleteMerges(input, report);
   if (report.partial > 0) {
     report.notes.push(
       `${report.partial} branch(es) miss a minority of their markers on ${BASE} — logged, not reported`,
@@ -346,36 +344,6 @@ export function introducedMarkers(diff: string): string[] {
     add(symbol?.[1]);
   }
   return markers;
-}
-
-/**
- * A `merge-started` without its `merge-completed` (spec §7.4/§7.7): the merge
- * sequence died between two mutating steps and left the rest undone.
- *
- * Reads through `src/ledger.ts`. An earlier version parsed the file a second
- * time here, because §8 then kept the type list closed at six and the reader
- * dropped both merge types as malformed. Since `DECISION (ledger-tolerant-reader)`
- * that detour is not only unnecessary but wrong: the private parser did not know
- * `LEDGER_ALIASES`, so a ledger written before the rename would have looked like
- * a merge that never completed.
- */
-function checkIncompleteMerges(input: OrphanInput, report: OrphanReport): void {
-  const started = new Map<number, string>();
-  const completed = new Set<number>();
-
-  for (const event of readLedger(input.repoRoot).events) {
-    if (typeof event.issue !== "number") continue;
-    if (event.type === "merge-started") started.set(event.issue, event.at);
-    else if (event.type === "merge-completed") completed.add(event.issue);
-  }
-
-  for (const [issue, at] of started) {
-    if (completed.has(issue)) continue;
-    report.findings.push({
-      check: "merge-incomplete",
-      detail: `#${issue}: merge-started${at === "" ? "" : ` at ${at}`} without merge-completed — re-run \`spec-sync merge\` to finish the sequence`,
-    });
-  }
 }
 
 function examples(entries: string[], limit = MAX_EXAMPLES): string {

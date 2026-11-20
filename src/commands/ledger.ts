@@ -27,8 +27,8 @@
  * squash again. When the ticket is CLOSED on GitHub, the operator closes the
  * start instead: exactly one `merge-completed` with `closedByHand: true` and
  * the reason, appended — the ledger stays append-only (`DECISION
- * (ledger-append-only)`), and every reader of the start/complete pair (`doctor`,
- * `handover`, `merge`) sees the ticket as done.
+ * (ledger-append-only)`), and every reader of the start/complete pair
+ * (`handover`, `merge`) sees the ticket as done.
  *
  * `ok: false` on purpose: nothing was verified, and `budget` must not read the
  * hand close as a merge that frames a context measurement.

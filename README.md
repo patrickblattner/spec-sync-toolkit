@@ -157,15 +157,13 @@ if (preflight.status !== 0) process.exit(preflight.status ?? 1);
 No hook and no gate asks for a current `spec-pins.json` (`SST-DESIGN-025` rev 6): whether a repo
 keeps a pin file at all is its lead's call.
 
-`doctor` checks the push flow in a repo that lands through PRs (one with `.github/workflows`):
-the pre-push hook (`.husky/pre-push`, `.githooks/pre-push`, or `simple-git-hooks` / `husky.hooks`
-in `package.json`, followed one step into the script or npm script it calls) must run
-`node_modules/.bin/spec-sync prepush` (in a Node hook script: `process.execPath` with the
-resolved `spec-sync-toolkit/dist/cli.js` and `prepush`) — otherwise a finding names the file and
-the line to add; and the merge profile should carry a `unit-static` phase — a **warning**, listed under `warnings`, which
-never turns the exit red.
+`doctor` checks exactly three things (`SST-DESIGN-022` rev 5) — the npx calls and npx cache
+below, a `spec-pins.json` that exists but is not a valid `{key: rev}` map, and a lying
+`.spec-sync-pause` (reported, never removed) — plus the leftover worktrees and branches of
+aborted runs. Agent types, skill tables, labels, norm revisions, `nightlyWorkflow`, the review
+block and the pre-push hook's content are the lead's business, not doctor's.
 
-In every repo, `doctor` reports each `npx spec-sync` — `npx` followed by `spec-sync`, whatever
+`doctor` reports each `npx spec-sync` — `npx` followed by `spec-sync`, whatever
 flags stand between, `--no-install` included — in the pre-push hook and what it calls,
 `.github/workflows/*.yml`, files under `scripts/`, and the root files agents act on (`CLAUDE.md`,
 `AGENTS.md`, the whole `package.json`, `.claude/settings.json`, `.claude/settings.local.json` —
@@ -284,8 +282,8 @@ matching `pinExclude` never count as drift.
 `ledger close <issue> --reason "<text>"` ends an orphaned `merge-started` by hand — one that
 `merge` cannot resume because its squash commit predates the current commit subject format. It
 appends exactly one `merge-completed` with `closedByHand: true`, the reason and `ok: false` (not
-a verified merge, so `budget` does not measure it); `doctor` and `handover` then see the ticket as
-closed. Exit 4 and nothing written unless the ledger holds a `merge-started` for the issue without
+a verified merge, so `budget` does not measure it); `handover` and `merge` then see the ticket
+as closed. Exit 4 and nothing written unless the ledger holds a `merge-started` for the issue without
 a later `merge-completed`, `gh issue view <issue> --json state` says `CLOSED`, and the reason is
 non-empty. `--dry-run` writes nothing and returns the event it would append.
 
@@ -419,8 +417,7 @@ The measurement is always the writing session's own (PROC-DEV-037 rev 10): `--se
 that transcript freshly, like `budget --session`; without it the session the client names
 (`CLAUDE_CODE_SESSION_ID`) is measured, falling back to that session's newest ledger event;
 with no session known, parallel live transcripts end in exit 3 ("name one with --session"). A
-ledger event of a foreign session never attests. The stop hook's budget block names its own
-session and dictates `node_modules/.bin/spec-sync handover --reason budget --session <id>`. `budget` records
+ledger event of a foreign session never attests. `budget` records
 the session id on every `context` event, and the handover carries it as `- Session: <id>`.
 
 `stdout` carries exactly one JSON object (`--human` renders text instead). Full command
@@ -503,7 +500,7 @@ preflight, `build` in front of browser phases); without it, a red phase never st
 
 Everything project-specific lives in one file, `spec-sync.config.json`: gate phases and
 profiles, path globs for review lenses, label names, log retention, context budget.
-`contextBudget` defaults to **250 000** for the CLI and all hooks alike (PROC-DEV-036 rev 10,
+`contextBudget` defaults to **250 000** for `budget` and `handover` alike (SST-DESIGN-023 rev 5,
 SST-DESIGN-014 rev 3); a repo sets it only to deviate on the owner's word — a missing entry never
 means "no limit".
 
@@ -606,48 +603,6 @@ Both read a repo checkout: the positional `<repo-root>` (default: the repo the C
 `--meaning` for a meaning layer that does not yet live in that repo. Model schema and the
 meaning layer in full: `docs/map-model-schema.md` in the spec repo (PROC-SPEC-002).
 
-## Turn-End Hooks (`dist/hooks/`)
-
-Besides the CLI, the package builds standalone hook binaries for Claude Code
-(moved home from the worker repos, decision #193, 2026-08-18):
-
-```bash
-node <toolkit>/dist/hooks/stop-check.js            # stop hook: valve chain of the worker session
-node <toolkit>/dist/hooks/subagent-stop-check.js   # SubagentStop hook: budget (agent's own transcript) + completion acceptance of the build agents
-node <toolkit>/dist/hooks/architect-stop-check.js  # stop hook: budget boundary of the architect inbox (75 %, once)
-```
-
-`subagent-stop-check` measures the sub-agent's own transcript (`agent_transcript_path` of the
-SubagentStop input, the parent's `transcript_path` only as a fallback) against `contextBudget` and
-keeps its block counter per agent run; at 100 % it blocks once and orders `CONTEXT LOW` (v0.27.0, register #1707); the agent finishes its
-ticket, and the next ticket gets a fresh agent anyway (register #1741).
-
-`architect-stop-check` (owner's word 08/22, PROC-DEV-020 rev 4 / PROC-DEV-036 rev 5) is the
-architect variant: pause flag → fresh handover (with attest verification) → budget stage at
-**75 %** of `contextBudget` from the spec repo's `spec-sync.config.json`, exactly once per
-session. No workbench, no checker. The block dictates the handover with the measured number
-(the session does not know its window, the hook does); if an owner conversation is running
-(the worker-harness hook's state file `session-state.js`, field `last_owner_prompt_at`), it
-forces the announcement "please /handover" instead of the handover. The owner's `/handover`
-is a pure release (field `last_release_at`, register #1186/#1187): it writes no handover, and
-the conversation counts again only with an owner prompt newer than the release — so the next
-turn end hits the `budget` stage. The claim also expires at `owner_claim_expires_at` (#1188). A freshly written
-`reason: budget` handover is verified against the harness's attestation contract
-(`- State: <n> Tokens (measured <ISO>)`, PROC-DEV-037): unreadable — e.g. a translated
-literal, incident 2026-08-29 — means another block that dictates the exact lines, capped at
-3 attempts, fail-open beyond that.
-
-The worker repos register the hooks by **absolute path** in their tracked
-`.claude/settings.json` (the same pattern as `role-guard.sh`): one source, one
-`npm run build`, and every repo behaves identically right away — no script copies,
-no version bumps for the hooks. They speak Claude Code's hook stdout protocol,
-NOT the CLI's JSON envelope; their behaviour (valve chains, budget stage,
-fail-open) is documented in `src/hooks/` and pinned down in `test/hooks.test.ts`.
-They are configured through the files of the consuming repo
-(`spec-sync.config.json` → `contextBudget`, `.spec-sync-pause`, `.spec-sync-handover.md`).
-
-**After every change to `src/hooks/`: `npm run build` — the repos call `dist/`.**
-
 ## Requirements
 
 Node ≥ 22, `git`, and `gh` on the `PATH`. Some commands read a spec server over HTTP; its
@@ -663,12 +618,8 @@ mise install            # Node 26.12.1, pinned in mise.toml
 mise x -- npm install   # the prepare script runs tsup and builds dist/
 ```
 
-`npm install` builds `dist/cli.js` (the `spec-sync` binary) and the three hook binaries in
-`dist/hooks/`: `stop-check.js`, `subagent-stop-check.js` and `architect-stop-check.js`, bundled
-from `src/hooks/` by the entries in `tsup.config.ts`. The app repos register
-`stop-check.js` and `subagent-stop-check.js` by absolute path into this checkout
-(`~/projects/spec-sync-toolkit/dist/hooks/`) in their tracked `.claude/settings.json`, so the
-clone must sit at exactly that path. After a pull, rebuild with `mise x -- npm run build`.
+`npm install` builds `dist/cli.js`, the `spec-sync` binary. The toolkit ships no Stop or
+SubagentStop hook (SST-DESIGN-015 rev 6). After a pull, rebuild with `mise x -- npm run build`.
 
 ## Licence
 

@@ -5,12 +5,7 @@ import { describe, expect, it } from "vitest";
 import type { CommandContext } from "../src/cli.js";
 import {
   defaultNpmCache,
-  EFFORT_TABLE_KEY,
-  invokesLightPreflight,
-  invokesPreflight,
   npxSpecSyncLines,
-  parseEffortTable,
-  PREFLIGHT_NODE_CALL,
   prePushSources,
   runDoctor,
   type DoctorDeps,
@@ -20,65 +15,10 @@ import type { RunResult, Tools } from "../src/pack/exec.js";
 import { introducedMarkers, ticketOfBranch } from "../src/pack/orphans.js";
 
 /**
- * Everything `doctor` inspects is built in a temporary $HOME and a temporary
- * repo: agent definitions, the skill, the lock, the labels. The known mismatch
- * of the ADR (`docs` missing from the skill table) is reproduced artificially —
- * the real environment has been repaired, and a test that depends on a repaired
- * environment tests nothing.
+ * Everything `doctor` inspects is built in a temporary repo and a temporary npm
+ * cache. The fake tools answer git and `gh issue list` only — a spec-server or
+ * label call fails the test (SST-DESIGN-022 rev 5 asks neither).
  */
-
-const AGENTS: Record<string, string> = {
-  "impl-fast": "low",
-  impl: "medium",
-  "impl-deep": "high",
-  investigate: "xhigh",
-  review: "high",
-  docs: "medium",
-};
-
-const effortTable = (rows: Record<string, string> = AGENTS): string =>
-  [
-    "| Trigger (observable, not felt) | Agent | effort |",
-    "|---|---|---|",
-    "| no gate run, no open search | **worker itself** | — |",
-    ...Object.entries(rows).map(([agent, effort]) => `| Trigger | \`${agent}\` | ${effort} |`),
-  ].join("\n");
-
-const normSection = (rows?: Record<string, string>): string =>
-  ["## Worker-Loop (/spec-sync)", "", "Choreography …", "", effortTable(rows), ""].join("\n");
-
-interface Env {
-  agents?: Record<string, string>;
-  agentWithoutFrontmatter?: string;
-  skillRows?: Record<string, string>;
-  omitSkill?: boolean;
-}
-
-function fakeHome(env: Env = {}): string {
-  const home = mkdtempSync(join(tmpdir(), "spec-sync-home-"));
-  const agentsDir = join(home, ".claude", "agents");
-  const skillDir = join(home, ".claude", "skills", "spec-sync");
-  mkdirSync(agentsDir, { recursive: true });
-  mkdirSync(skillDir, { recursive: true });
-
-  for (const [agent, effort] of Object.entries(env.agents ?? AGENTS)) {
-    const body =
-      agent === env.agentWithoutFrontmatter
-        ? `# ${agent}\n\nA role prompt someone forgot the frontmatter on.\n`
-        : `---\nname: ${agent}\nmodel: opus\neffort: ${effort}\n---\n\n# ${agent}\n`;
-    writeFileSync(join(agentsDir, `${agent}.md`), body);
-  }
-
-  if (env.omitSkill !== true) {
-    writeFileSync(
-      join(skillDir, "SKILL.md"),
-      ["---", "name: spec-sync", "---", "", "# spec-sync", "", effortTable(env.skillRows), ""].join(
-        "\n",
-      ),
-    );
-  }
-  return home;
-}
 
 interface RepoOptions {
   /** `null` omits the file; a string writes it verbatim (to simulate invalid JSON). */
@@ -91,7 +31,6 @@ interface RepoOptions {
   review?: unknown;
   /** Files written to `.github/workflows/`. */
   workflows?: string[];
-  nightlyWorkflow?: string;
   /** Extra repo files, path → content (hooks, `.gitattributes`, `package.json`). */
   files?: Record<string, string>;
   /** `gate.profiles` override. */
@@ -129,9 +68,6 @@ function fakeRepo(options: RepoOptions = {}): string {
               },
             }),
         ...(options.review === undefined ? {} : { review: options.review }),
-        ...(options.nightlyWorkflow === undefined
-          ? {}
-          : { nightlyWorkflow: options.nightlyWorkflow }),
       }),
     );
   }
@@ -163,10 +99,7 @@ function fakeRepo(options: RepoOptions = {}): string {
 }
 
 interface SpecFakes {
-  section?: string;
-  sectionFails?: boolean;
-  labels?: string[];
-  labelsFail?: boolean;
+  ghFails?: boolean;
   /** Leftover checks (§7.7). Absent means: no worktrees, no branches, nothing to find. */
   git?: GitModel;
   openIssues?: number[];
@@ -223,24 +156,11 @@ function fakeTools(fakes: SpecFakes = {}): Tools {
       }
 
       expect(file).toBe("gh");
-      if (args[0] === "issue") {
-        if (fakes.labelsFail === true) return fail("no default remote repository");
-        return ok(JSON.stringify((fakes.openIssues ?? []).map((number) => ({ number }))));
-      }
-      expect(args[0]).toBe("label");
-      if (fakes.labelsFail === true) {
-        return { ok: false, code: 1, stdout: "", stderr: "no default remote repository" };
-      }
-      const labels = fakes.labels ?? Object.values(config.labels);
-      return ok(JSON.stringify(labels.map((name) => ({ name }))));
+      expect(args[0]).toBe("issue");
+      if (fakes.ghFails === true) return fail("no default remote repository");
+      return ok(JSON.stringify((fakes.openIssues ?? []).map((number) => ({ number }))));
     },
-    async spec(tool: string, args: Record<string, unknown>): Promise<string> {
-      if (tool === "spec_get") {
-        if (fakes.sectionFails === true)
-          throw new Error("spec-mcp unreachable at http://localhost:8787");
-        expect(args.key).toBe(EFFORT_TABLE_KEY);
-        return fakes.section ?? normSection();
-      }
+    async spec(tool: string): Promise<string> {
       throw new Error(`unexpected spec tool: ${tool}`);
     },
   };
@@ -253,8 +173,8 @@ function context(root: string): CommandContext {
 /** An empty npm cache, so no test reads the real `~/.npm/_npx`. */
 const emptyNpmCache = (): string => mkdtempSync(join(tmpdir(), "spec-sync-npm-"));
 
-function deps(home: string, tools: Tools, npmCache = emptyNpmCache()): DoctorDeps {
-  return { home, tools, npmCache };
+function deps(tools: Tools, npmCache = emptyNpmCache()): DoctorDeps {
+  return { tools, npmCache };
 }
 
 const findingsOf = (data: Record<string, unknown> | undefined): string[] =>
@@ -262,164 +182,56 @@ const findingsOf = (data: Record<string, unknown> | undefined): string[] =>
 
 describe("doctor (spec §7.7)", () => {
   it("passes a sound environment with exit 0 and no findings", async () => {
-    const result = await runDoctor(context(fakeRepo()), deps(fakeHome(), fakeTools()));
+    const result = await runDoctor(context(fakeRepo()), deps(fakeTools()));
     expect(findingsOf(result.data)).toEqual([]);
     expect(result.ok).toBe(true);
     expect(result.exit).toBe(EXIT.OK);
     expect(result.logDir).toBeUndefined();
   });
 
-  it("catches a table mismatch between the skill and the spec", async () => {
-    const withoutDocs = { ...AGENTS };
-    delete withoutDocs.docs;
-
-    const result = await runDoctor(
-      context(fakeRepo()),
-      deps(fakeHome({ skillRows: withoutDocs }), fakeTools()),
-    );
-
-    expect(result.exit).toBe(EXIT.FAILED);
-    expect(findingsOf(result.data)).toContain(
-      "skill-table: docs is in the spec table, not in the skill",
-    );
-  });
-
-  it("catches an effort that drifted between the tables", async () => {
-    const result = await runDoctor(
-      context(fakeRepo()),
-      deps(fakeHome({ skillRows: { ...AGENTS, investigate: "high" } }), fakeTools()),
-    );
-    expect(findingsOf(result.data)).toContain(
-      "skill-table: investigate: high in the skill, xhigh in the spec",
-    );
-  });
-
-  it("catches an agent type the skill invented", async () => {
-    const result = await runDoctor(
-      context(fakeRepo()),
-      deps(fakeHome({ skillRows: { ...AGENTS, refactor: "medium" } }), fakeTools()),
-    );
-    expect(findingsOf(result.data)).toContain(
-      "skill-table: refactor is in the skill table, not in the spec",
-    );
-  });
-
-  it("treats a definition without frontmatter as no agent type at all", async () => {
-    const result = await runDoctor(
-      context(fakeRepo()),
-      deps(fakeHome({ agentWithoutFrontmatter: "review" }), fakeTools()),
-    );
-    expect(findingsOf(result.data).join(" ")).toContain(
-      "review: ~/.claude/agents/review.md has no frontmatter",
-    );
-  });
-
-  it("reports a missing agent definition and an effort that contradicts the spec", async () => {
-    const withoutDocs = { ...AGENTS };
-    delete withoutDocs.docs;
-
-    const result = await runDoctor(
-      context(fakeRepo()),
-      deps(fakeHome({ agents: { ...withoutDocs, impl: "low" } }), fakeTools()),
-    );
-    const findings = findingsOf(result.data).join(" ");
-    expect(findings).toContain("docs: no ~/.claude/agents/docs.md");
-    expect(findings).toContain("impl: effort low in the definition, medium in the spec");
-  });
-
-  it("reports labels the repo does not know", async () => {
-    const result = await runDoctor(
-      context(fakeRepo()),
-      deps(fakeHome(), fakeTools({ labels: ["spec-sync", "auto-audit"] })),
-    );
-    const findings = findingsOf(result.data).join(" ");
-    expect(findings).toContain('bug label "type: bug" does not exist here');
-    expect(findings).toContain('hold label "owner-hold" does not exist here');
-  });
-
   it("leaves a repo without pins alone (SST-DESIGN-025 rev 6), reports invalid pins and the pause flag", async () => {
-    const missing = await runDoctor(
-      context(fakeRepo({ pins: null })),
-      deps(fakeHome(), fakeTools()),
-    );
+    const missing = await runDoctor(context(fakeRepo({ pins: null })), deps(fakeTools()));
     expect(findingsOf(missing.data)).toEqual([]);
     expect(missing.exit).toBe(EXIT.OK);
 
     const invalid = await runDoctor(
       context(fakeRepo({ pins: "not json", paused: true })),
-      deps(fakeHome(), fakeTools()),
+      deps(fakeTools()),
     );
     const findings = findingsOf(invalid.data).join(" ");
     expect(findings).toContain("spec-pins.json is not a valid {key: rev} map");
     expect(findings).toContain(".spec-sync-pause exists");
   });
 
-  it("reports an unset nightlyWorkflow only when the repo has workflows", async () => {
-    const unset = await runDoctor(
-      context(fakeRepo({ workflows: ["image.yml"] })),
-      deps(fakeHome(), fakeTools()),
-    );
-    expect(findingsOf(unset.data).join(" ")).toContain("no `nightlyWorkflow` in the config");
-
-    for (const options of [{}, { workflows: ["image.yml"], nightlyWorkflow: "image.yml" }]) {
-      const quiet = await runDoctor(context(fakeRepo(options)), deps(fakeHome(), fakeTools()));
-      expect(findingsOf(quiet.data).join(" ")).not.toContain("nightlyWorkflow");
-    }
-  });
-
-  it("tracks no norm revisions against the server (SST-DESIGN-015 rev 5)", async () => {
-    const asked: string[] = [];
-    const tools = fakeTools();
-    const spec = tools.spec.bind(tools);
-    const result = await runDoctor(
-      context(fakeRepo()),
-      deps(fakeHome(), {
-        ...tools,
-        spec: (tool, args) => {
-          asked.push(tool);
-          return spec(tool, args);
-        },
-      }),
-    );
-    expect(asked).not.toContain("spec_pins");
-    expect(findingsOf(result.data).join(" ")).not.toContain("norm-hash");
-  });
-
-  it("falls back to a skill-only check when PROC-DEV-042 carries no table (prose, not a table)", async () => {
-    const result = await runDoctor(
-      context(fakeRepo()),
-      deps(fakeHome(), fakeTools({ section: "Just prose, no table anymore." })),
-    );
-    expect(findingsOf(result.data)).toEqual([]);
-    expect(result.notes?.join(" ")).toContain("carries no parseable effort table");
-  });
-
-  it("reports an unreachable spec server and skips what depends on it", async () => {
-    const result = await runDoctor(
-      context(fakeRepo()),
-      deps(fakeHome(), fakeTools({ sectionFails: true })),
-    );
-    const findings = findingsOf(result.data).join(" ");
-    expect(findings).toContain("spec-mcp: spec-mcp unreachable");
-    expect(findings).not.toContain("agent-type");
-    expect(result.notes?.join(" ")).toContain("were skipped");
-  });
-
   it("writes the full report to the log directory and returns its path (spec §3)", async () => {
     const root = fakeRepo({ paused: true });
-    const result = await runDoctor(context(root), deps(fakeHome(), fakeTools()));
+    const result = await runDoctor(context(root), deps(fakeTools()));
 
     expect(result.logDir).toMatch(/^\.spec-sync\/logs\//u);
     const report = readFileSync(join(root, result.logDir as string, "doctor.log"), "utf8");
     expect(report).toContain("[pause] .spec-sync-pause exists");
   });
 
-  it("reports a missing config instead of failing on it", async () => {
-    const result = await runDoctor(
-      context(fakeRepo({ omitConfig: true })),
-      deps(fakeHome(), fakeTools()),
-    );
-    expect(findingsOf(result.data).join(" ")).toContain("config: config not found");
+  it("needs no config", async () => {
+    const result = await runDoctor(context(fakeRepo({ omitConfig: true })), deps(fakeTools()));
+    expect(findingsOf(result.data)).toEqual([]);
+  });
+
+  it("checks nothing beyond its three checks and the leftovers (SST-DESIGN-022 rev 5)", async () => {
+    // Everything the former checks reported: workflows without nightlyWorkflow,
+    // no pre-push hook, no unit-static phase, legacy review keys, a risk glob
+    // matching nothing, an unfinished merge in the ledger. The fake tools fail
+    // on any spec-server or label call.
+    const root = fakeRepo({
+      workflows: ["ci.yml"],
+      profiles: { local: ["lint"], merge: ["lint"] },
+      review: { cmd: "codex exec", riskGlobs: { auth: ["server/gone/**"] } },
+      ledger: [{ at: "2026-07-26T10:00:00.000Z", type: "merge-started", issue: 142 }],
+    });
+    const result = await runDoctor(context(root), deps(fakeTools()));
+    expect(findingsOf(result.data)).toEqual([]);
+    expect(result.data).toEqual({ findings: [] });
+    expect(result.exit).toBe(EXIT.OK);
   });
 });
 
@@ -453,10 +265,7 @@ describe("doctor — leftovers of aborted runs (spec §7.7)", () => {
     const stale = worktreeAged(3);
     const result = await runDoctor(
       context(fakeRepo()),
-      deps(
-        fakeHome(),
-        fakeTools({ git: { worktrees: porcelain([{ path: stale, branch: "142-x" }]) } }),
-      ),
+      deps(fakeTools({ git: { worktrees: porcelain([{ path: stale, branch: "142-x" }]) } })),
     );
     expect(findingsOf(result.data).join(" ")).toContain(`orphan-worktree: ${stale} (3d old`);
   });
@@ -466,7 +275,6 @@ describe("doctor — leftovers of aborted runs (spec §7.7)", () => {
     const result = await runDoctor(
       context(fakeRepo()),
       deps(
-        fakeHome(),
         fakeTools({
           openIssues: [999],
           git: { worktrees: porcelain([{ path: fresh, branch: "feat/142-x" }]) },
@@ -482,7 +290,6 @@ describe("doctor — leftovers of aborted runs (spec §7.7)", () => {
     const result = await runDoctor(
       context(root),
       deps(
-        fakeHome(),
         fakeTools({
           git: {
             commonDir: join(mainCheckout, ".git"),
@@ -501,7 +308,6 @@ describe("doctor — leftovers of aborted runs (spec §7.7)", () => {
     const result = await runDoctor(
       context(fakeRepo()),
       deps(
-        fakeHome(),
         fakeTools({
           openIssues: [500],
           git: {
@@ -523,7 +329,6 @@ describe("doctor — leftovers of aborted runs (spec §7.7)", () => {
     const result = await runDoctor(
       context(fakeRepo()),
       deps(
-        fakeHome(),
         fakeTools({
           openIssues: [500],
           git: {
@@ -549,9 +354,8 @@ describe("doctor — leftovers of aborted runs (spec §7.7)", () => {
     const result = await runDoctor(
       context(fakeRepo()),
       deps(
-        fakeHome(),
         fakeTools({
-          labelsFail: true, // no remote — `gh issue list` and `gh label list` both fail
+          ghFails: true, // no remote — `gh issue list` and `gh label list` both fail
           git: {
             current: "main",
             branches: ["main", "worktree-agent-a0263e6cd114e71c3", "chore/304-seed"],
@@ -572,7 +376,6 @@ describe("doctor — leftovers of aborted runs (spec §7.7)", () => {
     const result = await runDoctor(
       context(fakeRepo()),
       deps(
-        fakeHome(),
         fakeTools({
           openIssues: [500],
           git: {
@@ -593,7 +396,6 @@ describe("doctor — leftovers of aborted runs (spec §7.7)", () => {
     const result = await runDoctor(
       context(fakeRepo()),
       deps(
-        fakeHome(),
         fakeTools({
           openIssues: [500],
           git: {
@@ -625,7 +427,6 @@ describe("doctor — leftovers of aborted runs (spec §7.7)", () => {
     const result = await runDoctor(
       context(fakeRepo()),
       deps(
-        fakeHome(),
         fakeTools({
           openIssues: [142],
           git: {
@@ -654,7 +455,6 @@ describe("doctor — leftovers of aborted runs (spec §7.7)", () => {
     const result = await runDoctor(
       context(fakeRepo()),
       deps(
-        fakeHome(),
         fakeTools({
           openIssues: [142],
           git: {
@@ -680,7 +480,6 @@ describe("doctor — leftovers of aborted runs (spec §7.7)", () => {
     const result = await runDoctor(
       context(fakeRepo()),
       deps(
-        fakeHome(),
         fakeTools({
           openIssues: [142],
           git: {
@@ -703,44 +502,11 @@ describe("doctor — leftovers of aborted runs (spec §7.7)", () => {
     const result = await runDoctor(
       context(fakeRepo()),
       deps(
-        fakeHome(),
-        fakeTools({ labelsFail: true, git: { current: "main", branches: ["main", "feat/142-x"] } }),
+        fakeTools({ ghFails: true, git: { current: "main", branches: ["main", "feat/142-x"] } }),
       ),
     );
     expect(findingsOf(result.data).join(" ")).not.toContain("orphan-branch");
     expect(result.notes?.join(" ")).toContain("open tickets unknown");
-  });
-
-  it("reports a merge that started and never completed", async () => {
-    const result = await runDoctor(
-      context(
-        fakeRepo({
-          ledger: [
-            { at: "2026-07-26T10:00:00.000Z", type: "merge-started", issue: 142 },
-            { at: "2026-07-26T10:00:01.000Z", type: "gate", issue: 142, ok: true },
-          ],
-        }),
-      ),
-      deps(fakeHome(), fakeTools()),
-    );
-    expect(findingsOf(result.data).join(" ")).toContain(
-      "merge-incomplete: #142: merge-started at 2026-07-26T10:00:00.000Z without merge-completed",
-    );
-  });
-
-  it("stays silent once the merge completed", async () => {
-    const result = await runDoctor(
-      context(
-        fakeRepo({
-          ledger: [
-            { at: "2026-07-26T10:00:00.000Z", type: "merge-started", issue: 142 },
-            { at: "2026-07-26T10:05:00.000Z", type: "merge-completed", issue: 142 },
-          ],
-        }),
-      ),
-      deps(fakeHome(), fakeTools()),
-    );
-    expect(findingsOf(result.data)).toEqual([]);
   });
 
   it("puts the full lists in the log and only the summary in the response", async () => {
@@ -748,7 +514,6 @@ describe("doctor — leftovers of aborted runs (spec §7.7)", () => {
     const result = await runDoctor(
       context(root),
       deps(
-        fakeHome(),
         fakeTools({
           openIssues: [],
           git: { current: "main", branches: ["main", "chore/304-a", "spike/no-ticket"] },
@@ -797,10 +562,7 @@ describe("introducedMarkers", () => {
 describe("doctor — options", () => {
   it("rejects an unknown option with exit 4 and names the field", async () => {
     try {
-      await runDoctor(
-        { ...context(fakeRepo()), args: ["--verbose"] },
-        deps(fakeHome(), fakeTools()),
-      );
+      await runDoctor({ ...context(fakeRepo()), args: ["--verbose"] }, deps(fakeTools()));
     } catch (error) {
       expect(error).toBeInstanceOf(ToolkitError);
       expect((error as ToolkitError).exit).toBe(EXIT.PRECONDITION);
@@ -811,71 +573,7 @@ describe("doctor — options", () => {
   });
 });
 
-describe("parseEffortTable", () => {
-  it("reads the agent/effort pairs and ignores the row that names no agent", () => {
-    expect(parseEffortTable(normSection())).toEqual([
-      { agent: "impl-fast", effort: "low" },
-      { agent: "impl", effort: "medium" },
-      { agent: "impl-deep", effort: "high" },
-      { agent: "investigate", effort: "xhigh" },
-      { agent: "review", effort: "high" },
-      { agent: "docs", effort: "medium" },
-    ]);
-  });
-
-  it("takes the agent from the agent cell, not from the trigger cell", () => {
-    const table = [
-      "| Trigger | Agent | effort |",
-      "|---|---|---|",
-      "| Merge review, one lens per spawn (`acceptance`/`security`) | `review` | high |",
-    ].join("\n");
-    expect(parseEffortTable(table)).toEqual([{ agent: "review", effort: "high" }]);
-  });
-
-  it("finds no table in a document that has none", () => {
-    expect(parseEffortTable("# Just prose\n\nNo table.\n")).toEqual([]);
-  });
-});
-
-describe("doctor — review block (SST-DESIGN-030 §Config)", () => {
-  it("reports legacy review keys and risk globs that match no file", async () => {
-    const root = fakeRepo({
-      review: {
-        cmd: "codex exec --sandbox read-only",
-        mark: "review/last",
-        riskGlobs: { auth: ["server/auth/**", "server/gone/**"] },
-      },
-    });
-    const result = await runDoctor(
-      context(root),
-      deps(fakeHome(), fakeTools({ git: { lsFiles: ["server/auth/login.ts", "README.md"] } })),
-    );
-    const findings = findingsOf(result.data);
-    expect(findings).toContain(
-      "review-config: review.cmd is a legacy key and is ignored — remove it",
-    );
-    expect(findings).toContain(
-      "review-config: review.mark is a legacy key and is ignored — remove it",
-    );
-    expect(findings).toContain('review-globs: riskGlobs.auth "server/gone/**" matches no file');
-    expect(findings.some((finding) => finding.includes("server/auth/**"))).toBe(false);
-    expect(result.exit).toBe(EXIT.FAILED);
-  });
-
-  it("is silent for a current review block", async () => {
-    const root = fakeRepo({ review: { riskGlobs: { auth: ["server/auth/**"] } } });
-    const result = await runDoctor(
-      context(root),
-      deps(fakeHome(), fakeTools({ git: { lsFiles: ["server/auth/login.ts"] } })),
-    );
-    expect(findingsOf(result.data)).toEqual([]);
-  });
-});
-
-describe("doctor — push flow of PROC-DEV-005", () => {
-  const warningsOf = (data: Record<string, unknown> | undefined): string[] =>
-    (data?.warnings ?? []) as string[];
-
+describe("doctor — npx calls of spec-sync (GL-SEC-011)", () => {
   const SOUND_PREPUSH = [
     'import { spawnSync } from "node:child_process";',
     'import { readFileSync } from "node:fs";',
@@ -892,8 +590,6 @@ describe("doctor — push flow of PROC-DEV-005", () => {
   const appRepo = (prePush: string, extra: RepoOptions = {}): string =>
     fakeRepo({
       workflows: ["ci.yml"],
-      nightlyWorkflow: "ci.yml",
-      profiles: { local: ["lint"], merge: ["lint", "unit-static"] },
       ...extra,
       files: {
         "package.json": JSON.stringify({
@@ -901,171 +597,16 @@ describe("doctor — push flow of PROC-DEV-005", () => {
           "simple-git-hooks": { "pre-push": "node scripts/prePush.mjs" },
         }),
         "scripts/prePush.mjs": prePush,
-        ".gitattributes": "* text=auto\n.spec-sync/drift-coverage.jsonl merge=union\n",
         ...extra.files,
       },
     });
 
-  const run = (root: string) => runDoctor(context(root), deps(fakeHome(), fakeTools()));
+  const run = (root: string) => runDoctor(context(root), deps(fakeTools()));
 
-  it("is silent for a repo whose hook, attributes and merge profile follow the norm", async () => {
+  it("is silent for a hook that runs the toolkit through process.execPath", async () => {
     const result = await run(appRepo(SOUND_PREPUSH));
     expect(findingsOf(result.data)).toEqual([]);
-    expect(warningsOf(result.data)).toEqual([]);
     expect(result.exit).toBe(EXIT.OK);
-  });
-
-  it("names the delegated script and the line to add when the hook runs only verify", async () => {
-    const verifyOnly = [
-      'import { spawnSync } from "node:child_process";',
-      "// note: spec-sync gate --profile local runs inside verify",
-      'const verify = spawnSync("npm", ["run", "verify"], { stdio: "inherit" });',
-      "process.exit(verify.status ?? 1);",
-    ].join("\n");
-    const result = await run(appRepo(verifyOnly));
-    const findings = findingsOf(result.data);
-    expect(findings).toHaveLength(1);
-    expect(findings[0]).toContain("pre-push: scripts/prePush.mjs does not run the merge pre-run");
-    expect(findings[0]).toContain(
-      'spawnSync(process.execPath, [fileURLToPath(import.meta.resolve("spec-sync-toolkit/dist/cli.js")), "prepush"], { input: stdin, stdio: ["pipe", "inherit", "inherit"] })',
-    );
-    expect(findings[0]).toContain(PREFLIGHT_NODE_CALL);
-    expect(invokesLightPreflight(PREFLIGHT_NODE_CALL)).toBe(true);
-    expect(npxSpecSyncLines(PREFLIGHT_NODE_CALL)).toEqual([]);
-    expect(result.exit).toBe(EXIT.FAILED);
-  });
-
-  it("reports a repo without any pre-push hook", async () => {
-    const root = fakeRepo({
-      workflows: ["ci.yml"],
-      nightlyWorkflow: "ci.yml",
-      profiles: { local: ["lint"], merge: ["lint", "unit-static"] },
-      files: { ".gitattributes": ".spec-sync/drift-coverage.jsonl merge=union\n" },
-    });
-    const findings = findingsOf((await run(root)).data);
-    expect(findings).toEqual([
-      expect.stringContaining(
-        "pre-push: no pre-push hook (.husky/pre-push, .githooks/pre-push or package.json",
-      ),
-    ]);
-  });
-
-  const line = "node_modules/.bin/spec-sync prepush\n";
-  it.each<[string, Record<string, string>]>([
-    ["a husky hook", { ".husky/pre-push": `#!/bin/sh\n${line}` }],
-    ["a .githooks hook", { ".githooks/pre-push": `#!/bin/sh\nset -e\n${line}npm run verify\n` }],
-    [
-      "an npm-script indirection",
-      {
-        "package.json": JSON.stringify({
-          scripts: { prepush: "spec-sync prepush --cap-min 10 && npm run verify" },
-          "simple-git-hooks": { "pre-push": "npm run prepush" },
-        }),
-      },
-    ],
-  ])("accepts %s", async (_name, files) => {
-    const root = fakeRepo({
-      workflows: ["ci.yml"],
-      nightlyWorkflow: "ci.yml",
-      profiles: { local: ["lint"], merge: ["lint", "unit-static"] },
-      files: { ".gitattributes": ".spec-sync/drift-coverage.jsonl merge=union\n", ...files },
-    });
-    expect(findingsOf((await run(root)).data)).toEqual([]);
-  });
-
-  it("names the shell hook and the plain line for a shell hook without the pre-run", async () => {
-    const root = appRepo(SOUND_PREPUSH, {
-      files: {
-        "package.json": "{}",
-        ".husky/pre-push": "#!/bin/sh\nnpm run verify\n",
-      },
-    });
-    expect(findingsOf((await run(root)).data)).toEqual([
-      "pre-push: .husky/pre-push does not run the merge pre-run — add `node_modules/.bin/spec-sync prepush` and refuse the push on a non-zero exit (PROC-DEV-005 rev 7)",
-    ]);
-  });
-
-  it.each<[string, string]>([
-    [
-      "a script spawning the plain gate",
-      'spawnSync("node_modules/.bin/spec-sync", ["gate", "--profile", "merge", "--preflight"], { stdio: "inherit" });',
-    ],
-    [
-      "a script running the plain gate --changed",
-      "run('node_modules/.bin/spec-sync gate --profile merge --preflight --changed')",
-    ],
-  ])("reports %s as drift: the hook lacks the light preflight (rev 7)", async (_name, prePush) => {
-    const findings = findingsOf((await run(appRepo(prePush))).data);
-    expect(findings).toEqual([
-      "pre-push: pre-push hook lacks the light preflight (PROC-DEV-005 rev 7) — scripts/prePush.mjs calls `spec-sync gate --profile merge --preflight` directly; call `spec-sync prepush` instead and hand it the hook's stdin",
-    ]);
-  });
-
-  it("asks for no coverage union attribute — the receipt ledger is retired (SST-DESIGN-029)", async () => {
-    const root = appRepo(SOUND_PREPUSH, { files: { ".gitattributes": "* text=auto\n" } });
-    expect(findingsOf((await run(root)).data)).toEqual([]);
-    const none = appRepo(SOUND_PREPUSH, { files: { ".gitattributes": "" } });
-    expect(findingsOf((await run(none)).data)).toEqual([]);
-  });
-
-  it("warns — without turning the exit red — when the merge profile has no unit-static phase", async () => {
-    const result = await run(
-      appRepo(SOUND_PREPUSH, { profiles: { local: ["lint"], merge: ["lint"] } }),
-    );
-    expect(findingsOf(result.data)).toEqual([]);
-    expect(warningsOf(result.data)).toEqual([
-      expect.stringContaining("unit-static: the merge profile has no `unit-static` phase"),
-    ]);
-    expect(result.exit).toBe(EXIT.OK);
-  });
-
-  it("skips the push-flow checks in a repo without workflows (no PR flow)", async () => {
-    const result = await run(fakeRepo());
-    expect(findingsOf(result.data)).toEqual([]);
-    expect(warningsOf(result.data)).toEqual([]);
-  });
-
-  it("invokesPreflight needs both --profile merge and --preflight on one spec-sync gate call", () => {
-    expect(invokesPreflight("npx spec-sync gate --profile merge --preflight")).toBe(true);
-    expect(invokesPreflight("spec-sync gate --preflight --profile=merge")).toBe(true);
-    expect(invokesPreflight('["spec-sync",\n "gate", "--profile", "merge", "--preflight"]')).toBe(
-      true,
-    );
-    expect(invokesPreflight("spec-sync gate --profile local")).toBe(false);
-    expect(invokesPreflight("spec-sync gate --profile merge")).toBe(false);
-    expect(
-      invokesPreflight("spec-sync gate --profile merge && spec-sync review pr 1 --preflight"),
-    ).toBe(false);
-  });
-
-  it("invokesLightPreflight recognises the prepush call in a shell line and an argument array", () => {
-    expect(invokesLightPreflight("node_modules/.bin/spec-sync prepush")).toBe(true);
-    expect(
-      invokesLightPreflight(
-        'spawnSync(process.execPath, [\n  fileURLToPath(import.meta.resolve("spec-sync-toolkit/dist/cli.js")),\n  "prepush",\n])',
-      ),
-    ).toBe(true);
-    // Older forms still count as the pre-run; the npx check reports them separately.
-    expect(invokesLightPreflight("npx spec-sync prepush")).toBe(true);
-    expect(invokesLightPreflight("npx --no-install spec-sync prepush")).toBe(true);
-    expect(
-      invokesLightPreflight('["--no-install", "spec-sync",\n "prepush", "--cap-min", "10"]'),
-    ).toBe(true);
-    expect(invokesLightPreflight('["spec-sync",\n "prepush", "--cap-min", "10"]')).toBe(true);
-    expect(invokesLightPreflight("npx spec-sync gate --profile merge --preflight")).toBe(false);
-    expect(invokesLightPreflight("spec-sync prepushed")).toBe(false);
-    expect(
-      invokesLightPreflight('import.meta.resolve("spec-sync-toolkit/dist/cli.js"), "gate"'),
-    ).toBe(false);
-  });
-
-  it("reports an npx --no-install pre-run as an npx call, not as a missing pre-run", async () => {
-    const root = appRepo(
-      'const r = spawnSync("npx", ["--no-install", "spec-sync", "prepush"], { input: stdin });',
-    );
-    expect(findingsOf((await run(root)).data)).toEqual([
-      expect.stringMatching(/^npx: scripts\/prePush\.mjs:1 runs `spec-sync` through npx/u),
-    ]);
   });
 
   it("reports each npx spec-sync in hook, workflow and scripts/ by file and line", async () => {
@@ -1183,8 +724,7 @@ describe("doctor — npx cache", () => {
     return root;
   };
 
-  const run = (cache: string) =>
-    runDoctor(context(fakeRepo()), deps(fakeHome(), fakeTools(), cache));
+  const run = (cache: string) => runDoctor(context(fakeRepo()), deps(fakeTools(), cache));
 
   it("reports each npx cache folder whose manifest names spec-sync", async () => {
     const cache = npmCache({

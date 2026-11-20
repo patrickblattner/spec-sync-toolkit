@@ -8,7 +8,6 @@ import { openMerges } from "../src/commands/handover.js";
 import { appendEvent, interruptedMerge, readLedger } from "../src/ledger.js";
 import { EXIT, ToolkitError } from "../src/output.js";
 import type { RunResult, Tools } from "../src/pack/exec.js";
-import { findOrphans } from "../src/pack/orphans.js";
 
 /** `ledger close` — an orphaned merge-started of a CLOSED issue, ended by hand. */
 
@@ -79,7 +78,7 @@ describe("ledger close", () => {
     expect(result.data).toMatchObject({ issue: 525, startedAt: "2026-08-01T10:00:00.000Z" });
   });
 
-  it("leaves doctor, handover and merge seeing the issue as closed", () => {
+  it("leaves handover and merge seeing the issue as closed", () => {
     const root = repo([started(525), started(575)]);
     runLedger(ctx(root, ["close", "525", "--reason", "closed on GitHub"]), {
       tools: fakeTools("CLOSED"),
@@ -88,11 +87,6 @@ describe("ledger close", () => {
     const events = readLedger(root).events;
     expect(interruptedMerge(events, 525)).toBeUndefined();
     expect(openMerges(events).map((open) => open.issue)).toEqual([575]);
-    const details = findOrphans({ tools: fakeTools("CLOSED"), repoRoot: root })
-      .findings.filter((finding) => finding.check === "merge-incomplete")
-      .map((finding) => finding.detail);
-    expect(details).toHaveLength(1);
-    expect(details[0]).toMatch(/^#575: /);
   });
 
   it("--dry-run writes nothing and reports the event it would append", () => {

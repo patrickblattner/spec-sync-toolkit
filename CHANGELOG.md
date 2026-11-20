@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+No turn-end hooks, and a lean `doctor` (spec master, 2026-11-20: `SST-DESIGN-015` rev 6,
+`SST-DESIGN-022` rev 5, `SST-DESIGN-023` rev 5).
+
+### Removed
+
+- The hook binaries `dist/hooks/stop-check.js`, `subagent-stop-check.js` and
+  `architect-stop-check.js` with their sources (`src/hooks/`) and build entries — the toolkit
+  ships no Stop or SubagentStop hook (`PROC-CC-011`). `handover` and `budget` stay as plain
+  commands.
+- `doctor` checks `spec-mcp`/`agent-type`/`skill-table` (effort table), `labels`, `config`,
+  `review-config`/`review-globs`, `nightly`, `pre-push` and the `unit-static` warning (the
+  response has no `warnings` any more), and the leftover check `merge-incomplete`. `doctor` now
+  checks exactly: `npx` calls and the `npx-cache`, an invalid `pins` file, the `pause` flag — plus
+  the worktree and branch leftovers. It no longer needs a config, the spec server or `gh label`.
+
 ## 0.53.0
 
 No coverage gate, and drift is never a gate (spec master, 2026-11-20: `SST-DESIGN-025` rev 6,

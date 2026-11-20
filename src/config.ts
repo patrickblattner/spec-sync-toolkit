@@ -156,7 +156,7 @@ const bundleSchema = z.object({
  * The `review` block (SST-DESIGN-030). Optional and non-strict: unknown keys
  * are stripped, so the legacy keys of the per-repo review scripts (`engine`,
  * `cmd`, `promptTemplate`, `batchLenses`, `uiLens`, `mark`) pass and are
- * ignored — `doctor` reports them.
+ * ignored.
  */
 const reviewSchema = z.object({
   /** Risk areas: `{area: [glob]}` (picomatch). */
@@ -255,16 +255,6 @@ const e2eSelectSchema = z.object({
   /** The package whose resolved version change selects the full suite. */
   package: z.string().min(1).default("@suite/ui"),
 });
-
-/** Keys of former per-repo review scripts — ignored, reported by `doctor`. */
-export const LEGACY_REVIEW_KEYS = [
-  "engine",
-  "cmd",
-  "promptTemplate",
-  "batchLenses",
-  "uiLens",
-  "mark",
-] as const;
 
 const configSchema = z
   .object({
