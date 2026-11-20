@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased
+
+Security fix: own tools are never called through `npx` (security master, 2026-11-20).
+
+### Why 0.51.0 was not enough
+
+`npx --no-install` only blocks a new download. When a copy of the unrelated public package
+`spec-sync` already lies in the npx cache (`~/.npm/_npx/<hash>/`), `npx --no-install spec-sync`
+still runs it whenever the local bin is missing.
+
+### Changed
+
+- Every call the toolkit dictates runs the local bin directly: `node_modules/.bin/spec-sync …` in
+  shell (the pre-push line `doctor` asks for, `PREFLIGHT_COMMAND`; the handover the budget hook
+  dictates; the acceptance checker's prompt) and
+  `spawnSync(process.execPath, [fileURLToPath(import.meta.resolve("spec-sync-toolkit/dist/cli.js")), …])`
+  in a Node hook script. README examples follow. Bare `spec-sync …` inside a package.json script
+  stays as it is.
+- `doctor` recognises the light preflight in the shell form, the Node form and the older npx forms
+  (those are reported by the `npx` check instead).
+- `doctor` check `npx` is now red on every `npx … spec-sync`, with or without `--no-install`, in the
+  same files as before; the finding names both replacement forms.
+
+### Added
+
+- `doctor` check `npx-cache`: every `_npx/<hash>/` folder in the user's npm cache
+  (`npm_config_cache` / `NPM_CONFIG_CACHE`, else `~/.npm`) whose `package.json` names the package
+  `spec-sync` — as its name or a dependency — is a finding naming the folder.
+
+### How to adopt (app repos)
+
+- Raise the pin; `doctor` lists every `npx spec-sync` left in the hook, workflows, `scripts/` and
+  agent files — change each to `node_modules/.bin/spec-sync …` (or the Node form in a hook script),
+  and delete any `npx-cache` folder it names.
+
 ## 0.51.0
 
 Security fix: no toolkit call through `npx` may fetch from the registry.

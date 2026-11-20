@@ -132,7 +132,7 @@ export function handoverInstruction(sessionId: string | null = null): string {
   const session = sessionId === null ? "" : ` --session ${sessionId}`;
   return (
     (sessionId === null ? "" : `This session: ${sessionId}. `) +
-    `Write \`npx --no-install spec-sync handover --reason budget${session}\` NOW and end the turn afterwards. ` +
+    `Write \`node_modules/.bin/spec-sync handover --reason budget${session}\` NOW and end the turn afterwards. ` +
     "Start nothing else — the context is at budget."
   );
 }

@@ -183,13 +183,13 @@ describe("decideStop — order of the valves", () => {
     const d = decideStop({ contextPercent: 101, sessionId: "abc-123", ...probes() });
     expect(d.reason).toContain("This session: abc-123.");
     expect(d.reason).toContain(
-      "`npx --no-install spec-sync handover --reason budget --session abc-123`",
+      "`node_modules/.bin/spec-sync handover --reason budget --session abc-123`",
     );
   });
 
   it("the budget block keeps the bare command when the session is unknown", () => {
     const d = decideStop({ contextPercent: 101, ...probes() });
-    expect(d.reason).toContain("`npx --no-install spec-sync handover --reason budget` NOW");
+    expect(d.reason).toContain("`node_modules/.bin/spec-sync handover --reason budget` NOW");
     expect(d.reason).not.toContain("--session");
   });
 

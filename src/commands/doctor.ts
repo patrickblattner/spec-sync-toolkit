@@ -12,8 +12,10 @@
  * the merge pre-run, `.gitattributes` merges the coverage ledger as union, and
  * the merge profile has a `unit-static` phase — the last one a warning, which
  * is listed under `warnings` and never turns the exit red. Every repo is also
- * scanned for a bare `npx spec-sync` (no `--no-install`) in its pre-push hook,
- * workflows, `scripts/` and the files agents act on. Findings are reported, never fixed — repairing
+ * scanned for any `npx … spec-sync` (with or without `--no-install`) in its
+ * pre-push hook, workflows, `scripts/` and the files agents act on, and the
+ * user's npx cache for a copy of the public npm package `spec-sync`. Findings
+ * are reported, never fixed — repairing
  * a drifted norm would decide something the owner has not decided (spec §2).
  *
  * Exit 1 on at least one finding.
@@ -55,13 +57,25 @@ export interface DoctorDeps {
   tools: Tools;
   /** Home directory holding `.claude/agents` and `.claude/skills` — a seam for tests. */
   home: string;
+  /** The npm cache root whose `_npx/` folders are scanned — a seam for tests. */
+  npmCache: string;
+}
+
+/** The npm cache of the current user: `npm_config_cache` / `NPM_CONFIG_CACHE`, else `~/.npm`. */
+export function defaultNpmCache(env: NodeJS.ProcessEnv = process.env, home = homedir()): string {
+  return env.npm_config_cache || env.NPM_CONFIG_CACHE || join(home, ".npm");
 }
 
 export const doctorCommand: Command = {
   name: "doctor",
   summary: "Check the environment against the norm",
   needsConfig: false,
-  run: (ctx) => runDoctor(ctx, { tools: defaultTools(ctx.repoRoot), home: homedir() }),
+  run: (ctx) =>
+    runDoctor(ctx, {
+      tools: defaultTools(ctx.repoRoot),
+      home: homedir(),
+      npmCache: defaultNpmCache(),
+    }),
 };
 
 export interface Finding {
@@ -108,7 +122,8 @@ export async function runDoctor(ctx: CommandContext, deps: DoctorDeps): Promise<
   checkPause(ctx.repoRoot, add);
   checkNightly(ctx, add);
   checkPushFlow(ctx, add, warn);
-  checkBareNpx(ctx.repoRoot, add);
+  checkNpxCalls(ctx.repoRoot, add);
+  checkNpxCache(deps.npmCache, add);
 
   // Leftovers of aborted runs (spec §7.7). They need to know which tickets are
   // still open, so this runs after the checks that already reported a broken `gh`.
@@ -421,7 +436,15 @@ function hasWorkflows(repoRoot: string): boolean {
  * push, light): the toolkit's wrapper, which skips code-free pushes and caps
  * the run, fed with the hook's stdin.
  */
-export const PREFLIGHT_COMMAND = "npx --no-install spec-sync prepush";
+export const PREFLIGHT_COMMAND = "node_modules/.bin/spec-sync prepush";
+
+/**
+ * The same pre-run from a Node hook script: the toolkit's CLI file run by the
+ * current Node, never through npx (an npx cache may hold the unrelated public
+ * package `spec-sync`).
+ */
+export const PREFLIGHT_NODE_CALL =
+  'spawnSync(process.execPath, [fileURLToPath(import.meta.resolve("spec-sync-toolkit/dist/cli.js")), "prepush"], { input: stdin, stdio: ["pipe", "inherit", "inherit"] })';
 export const UNIT_STATIC_PHASE = "unit-static";
 export const COVERAGE_ATTRIBUTE = ".spec-sync/drift-coverage.jsonl merge=union";
 
@@ -542,10 +565,15 @@ export function invokesPreflight(text: string): boolean {
   return false;
 }
 
-/** Does the text invoke the light preflight `spec-sync prepush` (PROC-DEV-005 rev 7)? */
+/**
+ * Does the text invoke the light preflight `spec-sync prepush` (PROC-DEV-005
+ * rev 7)? Any shell form counts (`node_modules/.bin/spec-sync prepush`, the
+ * older npx forms — those are reported by the npx check instead), and so does
+ * the Node form that runs the resolved `spec-sync-toolkit/dist/cli.js`.
+ */
 export function invokesLightPreflight(text: string): boolean {
   const flat = text.replace(/["'`,[\]()]/gu, " ").replace(/\s+/gu, " ");
-  return /spec-sync prepush\b/u.test(flat);
+  return /(?:spec-sync|spec-sync-toolkit\/dist\/cli\.js) prepush\b/u.test(flat);
 }
 
 function checkPrePushHook(repoRoot: string, add: Add): void {
@@ -575,7 +603,7 @@ function checkPrePushHook(repoRoot: string, add: Add): void {
     sources.find((source) => !source.file.startsWith("package.json")) ??
     (sources[0] as HookSource);
   const line = /\.(?:mjs|cjs|js|ts)$/u.test(target.file)
-    ? `spawnSync("npx", ["--no-install", "spec-sync", "prepush"], { input: stdin, stdio: ["pipe", "inherit", "inherit"] })`
+    ? PREFLIGHT_NODE_CALL
     : target.file === "package.json"
       ? `"pre-push": "${PREFLIGHT_COMMAND} && …"`
       : PREFLIGHT_COMMAND;
@@ -586,23 +614,19 @@ function checkPrePushHook(repoRoot: string, add: Add): void {
 }
 
 /**
- * `npx` followed by `spec-sync` without `--no-install` among its flags (`-y`
- * and `--yes` count as bare too). Quotes, commas and brackets are blanked
- * length-preserving, so `spawnSync("npx", ["spec-sync", …])` matches across
- * lines and the match offset still gives the line.
+ * `npx` followed by `spec-sync`, whatever flags stand between (`--no-install`
+ * included). Quotes, commas and brackets are blanked length-preserving, so
+ * `spawnSync("npx", ["--no-install", "spec-sync", …])` matches across lines and
+ * the match offset still gives the line.
  */
-const NPX_CALL = /\bnpx((?:\s+-\S+)*)\s+spec-sync(?![\w-])/gu;
+const NPX_CALL = /\bnpx(?:\s+-\S+)*\s+spec-sync(?![\w-])/gu;
 
-/** 1-based lines of the text where `npx` would fetch `spec-sync` from the registry. */
-export function bareNpxLines(text: string): number[] {
+/** 1-based lines of the text that run `spec-sync` through npx. */
+export function npxSpecSyncLines(text: string): number[] {
   const blanked = text.replace(/["'`,[\]()]/gu, " ");
-  const lines: number[] = [];
-  for (const match of blanked.matchAll(NPX_CALL)) {
-    const flags = (match[1] ?? "").trim().split(/\s+/u);
-    const safe = flags.includes("--no-install") && !flags.some((f) => /^(?:-y|--yes)$/u.test(f));
-    if (!safe) lines.push(blanked.slice(0, match.index).split("\n").length);
-  }
-  return lines;
+  return [...blanked.matchAll(NPX_CALL)].map(
+    (match) => blanked.slice(0, match.index).split("\n").length,
+  );
 }
 
 /** Every file below `dir`, repo-relative; missing directory → none. */
@@ -624,12 +648,13 @@ const AGENT_FILES = [
 ];
 
 /**
- * A bare `npx spec-sync` downloads and runs the unrelated public npm package of
- * that name whenever the local bin is missing; `npx --no-install` fails instead.
- * Scanned: the pre-push hook and what it calls, workflows, `scripts/`, and the
- * agent files (an allow rule `Bash(npx spec-sync *)` included).
+ * Own tools are never called through npx: a bare `npx spec-sync` downloads the
+ * unrelated public npm package of that name when the local bin is missing, and
+ * `npx --no-install spec-sync` still runs a copy of it that already lies in the
+ * npx cache. Scanned: the pre-push hook and what it calls, workflows,
+ * `scripts/`, and the agent files (an allow rule `Bash(npx spec-sync *)` included).
  */
-function checkBareNpx(repoRoot: string, add: Add): void {
+function checkNpxCalls(repoRoot: string, add: Add): void {
   // package.json entries of the hook are excerpts; the whole file is read below.
   const sources = prePushSources(repoRoot).filter(
     (source) => !source.file.startsWith("package.json"),
@@ -652,10 +677,53 @@ function checkBareNpx(repoRoot: string, add: Add): void {
     }
   }
   for (const source of sources) {
-    for (const line of bareNpxLines(source.text)) {
+    for (const line of npxSpecSyncLines(source.text)) {
       add(
         "npx",
-        `${source.file}:${line} runs bare \`npx spec-sync\` — use \`npx --no-install spec-sync\`, otherwise a missing local bin fetches the unrelated public npm package of that name`,
+        `${source.file}:${line} runs \`spec-sync\` through npx — call \`node_modules/.bin/spec-sync …\` (shell) or \`spawnSync(process.execPath, [fileURLToPath(import.meta.resolve("spec-sync-toolkit/dist/cli.js")), …])\` (Node); npx may run the unrelated public npm package of that name, even with --no-install`,
+      );
+    }
+  }
+}
+
+/** Does an npx cache manifest name the public package `spec-sync`? */
+function namesSpecSync(manifest: unknown): boolean {
+  if (typeof manifest !== "object" || manifest === null) return false;
+  const pkg = manifest as Record<string, unknown>;
+  if (pkg.name === "spec-sync") return true;
+  return ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"].some(
+    (field) => {
+      const deps = pkg[field];
+      return typeof deps === "object" && deps !== null && Object.hasOwn(deps, "spec-sync");
+    },
+  );
+}
+
+/**
+ * A copy of the public npm package `spec-sync` in the npx cache
+ * (`<cache>/_npx/<hash>/package.json`) is what `npx --no-install spec-sync`
+ * runs when the local bin is missing. Each such folder is reported.
+ */
+function checkNpxCache(npmCache: string, add: Add): void {
+  const npxDir = join(npmCache, "_npx");
+  let entries: string[];
+  try {
+    entries = readdirSync(npxDir);
+  } catch {
+    return; // No npx cache, nothing cached.
+  }
+  for (const entry of entries.sort()) {
+    const folder = join(npxDir, entry);
+    let manifest: unknown;
+    try {
+      manifest = JSON.parse(readFileSync(join(folder, "package.json"), "utf8"));
+    } catch {
+      continue; // Not an npx install folder, or unreadable — not this check's finding.
+    }
+    if (namesSpecSync(manifest)) {
+      add(
+        "npx-cache",
+        `${folder} holds the public npm package \`spec-sync\` — npx runs it in place of the toolkit when the local bin is missing; delete that folder`,
       );
     }
   }

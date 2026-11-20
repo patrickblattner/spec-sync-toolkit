@@ -4,11 +4,13 @@ import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { CommandContext } from "../src/cli.js";
 import {
-  bareNpxLines,
+  defaultNpmCache,
   EFFORT_TABLE_KEY,
   invokesLightPreflight,
   invokesPreflight,
+  npxSpecSyncLines,
   parseEffortTable,
+  PREFLIGHT_NODE_CALL,
   prePushSources,
   runDoctor,
   type DoctorDeps,
@@ -257,8 +259,11 @@ function context(root: string): CommandContext {
   return { flags: { human: false, dryRun: false }, args: [], repoRoot: root, config: undefined };
 }
 
-function deps(home: string, tools: Tools): DoctorDeps {
-  return { home, tools };
+/** An empty npm cache, so no test reads the real `~/.npm/_npx`. */
+const emptyNpmCache = (): string => mkdtempSync(join(tmpdir(), "spec-sync-npm-"));
+
+function deps(home: string, tools: Tools, npmCache = emptyNpmCache()): DoctorDeps {
+  return { home, tools, npmCache };
 }
 
 const findingsOf = (data: Record<string, unknown> | undefined): string[] =>
@@ -876,8 +881,8 @@ describe("doctor — push flow of PROC-DEV-005", () => {
     'import { readFileSync } from "node:fs";',
     'const stdin = readFileSync(0, "utf8");',
     "const preflight = spawnSync(",
-    '  "npx",',
-    '  ["--no-install", "spec-sync", "prepush"],',
+    "  process.execPath,",
+    '  [fileURLToPath(import.meta.resolve("spec-sync-toolkit/dist/cli.js")), "prepush"],',
     '  { input: stdin, stdio: ["pipe", "inherit", "inherit"] },',
     ");",
     "if (preflight.status !== 0) process.exit(preflight.status ?? 1);",
@@ -922,8 +927,11 @@ describe("doctor — push flow of PROC-DEV-005", () => {
     expect(findings).toHaveLength(1);
     expect(findings[0]).toContain("pre-push: scripts/prePush.mjs does not run the merge pre-run");
     expect(findings[0]).toContain(
-      'spawnSync("npx", ["--no-install", "spec-sync", "prepush"], { input: stdin, stdio: ["pipe", "inherit", "inherit"] })',
+      'spawnSync(process.execPath, [fileURLToPath(import.meta.resolve("spec-sync-toolkit/dist/cli.js")), "prepush"], { input: stdin, stdio: ["pipe", "inherit", "inherit"] })',
     );
+    expect(findings[0]).toContain(PREFLIGHT_NODE_CALL);
+    expect(invokesLightPreflight(PREFLIGHT_NODE_CALL)).toBe(true);
+    expect(npxSpecSyncLines(PREFLIGHT_NODE_CALL)).toEqual([]);
     expect(result.exit).toBe(EXIT.FAILED);
   });
 
@@ -942,7 +950,7 @@ describe("doctor — push flow of PROC-DEV-005", () => {
     ]);
   });
 
-  const line = "npx --no-install spec-sync prepush\n";
+  const line = "node_modules/.bin/spec-sync prepush\n";
   it.each<[string, Record<string, string>]>([
     ["a husky hook", { ".husky/pre-push": `#!/bin/sh\n${line}` }],
     ["a .githooks hook", { ".githooks/pre-push": `#!/bin/sh\nset -e\n${line}npm run verify\n` }],
@@ -973,18 +981,18 @@ describe("doctor — push flow of PROC-DEV-005", () => {
       },
     });
     expect(findingsOf((await run(root)).data)).toEqual([
-      "pre-push: .husky/pre-push does not run the merge pre-run — add `npx --no-install spec-sync prepush` and refuse the push on a non-zero exit (PROC-DEV-005 rev 7)",
+      "pre-push: .husky/pre-push does not run the merge pre-run — add `node_modules/.bin/spec-sync prepush` and refuse the push on a non-zero exit (PROC-DEV-005 rev 7)",
     ]);
   });
 
   it.each<[string, string]>([
     [
       "a script spawning the plain gate",
-      'spawnSync("npx", ["--no-install", "spec-sync", "gate", "--profile", "merge", "--preflight"], { stdio: "inherit" });',
+      'spawnSync("node_modules/.bin/spec-sync", ["gate", "--profile", "merge", "--preflight"], { stdio: "inherit" });',
     ],
     [
       "a script running the plain gate --changed",
-      "run('npx --no-install spec-sync gate --profile merge --preflight --changed')",
+      "run('node_modules/.bin/spec-sync gate --profile merge --preflight --changed')",
     ],
   ])("reports %s as drift: the hook lacks the light preflight (rev 7)", async (_name, prePush) => {
     const findings = findingsOf((await run(appRepo(prePush))).data);
@@ -1035,6 +1043,13 @@ describe("doctor — push flow of PROC-DEV-005", () => {
   });
 
   it("invokesLightPreflight recognises the prepush call in a shell line and an argument array", () => {
+    expect(invokesLightPreflight("node_modules/.bin/spec-sync prepush")).toBe(true);
+    expect(
+      invokesLightPreflight(
+        'spawnSync(process.execPath, [\n  fileURLToPath(import.meta.resolve("spec-sync-toolkit/dist/cli.js")),\n  "prepush",\n])',
+      ),
+    ).toBe(true);
+    // Older forms still count as the pre-run; the npx check reports them separately.
     expect(invokesLightPreflight("npx spec-sync prepush")).toBe(true);
     expect(invokesLightPreflight("npx --no-install spec-sync prepush")).toBe(true);
     expect(
@@ -1043,9 +1058,21 @@ describe("doctor — push flow of PROC-DEV-005", () => {
     expect(invokesLightPreflight('["spec-sync",\n "prepush", "--cap-min", "10"]')).toBe(true);
     expect(invokesLightPreflight("npx spec-sync gate --profile merge --preflight")).toBe(false);
     expect(invokesLightPreflight("spec-sync prepushed")).toBe(false);
+    expect(
+      invokesLightPreflight('import.meta.resolve("spec-sync-toolkit/dist/cli.js"), "gate"'),
+    ).toBe(false);
   });
 
-  it("reports each bare npx spec-sync in hook, workflow and scripts/ by file and line", async () => {
+  it("reports an npx --no-install pre-run as an npx call, not as a missing pre-run", async () => {
+    const root = appRepo(
+      'const r = spawnSync("npx", ["--no-install", "spec-sync", "prepush"], { input: stdin });',
+    );
+    expect(findingsOf((await run(root)).data)).toEqual([
+      expect.stringMatching(/^npx: scripts\/prePush\.mjs:1 runs `spec-sync` through npx/u),
+    ]);
+  });
+
+  it("reports each npx spec-sync in hook, workflow and scripts/ by file and line", async () => {
     const root = appRepo('const r = spawnSync(\n  "npx",\n  ["spec-sync", "prepush"],\n);', {
       files: {
         ".github/workflows/ci.yml": "jobs:\n  x:\n    steps:\n      - run: npx -y spec-sync gate\n",
@@ -1059,14 +1086,25 @@ describe("doctor — push flow of PROC-DEV-005", () => {
     expect(findings.map((f) => f.split(" ")[1])).toEqual([
       "scripts/prePush.mjs:2",
       ".github/workflows/ci.yml:4",
+      "scripts/nested/sync.sh:2",
       "scripts/nested/sync.sh:3",
     ]);
-    expect(findings[0]).toContain("use `npx --no-install spec-sync`");
+    expect(findings[0]).toContain("call `node_modules/.bin/spec-sync …` (shell)");
+    expect(findings[0]).toContain(
+      'spawnSync(process.execPath, [fileURLToPath(import.meta.resolve("spec-sync-toolkit/dist/cli.js")), …])` (Node)',
+    );
+    expect(findings[0]).toContain("even with --no-install");
   });
 
   it.each<[string, string, string, number]>([
     ["CLAUDE.md", "CLAUDE.md", "# Repo\n\nRun `npx spec-sync gate` before a commit.\n", 3],
     ["AGENTS.md", "AGENTS.md", "# Agents\n\n- npx -y spec-sync doctor\n", 3],
+    [
+      "AGENTS.md with --no-install",
+      "AGENTS.md",
+      "# Agents\n\n- npx --no-install spec-sync doctor\n",
+      3,
+    ],
     [
       "the whole package.json",
       "package.json",
@@ -1085,21 +1123,30 @@ describe("doctor — push flow of PROC-DEV-005", () => {
       JSON.stringify({ permissions: { allow: ["Bash(npx --yes spec-sync:*)"] } }, null, 2),
       4,
     ],
-  ])("reports a bare npx spec-sync in %s with its line", async (_name, file, text, line) => {
+    [
+      "an allow rule with --no-install",
+      ".claude/settings.json",
+      JSON.stringify({ permissions: { allow: ["Bash(npx --no-install spec-sync *)"] } }, null, 2),
+      4,
+    ],
+  ])("reports an npx spec-sync in %s with its line", async (_name, file, text, line) => {
     const root = fakeRepo({ files: { [file]: text } });
     expect(findingsOf((await run(root)).data)).toEqual([
       expect.stringMatching(
-        new RegExp(`^npx: ${file.replace(/\./gu, "\\.")}:${line} runs bare`, "u"),
+        new RegExp(
+          `^npx: ${file.replace(/\./gu, "\\.")}:${line} runs \`spec-sync\` through npx`,
+          "u",
+        ),
       ),
     ]);
   });
 
-  it("is silent for agent files that use the --no-install form", async () => {
+  it("is silent for agent files that call the local bin", async () => {
     const root = fakeRepo({
       files: {
-        "CLAUDE.md": "npx --no-install spec-sync gate\n",
+        "CLAUDE.md": "node_modules/.bin/spec-sync gate\n",
         ".claude/settings.json": JSON.stringify({
-          permissions: { allow: ["Bash(npx --no-install spec-sync *)"] },
+          permissions: { allow: ["Bash(node_modules/.bin/spec-sync *)"] },
         }),
         "package.json": JSON.stringify({ scripts: { pins: "spec-sync repin --check" } }),
       },
@@ -1107,16 +1154,17 @@ describe("doctor — push flow of PROC-DEV-005", () => {
     expect(findingsOf((await run(root)).data)).toEqual([]);
   });
 
-  it("bareNpxLines treats only --no-install without --yes as safe", () => {
-    expect(bareNpxLines("npx spec-sync gate")).toEqual([1]);
-    expect(bareNpxLines("a\nnpx -y spec-sync gate")).toEqual([2]);
-    expect(bareNpxLines("npx --yes spec-sync gate")).toEqual([1]);
-    expect(bareNpxLines('spawnSync("npx", ["spec-sync", "prepush"])')).toEqual([1]);
-    expect(bareNpxLines("npx --no-install spec-sync gate")).toEqual([]);
-    expect(bareNpxLines('spawnSync("npx", ["--no-install", "spec-sync"])')).toEqual([]);
-    expect(bareNpxLines("npx --no-install --yes spec-sync gate")).toEqual([1]);
-    expect(bareNpxLines("spec-sync gate && npx playwright test")).toEqual([]);
-    expect(bareNpxLines("npx spec-sync-toolkit")).toEqual([]);
+  it("npxSpecSyncLines reports every npx spec-sync, --no-install included", () => {
+    expect(npxSpecSyncLines("npx spec-sync gate")).toEqual([1]);
+    expect(npxSpecSyncLines("a\nnpx -y spec-sync gate")).toEqual([2]);
+    expect(npxSpecSyncLines("npx --yes spec-sync gate")).toEqual([1]);
+    expect(npxSpecSyncLines('spawnSync("npx", ["spec-sync", "prepush"])')).toEqual([1]);
+    expect(npxSpecSyncLines("npx --no-install spec-sync gate")).toEqual([1]);
+    expect(npxSpecSyncLines('spawnSync("npx", ["--no-install", "spec-sync"])')).toEqual([1]);
+    expect(npxSpecSyncLines("npx --no-install --yes spec-sync gate")).toEqual([1]);
+    expect(npxSpecSyncLines("node_modules/.bin/spec-sync gate")).toEqual([]);
+    expect(npxSpecSyncLines("spec-sync gate && npx playwright test")).toEqual([]);
+    expect(npxSpecSyncLines("npx spec-sync-toolkit")).toEqual([]);
   });
 
   it("prePushSources follows the hook into the script it calls", () => {
@@ -1125,5 +1173,51 @@ describe("doctor — push flow of PROC-DEV-005", () => {
       "package.json",
       "scripts/prePush.mjs",
     ]);
+  });
+});
+
+describe("doctor — npx cache", () => {
+  /** An npm cache whose `_npx/<hash>/package.json` manifests are the given ones. */
+  const npmCache = (folders: Record<string, string>): string => {
+    const root = mkdtempSync(join(tmpdir(), "spec-sync-npm-"));
+    for (const [hash, manifest] of Object.entries(folders)) {
+      mkdirSync(join(root, "_npx", hash), { recursive: true });
+      writeFileSync(join(root, "_npx", hash, "package.json"), manifest);
+    }
+    return root;
+  };
+
+  const run = (cache: string) =>
+    runDoctor(context(fakeRepo()), deps(fakeHome(), fakeTools(), cache));
+
+  it("reports each npx cache folder whose manifest names spec-sync", async () => {
+    const cache = npmCache({
+      aaa: JSON.stringify({ dependencies: { "spec-sync": "^1.0.0" } }),
+      bbb: JSON.stringify({ dependencies: { playwright: "^1.0.0" } }),
+      ccc: JSON.stringify({ name: "spec-sync", version: "1.0.0" }),
+      ddd: JSON.stringify({ dependencies: { "spec-sync-toolkit": "^0.51.0" } }),
+      eee: "not json",
+    });
+    const result = await run(cache);
+    expect(findingsOf(result.data)).toEqual([
+      `npx-cache: ${join(cache, "_npx", "aaa")} holds the public npm package \`spec-sync\` — npx runs it in place of the toolkit when the local bin is missing; delete that folder`,
+      expect.stringMatching(new RegExp(`^npx-cache: ${join(cache, "_npx", "ccc")} holds`, "u")),
+    ]);
+    expect(result.exit).toBe(EXIT.FAILED);
+  });
+
+  it("is silent without an npx cache or with a clean one", async () => {
+    expect(findingsOf((await run(npmCache({}))).data)).toEqual([]);
+    expect(
+      findingsOf(
+        (await run(npmCache({ a: JSON.stringify({ dependencies: { tsx: "^4" } }) }))).data,
+      ),
+    ).toEqual([]);
+  });
+
+  it("defaultNpmCache honours npm_config_cache, then NPM_CONFIG_CACHE, else ~/.npm", () => {
+    expect(defaultNpmCache({ npm_config_cache: "/a", NPM_CONFIG_CACHE: "/b" }, "/home")).toBe("/a");
+    expect(defaultNpmCache({ NPM_CONFIG_CACHE: "/b" }, "/home")).toBe("/b");
+    expect(defaultNpmCache({}, "/home")).toBe(join("/home", ".npm"));
   });
 });
