@@ -1,13 +1,14 @@
 /**
- * `doctor` — three checks and the leftovers of aborted runs (spec §7.7,
- * SST-DESIGN-022 rev 5).
+ * `doctor` — four checks and the leftovers of aborted runs (spec §7.7,
+ * SST-DESIGN-022 rev 6).
  *
  * `spec-sync doctor`
  *
  * Checks exactly: every `npx … spec-sync` (with or without `--no-install`) in
  * the GL-SEC-011 places — pre-push hook, workflows, `scripts/`, `package.json`,
  * `CLAUDE.md`, `AGENTS.md`, the Claude settings — and a copy of the public npm
- * package `spec-sync` in the user's npx cache; a `spec-pins.json` that exists
+ * package `spec-sync` in the user's npx cache; `review.riskGlobs` present and
+ * valid in the config (a missing config is the same finding); a `spec-pins.json` that exists
  * but is not a valid map; a lying `.spec-sync-pause`. Agent types, skill
  * tables, labels, pins as a duty and norm revisions are the lead's business
  * (PROC-DEV-001), not doctor's. Findings are reported, never fixed.
@@ -16,14 +17,16 @@
  */
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
+import picomatch from "picomatch";
 import { homedir } from "node:os";
 import { join, relative as relativeTo } from "node:path";
 import type { Command, CommandContext, CommandResult } from "../cli.js";
+import { loadConfig, type Config } from "../config.js";
 import { readLedger } from "../ledger.js";
 import { createLogDir, protectedLogDirs, writePhaseLog } from "../logs.js";
 import { EXIT } from "../output.js";
 import { checkFlags } from "../pack/args.js";
-import { defaultTools, type Tools } from "../pack/exec.js";
+import { defaultTools, failureLine, type Tools } from "../pack/exec.js";
 import { findOrphans } from "../pack/orphans.js";
 import { readPinsFile } from "../pins.js";
 
@@ -47,7 +50,8 @@ export function defaultNpmCache(env: NodeJS.ProcessEnv = process.env, home = hom
 
 export const doctorCommand: Command = {
   name: "doctor",
-  summary: "Report npx calls of spec-sync, an invalid pin file, the pause flag and leftovers",
+  summary:
+    "Report npx calls of spec-sync, missing risk globs, an invalid pin file, the pause flag and leftovers",
   needsConfig: false,
   run: (ctx) =>
     runDoctor(ctx, {
@@ -69,6 +73,7 @@ export async function runDoctor(ctx: CommandContext, deps: DoctorDeps): Promise<
   const details: string[] = [];
   const add = (check: string, detail: string): void => void findings.push({ check, detail });
 
+  checkRiskGlobs(ctx, deps.tools, add);
   checkPins(ctx.repoRoot, add);
   checkPause(ctx.repoRoot, add);
   checkNpxCalls(ctx.repoRoot, add);
@@ -105,6 +110,49 @@ export async function runDoctor(ctx: CommandContext, deps: DoctorDeps): Promise<
 }
 
 type Add = (check: string, detail: string) => void;
+
+/**
+ * `review.riskGlobs` (SST-DESIGN-022 rev 6): without the list the automatic
+ * Codex pass on risk paths never runs (PROC-DEV-002), and nothing else would
+ * notice. A config that is missing or does not load is the same finding; so
+ * is an empty list, an area without globs, and a glob that matches no tracked
+ * file — each guards nothing.
+ */
+function checkRiskGlobs(ctx: CommandContext, tools: Tools, add: Add): void {
+  let config: Config;
+  try {
+    config = loadConfig(ctx.repoRoot, ctx.flags.config);
+  } catch (error) {
+    add(
+      "review-globs",
+      `no usable config, so no review.riskGlobs — the Codex pass on risk paths never runs: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return;
+  }
+
+  const areas = Object.entries(config.review.riskGlobs);
+  if (areas.length === 0) {
+    add(
+      "review-globs",
+      "review.riskGlobs is missing or empty — the Codex pass on risk paths never runs (PROC-DEV-002)",
+    );
+    return;
+  }
+  const listed = tools.run("git", ["ls-files"]);
+  if (!listed.ok) {
+    add("review-globs", `git ls-files failed: ${failureLine(listed)}`);
+    return;
+  }
+  const files = listed.stdout.split("\n").filter((line) => line !== "");
+  for (const [area, globs] of areas) {
+    if (globs.length === 0) add("review-globs", `riskGlobs.${area} lists no glob`);
+    for (const glob of globs) {
+      if (!files.some((file) => picomatch.isMatch(file, glob))) {
+        add("review-globs", `riskGlobs.${area} "${glob}" matches no file`);
+      }
+    }
+  }
+}
 
 /** Whether a repo keeps a pin file is its lead's call (SST-DESIGN-025 rev 6); one it keeps must parse. */
 function checkPins(repoRoot: string, add: Add): void {

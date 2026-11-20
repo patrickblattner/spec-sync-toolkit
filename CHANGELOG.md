@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+`doctor` checks `review.riskGlobs` again (spec master, 2026-11-20: `SST-DESIGN-022` rev 6).
+
+### Added
+
+- `doctor` finding `review-globs`: a missing or unloadable `spec-sync.config.json`, a missing or
+  empty `review.riskGlobs`, an area without globs, or a glob that matches no tracked file
+  (`git ls-files`). Without the list the automatic Codex pass on risk paths never runs
+  (`PROC-DEV-002`). The legacy review keys, the push-flow checks and the `warnings` field stay out.
+
 ## 0.54.0
 
 No turn-end hooks, and a lean `doctor` (spec master, 2026-11-20: `SST-DESIGN-015` rev 6,

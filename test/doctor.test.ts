@@ -48,6 +48,7 @@ const config = {
     started: "status: in-progress",
     blocked: "blocked",
   },
+  review: { riskGlobs: { auth: ["server/auth/**"] } },
 };
 
 function fakeRepo(options: RepoOptions = {}): string {
@@ -132,7 +133,9 @@ function fakeTools(fakes: SpecFakes = {}): Tools {
       if (file === "git") {
         const [command] = args;
         if (command === "worktree") return ok(git.worktrees ?? "");
-        if (command === "ls-files") return ok((git.lsFiles ?? []).join("\n"));
+        if (command === "ls-files") {
+          return ok((git.lsFiles ?? ["server/auth/login.ts"]).join("\n"));
+        }
         if (command === "rev-parse" && args[1] === "--path-format=absolute") {
           return git.commonDir === undefined ? fail() : ok(`${git.commonDir}\n`);
         }
@@ -212,26 +215,68 @@ describe("doctor (spec §7.7)", () => {
     expect(report).toContain("[pause] .spec-sync-pause exists");
   });
 
-  it("needs no config", async () => {
-    const result = await runDoctor(context(fakeRepo({ omitConfig: true })), deps(fakeTools()));
-    expect(findingsOf(result.data)).toEqual([]);
-  });
-
-  it("checks nothing beyond its three checks and the leftovers (SST-DESIGN-022 rev 5)", async () => {
+  it("checks nothing beyond its four checks and the leftovers (SST-DESIGN-022 rev 6)", async () => {
     // Everything the former checks reported: workflows without nightlyWorkflow,
-    // no pre-push hook, no unit-static phase, legacy review keys, a risk glob
-    // matching nothing, an unfinished merge in the ledger. The fake tools fail
-    // on any spec-server or label call.
+    // no pre-push hook, no unit-static phase, a legacy review key, an unfinished
+    // merge in the ledger. The fake tools fail on any spec-server or label call.
     const root = fakeRepo({
       workflows: ["ci.yml"],
       profiles: { local: ["lint"], merge: ["lint"] },
-      review: { cmd: "codex exec", riskGlobs: { auth: ["server/gone/**"] } },
+      review: { cmd: "codex exec", riskGlobs: { auth: ["server/auth/**"] } },
       ledger: [{ at: "2026-07-26T10:00:00.000Z", type: "merge-started", issue: 142 }],
     });
     const result = await runDoctor(context(root), deps(fakeTools()));
     expect(findingsOf(result.data)).toEqual([]);
     expect(result.data).toEqual({ findings: [] });
     expect(result.exit).toBe(EXIT.OK);
+  });
+});
+
+describe("doctor — review.riskGlobs (SST-DESIGN-022 rev 6)", () => {
+  const run = (root: string, lsFiles?: string[]) =>
+    runDoctor(context(root), deps(fakeTools(lsFiles === undefined ? {} : { git: { lsFiles } })));
+
+  it("is silent for a list whose every glob matches a tracked file", async () => {
+    const result = await run(fakeRepo());
+    expect(findingsOf(result.data)).toEqual([]);
+    expect(result.exit).toBe(EXIT.OK);
+  });
+
+  it("reports a missing config as the same finding", async () => {
+    const result = await run(fakeRepo({ omitConfig: true }));
+    expect(findingsOf(result.data)).toEqual([
+      expect.stringMatching(
+        /^review-globs: no usable config, so no review\.riskGlobs — the Codex pass on risk paths never runs: /u,
+      ),
+    ]);
+    expect(result.exit).toBe(EXIT.FAILED);
+  });
+
+  it("reports a config that does not load (riskGlobs of the wrong shape)", async () => {
+    const result = await run(fakeRepo({ review: { riskGlobs: ["server/auth/**"] } }));
+    expect(findingsOf(result.data)).toEqual([
+      expect.stringContaining("review-globs: no usable config"),
+    ]);
+  });
+
+  it.each<[string, unknown]>([
+    ["a review block without riskGlobs", {}],
+    ["an empty riskGlobs", { riskGlobs: {} }],
+  ])("reports %s", async (_name, review) => {
+    const result = await run(fakeRepo({ review }));
+    expect(findingsOf(result.data)).toEqual([
+      "review-globs: review.riskGlobs is missing or empty — the Codex pass on risk paths never runs (PROC-DEV-002)",
+    ]);
+  });
+
+  it("reports an area without globs and a glob that matches no tracked file", async () => {
+    const root = fakeRepo({
+      review: { riskGlobs: { auth: ["server/auth/**", "server/gone/**"], billing: [] } },
+    });
+    expect(findingsOf((await run(root, ["server/auth/login.ts", "README.md"])).data)).toEqual([
+      'review-globs: riskGlobs.auth "server/gone/**" matches no file',
+      "review-globs: riskGlobs.billing lists no glob",
+    ]);
   });
 });
 

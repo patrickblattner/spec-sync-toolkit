@@ -157,11 +157,14 @@ if (preflight.status !== 0) process.exit(preflight.status ?? 1);
 No hook and no gate asks for a current `spec-pins.json` (`SST-DESIGN-025` rev 6): whether a repo
 keeps a pin file at all is its lead's call.
 
-`doctor` checks exactly three things (`SST-DESIGN-022` rev 5) — the npx calls and npx cache
-below, a `spec-pins.json` that exists but is not a valid `{key: rev}` map, and a lying
-`.spec-sync-pause` (reported, never removed) — plus the leftover worktrees and branches of
-aborted runs. Agent types, skill tables, labels, norm revisions, `nightlyWorkflow`, the review
-block and the pre-push hook's content are the lead's business, not doctor's.
+`doctor` checks exactly four things (`SST-DESIGN-022` rev 6) — the npx calls and npx cache
+below; `review.riskGlobs` in `spec-sync.config.json` (finding `review-globs`: a missing or
+unloadable config, a missing or empty list, an area without globs, a glob that matches no tracked
+file — without the list the Codex pass on risk paths never runs, `PROC-DEV-002`); a
+`spec-pins.json` that exists but is not a valid `{key: rev}` map; and a lying `.spec-sync-pause`
+(reported, never removed) — plus the leftover worktrees and branches of aborted runs. Agent
+types, skill tables, labels, norm revisions, `nightlyWorkflow`, legacy review keys and the
+pre-push hook's content are the lead's business, not doctor's.
 
 `doctor` reports each `npx spec-sync` — `npx` followed by `spec-sync`, whatever
 flags stand between, `--no-install` included — in the pre-push hook and what it calls,
