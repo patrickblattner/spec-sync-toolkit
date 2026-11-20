@@ -15,7 +15,6 @@ import {
   runDoctor,
   type DoctorDeps,
 } from "../src/commands/doctor.js";
-import { PINNED_NORM_SPECS } from "../src/norms.js";
 import { EXIT, ToolkitError } from "../src/output.js";
 import type { RunResult, Tools } from "../src/pack/exec.js";
 import { introducedMarkers, ticketOfBranch } from "../src/pack/orphans.js";
@@ -166,8 +165,6 @@ function fakeRepo(options: RepoOptions = {}): string {
 interface SpecFakes {
   section?: string;
   sectionFails?: boolean;
-  /** Overrides of `PINNED_NORM_SPECS`' revisions in the fake `spec_pins` response. */
-  currentRevs?: Record<string, number>;
   labels?: string[];
   labelsFail?: boolean;
   /** Leftover checks (§7.7). Absent means: no worktrees, no branches, nothing to find. */
@@ -243,12 +240,6 @@ function fakeTools(fakes: SpecFakes = {}): Tools {
           throw new Error("spec-mcp unreachable at http://localhost:8787");
         expect(args.key).toBe(EFFORT_TABLE_KEY);
         return fakes.section ?? normSection();
-      }
-      if (tool === "spec_pins") {
-        expect(args.project).toBe("foundation");
-        return PINNED_NORM_SPECS.map(
-          (spec) => `${spec.key}=${fakes.currentRevs?.[spec.key] ?? spec.rev}`,
-        ).join("\n");
       }
       throw new Error(`unexpected spec tool: ${tool}`);
     },
@@ -346,12 +337,13 @@ describe("doctor (spec §7.7)", () => {
     expect(findings).toContain('hold label "owner-hold" does not exist here');
   });
 
-  it("reports missing or invalid pins, and the pause flag", async () => {
+  it("leaves a repo without pins alone (SST-DESIGN-025 rev 6), reports invalid pins and the pause flag", async () => {
     const missing = await runDoctor(
       context(fakeRepo({ pins: null })),
       deps(fakeHome(), fakeTools()),
     );
-    expect(findingsOf(missing.data).join(" ")).toContain("pins: no spec-pins.json");
+    expect(findingsOf(missing.data)).toEqual([]);
+    expect(missing.exit).toBe(EXIT.OK);
 
     const invalid = await runDoctor(
       context(fakeRepo({ pins: "not json", paused: true })),
@@ -375,14 +367,22 @@ describe("doctor (spec §7.7)", () => {
     }
   });
 
-  it("reports a moved pinned spec instead of adjusting the defaults", async () => {
+  it("tracks no norm revisions against the server (SST-DESIGN-015 rev 5)", async () => {
+    const asked: string[] = [];
+    const tools = fakeTools();
+    const spec = tools.spec.bind(tools);
     const result = await runDoctor(
       context(fakeRepo()),
-      deps(fakeHome(), fakeTools({ currentRevs: { "PROC-DEV-039": 9 } })),
+      deps(fakeHome(), {
+        ...tools,
+        spec: (tool, args) => {
+          asked.push(tool);
+          return spec(tool, args);
+        },
+      }),
     );
-    expect(findingsOf(result.data).join(" ")).toContain(
-      "PROC-DEV-039 moved to rev 9 (pinned rev 7)",
-    );
+    expect(asked).not.toContain("spec_pins");
+    expect(findingsOf(result.data).join(" ")).not.toContain("norm-hash");
   });
 
   it("falls back to a skill-only check when PROC-DEV-042 carries no table (prose, not a table)", async () => {
@@ -1001,15 +1001,11 @@ describe("doctor — push flow of PROC-DEV-005", () => {
     ]);
   });
 
-  it("reports a missing coverage union attribute as a finding", async () => {
+  it("asks for no coverage union attribute — the receipt ledger is retired (SST-DESIGN-029)", async () => {
     const root = appRepo(SOUND_PREPUSH, { files: { ".gitattributes": "* text=auto\n" } });
-    expect(findingsOf((await run(root)).data)).toEqual([
-      expect.stringContaining(
-        "gitattributes: .gitattributes lacks `.spec-sync/drift-coverage.jsonl merge=union`",
-      ),
-    ]);
+    expect(findingsOf((await run(root)).data)).toEqual([]);
     const none = appRepo(SOUND_PREPUSH, { files: { ".gitattributes": "" } });
-    expect(findingsOf((await run(none)).data)).toHaveLength(1);
+    expect(findingsOf((await run(none)).data)).toEqual([]);
   });
 
   it("warns — without turning the exit red — when the merge profile has no unit-static phase", async () => {

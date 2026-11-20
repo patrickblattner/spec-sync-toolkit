@@ -3,7 +3,6 @@
  * model context (SST-DESIGN-025).
  *
  * `spec-sync repin [--ids <a,b>] [--server <url>]`
- * `spec-sync repin --check [--server <url>]` — read-only staleness check, see `runCheck`.
  *
  * The server endpoint comes from the repo's `.mcp.json` (`spec` entry);
  * `--server` overrides. Neither present ⇒ exit 4. Both are accepted in full
@@ -23,21 +22,17 @@
  * anything is compared or written; in `--ids` mode an excluded id is ignored.
  * `excluded` counts the dropped keys (full: fetched keys; ids: named ids).
  *
- * Coverage gate (SST-ADR-011, spec rev 4): a moved key without a valid receipt
- * in the coverage ledger blocks the write — exit 4, `uncovered` names the keys,
- * the pin file stays untouched. Only the bootstrap full run (no existing pin
- * file) and keys dropped by `pinExclude` are exempt; there is no bypass flag.
+ * No gate (spec rev 6): `repin` asks for no receipt for a moved key, and no
+ * hook or gate asks for a current pin file.
  */
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Command, CommandContext, CommandResult } from "../cli.js";
 import type { Config } from "../config.js";
-import { COVERAGE_FILE, computeMoved, isCovered, readReceipts } from "../coverage.js";
 import { callSpecTool, parsePins } from "../norms.js";
 import { EXIT, ToolkitError } from "../output.js";
 import { checkFlags, valueFlag } from "../pack/args.js";
-import { failureLine, runProcess } from "../pack/exec.js";
 import {
   excludeMatcher,
   PINS_FILE,
@@ -55,18 +50,10 @@ export const repinCommand: Command = {
 };
 
 export async function runRepin(ctx: CommandContext): Promise<CommandResult> {
-  checkFlags(ctx.args, ["--ids", "--server"], ["--check"]);
+  checkFlags(ctx.args, ["--ids", "--server"]);
   const config = ctx.config as Config;
 
   const idsFlag = valueFlag(ctx.args, "--ids");
-  if (ctx.args.includes("--check")) {
-    if (idsFlag !== undefined) {
-      throw new ToolkitError("--check cannot be combined with --ids", EXIT.PRECONDITION, {
-        field: "--check",
-      });
-    }
-    return runCheck(ctx, config);
-  }
   const server = resolveServer(ctx.repoRoot, ctx.args);
 
   const existing = readPinsFile(ctx.repoRoot);
@@ -93,29 +80,6 @@ export async function runRepin(ctx: CommandContext): Promise<CommandResult> {
           .filter((id) => id !== "");
   const excluded =
     mode === "full" ? rawFetched.size - fetched.size : wanted.filter(isExcluded).length;
-
-  // Coverage gate (SST-ADR-011): bootstrap (no pin file) and keys that leave
-  // only because of `pinExclude` are the exemptions.
-  if (existing !== undefined) {
-    const moved = computeMoved(withoutExcluded(existing, isExcluded), fetched);
-    // --ids cannot remove entries, so removed keys (`to: null`) never change there.
-    const relevant =
-      mode === "full" ? moved : moved.filter((m) => wanted.includes(m.key) && m.to !== null);
-    if (relevant.length > 0) {
-      const receipts = readReceipts(ctx.repoRoot);
-      const uncovered = relevant.filter((m) => !isCovered(m, receipts)).map((m) => m.key);
-      if (uncovered.length > 0) {
-        return {
-          ok: false,
-          exit: EXIT.PRECONDITION,
-          notes: [
-            `coverage gate: ${uncovered.length} moved key(s) without a valid receipt — spec_diff and cover them first (SST-ADR-011)`,
-          ],
-          data: { pinsPath: PINS_FILE, mode, uncovered },
-        };
-      }
-    }
-  }
 
   if (mode === "full") {
     pins = Object.fromEntries(fetched);
@@ -147,86 +111,6 @@ export async function runRepin(ctx: CommandContext): Promise<CommandResult> {
   }
 
   return { ok: true, notes, data: { pinsPath, mode, units, excluded } };
-}
-
-/**
- * `repin --check` (PROC-DEV-005 §Pins with the change): read-only, usable from
- * a pre-push hook. Stale means the push would leave pins or coverage behind:
- *
- *   - `spec-pins.json` or the coverage ledger differ from `HEAD` (uncommitted
- *     or untracked) — the change is not in the commit being pushed;
- *   - a moved key already carries a valid receipt but is not pinned — `repin`
- *     (full or `--ids`) would write it now, so it belongs in this commit.
- *
- * A moved key without a receipt is fresh server drift, not this push's
- * business — counted in a note, never a red. Exit 0 clean · 1 stale (keys and
- * files listed) · 2 server unreachable and nothing local stale (a hook passes
- * on 2 with a line) · 4 no pin file. Nothing is written, ever.
- */
-async function runCheck(ctx: CommandContext, config: Config): Promise<CommandResult> {
-  const notes: string[] = [];
-  const existing = readPinsFile(ctx.repoRoot);
-  if (existing === undefined) {
-    throw new ToolkitError(
-      `repin --check needs an existing ${PINS_FILE} — bootstrap with repin`,
-      EXIT.PRECONDITION,
-      { field: PINS_FILE },
-    );
-  }
-
-  const status = runProcess(
-    "git",
-    ["status", "--porcelain", "--untracked-files=all", "--", PINS_FILE, COVERAGE_FILE],
-    ctx.repoRoot,
-  );
-  let uncommitted: string[] = [];
-  if (status.ok) {
-    uncommitted = status.stdout
-      .split("\n")
-      .filter((line) => line.trim() !== "")
-      .map((line) => line.slice(3).trim());
-  } else {
-    notes.push(`git status failed — uncommitted check skipped: ${failureLine(status)}`);
-  }
-
-  const server = resolveServer(ctx.repoRoot, ctx.args);
-  const isExcluded = excludeMatcher(config.pinExclude);
-  let fetched: Map<string, number>;
-  try {
-    fetched = withoutExcluded(await fetchPins(config.project, server), isExcluded);
-  } catch (error) {
-    // Unreachable is exit 2 — unless something local is already provably stale.
-    if (!(error instanceof ToolkitError && error.exit === EXIT.UNPROVABLE)) throw error;
-    if (uncommitted.length === 0) throw error;
-    notes.push(`spec server unreachable — server comparison skipped: ${error.message}`);
-    fetched = new Map(Object.entries(withoutExcluded(existing, isExcluded)));
-  }
-
-  const receipts = readReceipts(ctx.repoRoot);
-  const moved = computeMoved(withoutExcluded(existing, isExcluded), fetched);
-  const stale = moved.filter((m) => isCovered(m, receipts)).map((m) => m.key);
-  const uncovered = moved.length - stale.length;
-  if (uncovered > 0) {
-    notes.push(
-      `${uncovered} moved key(s) without a receipt — fresh drift for the loop, not stale for this push`,
-    );
-  }
-
-  const ok = stale.length === 0 && uncommitted.length === 0;
-  if (stale.length > 0) {
-    notes.push(
-      `${stale.length} receipted key(s) not pinned — run \`spec-sync repin --ids ${stale.join(",")}\` and commit with the change`,
-    );
-  }
-  if (uncommitted.length > 0) {
-    notes.push(`not committed: ${uncommitted.join(", ")} — commit it with the change`);
-  }
-  return {
-    ok,
-    exit: ok ? EXIT.OK : EXIT.FAILED,
-    notes,
-    data: { pinsPath: PINS_FILE, mode: "check", stale, uncommitted, uncovered },
-  };
 }
 
 /**
@@ -262,7 +146,7 @@ export async function fetchPins(project: string, server: string): Promise<Map<st
  * auto-detection useless in every repo (cockpit migration finding, 2026-08-21;
  * the workaround was passing `--server` in base form by hand).
  */
-/** Endpoint resolution shared with `drift` and `cover`: `--server` beats `.mcp.json`. */
+/** Endpoint resolution shared with `drift` and `measure`: `--server` beats `.mcp.json`. */
 export function resolveServer(repoRoot: string, args: string[]): string {
   const endpoint = valueFlag(args, "--server") ?? readMcpServerUrl(repoRoot);
   if (endpoint === undefined) {

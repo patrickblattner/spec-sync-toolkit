@@ -53,9 +53,7 @@ const labelsSchema = z.object({
   hold: z.string().min(1).default(NORM_DEFAULTS.hold),
   started: z.string().min(1).default(NORM_DEFAULTS.startedLabel),
   // Not a norm default: the block label is named by `SST-DESIGN-017` rev 4, the
-  // toolkit's own spec, and no foundation norm defines it. Putting it in
-  // `NORM_DEFAULTS` would claim a pinned revision it was never transcribed from
-  // (SST-DESIGN-015).
+  // toolkit's own spec, and no foundation norm defines it.
   blocked: z.string().min(1).default("blocked"),
   // Product quota of `queue` (`SST-DESIGN-017` rev 11, `PROC-DEV-039` rev 7):
   // `product` marks product work; `mergeBlocker` bypasses the quota; inside the
@@ -297,8 +295,8 @@ const configSchema = z
      */
     measureFiles: z.array(z.string().min(1)).default([]),
     /**
-     * Spec-key patterns (`*` = any run of characters, anchored) that `repin`,
-     * `drift` and `cover` leave out — foundation areas the project declares as
+     * Spec-key patterns (`*` = any run of characters, anchored) that `repin`
+     * and `drift` leave out — foundation areas the project declares as
      * not applying to it (SST-DESIGN-025 rev 5). No default list.
      */
     pinExclude: z.array(z.string().min(1)).optional(),

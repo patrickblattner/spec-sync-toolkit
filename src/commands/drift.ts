@@ -1,14 +1,12 @@
 /**
- * `drift` — the loop's drift detector as a write-free command (SST-DESIGN-028).
+ * `drift` — a write-free look-up (SST-DESIGN-028 rev 3), never a gate.
  *
  * `spec-sync drift [--server <url>]`
  *
  * Compares the server's `spec_pins` against `spec-pins.json` and names every
- * moved key — changed, added, removed — each annotated with `covered`: whether
- * a valid receipt for exactly this transition exists in the coverage ledger
- * (SST-DESIGN-029). It replaces the repin→`git diff`→checkout detection detour.
+ * moved key — changed, added, removed.
  *
- * Hits ⇒ exit 1 (gate-usable); no hits ⇒ exit 0 with an empty list; server
+ * Hits ⇒ exit 1; no hits ⇒ exit 0 with an empty list; server
  * unreachable ⇒ exit 2, never "no drift"; missing pin file ⇒ exit 4
  * (bootstrap runs `repin` first).
  *
@@ -18,10 +16,9 @@
 
 import type { Command, CommandContext, CommandResult } from "../cli.js";
 import type { Config } from "../config.js";
-import { computeMoved, isCovered, readReceipts } from "../coverage.js";
 import { EXIT, ToolkitError } from "../output.js";
 import { checkFlags } from "../pack/args.js";
-import { excludeMatcher, PINS_FILE, readPinsFile, withoutExcluded } from "../pins.js";
+import { computeMoved, excludeMatcher, PINS_FILE, readPinsFile, withoutExcluded } from "../pins.js";
 import { fetchPins, resolveServer } from "./repin.js";
 
 export const driftCommand: Command = {
@@ -47,20 +44,13 @@ export async function runDrift(ctx: CommandContext): Promise<CommandResult> {
 
   const isExcluded = excludeMatcher(config.pinExclude);
   const fetched = withoutExcluded(await fetchPins(config.project, server), isExcluded);
-  const receipts = readReceipts(ctx.repoRoot);
-  const moved = computeMoved(withoutExcluded(pinned, isExcluded), fetched).map((entry) => ({
-    ...entry,
-    covered: isCovered(entry, receipts),
-  }));
-  const covered = moved.filter((entry) => entry.covered).length;
+  const moved = computeMoved(withoutExcluded(pinned, isExcluded), fetched);
 
   return {
     ok: moved.length === 0,
     exit: moved.length === 0 ? EXIT.OK : EXIT.FAILED,
     notes:
-      moved.length === 0
-        ? []
-        : [`${moved.length} moved key(s), ${covered} covered — spec_diff each, then cover`],
-    data: { moved, counts: { moved: moved.length, covered } },
+      moved.length === 0 ? [] : [`${moved.length} moved key(s) — spec_diff shows what changed`],
+    data: { moved, counts: { moved: moved.length } },
   };
 }

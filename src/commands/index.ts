@@ -22,7 +22,6 @@ import { budgetCommand } from "./budget.js";
 import { handoverCommand } from "./handover.js";
 import { repinCommand } from "./repin.js";
 import { driftCommand } from "./drift.js";
-import { coverCommand } from "./cover.js";
 import { mapCommand } from "./map.js";
 import { measureCommand } from "./measure.js";
 import { reviewCommand } from "./review.js";
@@ -46,7 +45,6 @@ export const ALL_COMMANDS: readonly Command[] = [
   handoverCommand,
   repinCommand,
   driftCommand,
-  coverCommand,
   mapCommand,
   measureCommand,
   reviewCommand,

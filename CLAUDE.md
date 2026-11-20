@@ -46,26 +46,26 @@ one, and pass `field` for a config violation.
 
 ## Module map
 
-| File            | Owns                                                                                 |
-| --------------- | ------------------------------------------------------------------------------------ |
-| `src/cli.ts`    | flag parsing, command registry (`registerCommand`), the response envelope            |
-| `src/output.ts` | `EXIT`, `ToolkitError`, `emit()`, `progress()`, JSON and `--human` rendering         |
-| `src/config.ts` | zod schema of `spec-sync.config.json`, exit 4 naming the violated field              |
-| `src/logs.ts`   | log directory layout, `firstError()`                                                 |
-| `src/norms.ts`  | foundation norms (transitional defaults + pinned revisions), spec-server HTTP client |
-| `src/pins.ts`   | `spec-pins.json` — the `{key: rev}` pin file `repin` writes                          |
+| File            | Owns                                                                         |
+| --------------- | ---------------------------------------------------------------------------- |
+| `src/cli.ts`    | flag parsing, command registry (`registerCommand`), the response envelope    |
+| `src/output.ts` | `EXIT`, `ToolkitError`, `emit()`, `progress()`, JSON and `--human` rendering |
+| `src/config.ts` | zod schema of `spec-sync.config.json`, exit 4 naming the violated field      |
+| `src/logs.ts`   | log directory layout, `firstError()`                                         |
+| `src/norms.ts`  | defaults of the optional loop commands, spec-server HTTP client              |
+| `src/pins.ts`   | `spec-pins.json` — the `{key: rev}` pin file `repin` writes                  |
 
 A new command adds a file and one `registerCommand({…})` call — dispatch, timing, exit code
 and emission are the dispatcher's job, not the command's.
 
 ## Norm binding (`SST-DESIGN-015`)
 
-Sort tiers, labels, `owner-hold` precedence and the merge model belong to the foundation's
-`PROC-DEV-015` subtree — `PROC-DEV-039` (sort tiers), `PROC-DEV-010` (labels),
-`PROC-DEV-047` (`owner-hold`), `PROC-DEV-044` (merge model) — not to this code. Until the
-toolkit reads them live, `src/norms.ts` holds the defaults **plus** the revision each was
-transcribed from; `doctor` reports a moved revision as a finding. Do not silently edit the
-defaults — move the pin with them.
+The toolkit carries the foundation rules that name it: gate and profiles (`PROC-REL-012`),
+hygiene (`GL-CODE-002`), review engine (`PROC-DEV-049`), licence inventory (`SST-FEATURE-001`).
+It carries no norm on how a lead organises the work (`PROC-DEV-001`): `queue`, `handover`,
+`budget`, `repin` and `drift` are optional, and no hook or gate asks for their result.
+`src/norms.ts` holds the plain defaults of those commands (sort tiers, labels, merge model);
+nothing tracks them against the spec server.
 
 ## Conventions
 

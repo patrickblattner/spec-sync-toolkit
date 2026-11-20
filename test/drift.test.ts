@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CommandContext } from "../src/cli.js";
 import { runDrift } from "../src/commands/drift.js";
-import { COVERAGE_FILE } from "../src/coverage.js";
 import type { Config } from "../src/config.js";
 import { EXIT, ToolkitError } from "../src/output.js";
 
@@ -47,7 +46,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("drift (SST-DESIGN-028)", () => {
+describe("drift (SST-DESIGN-028 rev 3)", () => {
   it("refuses without a pin file — bootstrap runs repin first", async () => {
     vi.stubGlobal("fetch", fakeFetch());
     await expect(runDrift(ctxFor(repo()))).rejects.toMatchObject({ exit: EXIT.PRECONDITION });
@@ -57,27 +56,26 @@ describe("drift (SST-DESIGN-028)", () => {
     vi.stubGlobal("fetch", fakeFetch());
     const result = await runDrift(ctxFor(repo({ "PROC-DEV-031": 2, "GL-CODE-010": 1 })));
     expect(result).toMatchObject({ ok: true, exit: EXIT.OK });
-    expect(result.data).toMatchObject({ moved: [], counts: { moved: 0, covered: 0 } });
+    expect(result.data).toEqual({ moved: [], counts: { moved: 0 } });
   });
 
-  it("exit 1 on hits, entries annotated with their coverage state", async () => {
+  it("exit 1 on hits, plain entries without a coverage field, and a ledger is ignored", async () => {
     vi.stubGlobal("fetch", fakeFetch());
     const root = repo({ "PROC-DEV-031": 1, "GL-CODE-010": 1, "GL-GONE-001": 4 });
+    // A receipt ledger left over from before rev 3 changes nothing.
     mkdirSync(join(root, ".spec-sync"), { recursive: true });
-    writeFileSync(
-      join(root, COVERAGE_FILE),
-      `${JSON.stringify({ ts: "t", key: "PROC-DEV-031", from: 1, to: 2, disposition: "ticket", ref: "16" })}\n`,
-    );
+    writeFileSync(join(root, ".spec-sync", "drift-coverage.jsonl"), "not json\n");
 
     const result = await runDrift(ctxFor(root));
     expect(result).toMatchObject({ ok: false, exit: EXIT.FAILED });
-    expect(result.data).toMatchObject({
+    expect(result.data).toEqual({
       moved: [
-        { key: "GL-GONE-001", from: 4, to: null, covered: false },
-        { key: "PROC-DEV-031", from: 1, to: 2, covered: true },
+        { key: "GL-GONE-001", from: 4, to: null },
+        { key: "PROC-DEV-031", from: 1, to: 2 },
       ],
-      counts: { moved: 2, covered: 1 },
+      counts: { moved: 2 },
     });
+    expect(result.notes).toEqual(["2 moved key(s) — spec_diff shows what changed"]);
   });
 
   it("maps an unreachable server to exit 2, never to 'no drift'", async () => {
@@ -96,7 +94,7 @@ describe("drift (SST-DESIGN-028)", () => {
 
     const result = await runDrift(ctxFor(root, ["GL-CODE-*"]));
     expect(result).toMatchObject({ ok: true, exit: EXIT.OK });
-    expect(result.data).toMatchObject({ moved: [], counts: { moved: 0, covered: 0 } });
+    expect(result.data).toEqual({ moved: [], counts: { moved: 0 } });
   });
 
   it("without pinExclude the same state is drift", async () => {

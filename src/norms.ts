@@ -1,22 +1,14 @@
 /**
- * Norm binding (spec §6, ADR "Entscheidung 3").
- *
- * Sort tiers, label taxonomy, `owner-hold` precedence and the merge model are
- * *not* the toolkit's to define — they come from the foundation's
- * `PROC-DEV-015` subtree (Worker-Loop): `PROC-DEV-039` (sort tiers),
- * `PROC-DEV-010` (label taxonomy), `PROC-DEV-047` (`owner-hold` precedence),
- * `PROC-DEV-044` (merge model) — SST-DESIGN-015.
- *
- * Target state: the toolkit reads them live over `spec_get`. Transitional
- * state (what this module implements): the defaults live here in code
- * **plus** the revision each was transcribed from. `doctor` reports a moved
- * revision as a finding, which makes the transitional state visible instead
- * of silent. The read path is HTTP — never local spec files (spec §10).
+ * The defaults of the optional loop commands (`queue`, `merge`, `handover`):
+ * sort tiers, labels and the merge model. They are code defaults, not a norm
+ * the toolkit tracks against the spec server (SST-DESIGN-015 rev 5) — no lead
+ * has to use these commands. Also the spec server's HTTP client; the read
+ * path is HTTP — never local spec files (spec §10).
  */
 
 import { ToolkitError, EXIT } from "./output.js";
 
-/** The norms as of the pinned revisions. Kept in sync by `doctor`, not by hand. */
+/** The defaults the optional loop commands work with. */
 export interface Norms {
   sortTiers: string[];
   hold: string;
@@ -32,7 +24,7 @@ export interface Norms {
   mergeModel: string;
 }
 
-/** Defaults verbatim from the specs listed in `PINNED_NORM_SPECS`. */
+/** The built-in defaults. */
 export const NORM_DEFAULTS: Norms = {
   sortTiers: ["auto-audit", "type: bug", "started-first", "phase-asc", "issue-number-asc"],
   hold: "owner-hold",
@@ -41,26 +33,6 @@ export const NORM_DEFAULTS: Norms = {
   startedLabel: "status: in-progress",
   mergeModel: "local-squash-single-push",
 };
-
-export interface PinnedNormSpec {
-  key: string;
-  rev: number;
-}
-
-/**
- * The foundation specs `NORM_DEFAULTS` was transcribed from, pinned by
- * revision (SST-DESIGN-015). A moved revision means the norm changed and the
- * defaults above may be stale.
- */
-export const PINNED_NORM_SPECS: readonly PinnedNormSpec[] = [
-  { key: "PROC-DEV-039", rev: 7 }, // sort tiers (1)-(4), class level ½, product quota level ¼ & pathfinder inheritance
-  { key: "PROC-DEV-010", rev: 6 }, // ticket tracking & label taxonomy
-  { key: "PROC-DEV-047", rev: 7 }, // operating profile: autonomy, label semantics, owner-hold
-  { key: "PROC-DEV-044", rev: 16 }, // ticket closure: merge model & cleanup
-];
-
-/** The project the pinned norm specs live in — always `foundation` (SST-DESIGN-015). */
-export const PINNED_NORM_PROJECT = "foundation";
 
 /** Default base URL of the spec server. */
 export const SPEC_MCP_URL = "http://localhost:8787";
@@ -71,67 +43,14 @@ export type NormSource = "defaults" | "spec";
 export interface LoadedNorms {
   norms: Norms;
   source: NormSource;
-  pinnedSpecs: readonly PinnedNormSpec[];
 }
 
-/** The effective norms for this run. Transitional: always the code defaults. */
+/** The effective norms for this run: always the code defaults. */
 export function loadNorms(): LoadedNorms {
   return {
     norms: { ...NORM_DEFAULTS, sortTiers: [...NORM_DEFAULTS.sortTiers] },
     source: "defaults",
-    pinnedSpecs: PINNED_NORM_SPECS,
   };
-}
-
-export interface NormDrift {
-  /** Pinned specs whose current revision no longer matches the pinned one. */
-  moved: { key: string; pinnedRev: number; currentRev: number }[];
-  /** true once at least one pinned spec moved. */
-  drifted: boolean;
-  /** Set when the current revisions could not be determined (server down). */
-  unreachable?: string;
-}
-
-/** Reads `{key: rev}` for every spec of one project. `undefined` when unreadable. */
-export type PinsReader = (project: string) => Promise<Map<string, number> | undefined>;
-
-/**
- * Compares the pinned revisions against the server's current ones — the
- * finding `doctor` reports (spec §6, SST-DESIGN-022). An unreachable server is
- * reported as `unreachable`, not as drift: absence of an answer is not a
- * changed norm.
- */
-export async function checkNormDrift(read: PinsReader = readPinsOverHttp): Promise<NormDrift> {
-  let pins: Map<string, number> | undefined;
-  try {
-    pins = await read(PINNED_NORM_PROJECT);
-  } catch (error) {
-    return {
-      moved: [],
-      drifted: false,
-      unreachable: error instanceof Error ? error.message : String(error),
-    };
-  }
-
-  if (pins === undefined) {
-    return {
-      moved: [],
-      drifted: false,
-      unreachable: `spec_pins returned nothing for ${PINNED_NORM_PROJECT}`,
-    };
-  }
-
-  const moved = PINNED_NORM_SPECS.flatMap(({ key, rev }) => {
-    const current = pins.get(key);
-    if (current === undefined || current === rev) return [];
-    return [{ key, pinnedRev: rev, currentRev: current }];
-  });
-  return { moved, drifted: moved.length > 0 };
-}
-
-async function readPinsOverHttp(project: string): Promise<Map<string, number> | undefined> {
-  const text = await callSpecTool("spec_pins", { project });
-  return parsePins(text);
 }
 
 /** Parses a `spec_pins` response: one `KEY=rev` pair per line (SMCP-DESIGN-012). */

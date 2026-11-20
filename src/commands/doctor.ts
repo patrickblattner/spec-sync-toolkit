@@ -5,12 +5,10 @@
  *
  * Checks, no repairs: the agent types of the effort table exist with a
  * valid `effort:` frontmatter, the skill table is internally sound, the repo
- * knows the configured labels, `spec-pins.json` is present, the pinned
- * `PROC-DEV-015` subtree specs still carry their pinned revision (spec §6),
- * and the pause flag is absent. A repo with workflows (it lands through PRs)
+ * knows the configured labels, a `spec-pins.json` the repo keeps is a valid
+ * map, and the pause flag is absent. A repo with workflows (it lands through PRs)
  * is also checked against the push flow of PROC-DEV-005: the pre-push hook runs
- * the merge pre-run, `.gitattributes` merges the coverage ledger as union, and
- * the merge profile has a `unit-static` phase — the last one a warning, which
+ * the merge pre-run, and the merge profile has a `unit-static` phase — the last one a warning, which
  * is listed under `warnings` and never turns the exit red. Every repo is also
  * scanned for any `npx … spec-sync` (with or without `--no-install`) in its
  * pre-push hook, workflows, `scripts/` and the files agents act on, and the
@@ -29,7 +27,6 @@ import type { Command, CommandContext, CommandResult } from "../cli.js";
 import { CONFIG_FILENAME, LEGACY_REVIEW_KEYS, loadConfig, type Config } from "../config.js";
 import { readLedger } from "../ledger.js";
 import { createLogDir, protectedLogDirs, writePhaseLog } from "../logs.js";
-import { checkNormDrift, parsePins } from "../norms.js";
 import { EXIT } from "../output.js";
 import { checkFlags } from "../pack/args.js";
 import { defaultTools, failureLine, type Tools } from "../pack/exec.js";
@@ -118,7 +115,6 @@ export async function runDoctor(ctx: CommandContext, deps: DoctorDeps): Promise<
   checkLabels(ctx, deps.tools, add, notes);
   checkReview(ctx, deps.tools, add);
   checkPins(ctx.repoRoot, add);
-  await checkNormHash(deps.tools, add);
   checkPause(ctx.repoRoot, add);
   checkNightly(ctx, add);
   checkPushFlow(ctx, add, warn);
@@ -370,32 +366,11 @@ function checkReview(ctx: CommandContext, tools: Tools, add: Add): void {
   }
 }
 
+/** Whether a repo keeps a pin file is its lead's call (SST-DESIGN-025 rev 6); one it keeps must parse. */
 function checkPins(repoRoot: string, add: Add): void {
-  if (!existsSync(join(repoRoot, PINS_FILE))) {
-    add("pins", `no ${PINS_FILE} — pin it with \`spec-sync repin\` before deriving tickets`);
-    return;
-  }
+  if (!existsSync(join(repoRoot, PINS_FILE))) return;
   if (readPinsFile(repoRoot) === undefined) {
     add("pins", `${PINS_FILE} is not a valid {key: rev} map`);
-  }
-}
-
-/** Has any pinned `PROC-DEV-015` subtree spec moved? Transitional state, spec §6. */
-async function checkNormHash(tools: Tools, add: Add): Promise<void> {
-  const drift = await checkNormDrift(async (project) => {
-    const text = await tools.spec("spec_pins", { project });
-    return parsePins(text);
-  });
-
-  if (drift.unreachable !== undefined) {
-    add("norm-hash", `not verifiable: ${drift.unreachable}`);
-    return;
-  }
-  for (const moved of drift.moved) {
-    add(
-      "norm-hash",
-      `${moved.key} moved to rev ${moved.currentRev} (pinned rev ${moved.pinnedRev}) — the defaults in src/norms.ts may be stale`,
-    );
   }
 }
 
@@ -446,7 +421,6 @@ export const PREFLIGHT_COMMAND = "node_modules/.bin/spec-sync prepush";
 export const PREFLIGHT_NODE_CALL =
   'spawnSync(process.execPath, [fileURLToPath(import.meta.resolve("spec-sync-toolkit/dist/cli.js")), "prepush"], { input: stdin, stdio: ["pipe", "inherit", "inherit"] })';
 export const UNIT_STATIC_PHASE = "unit-static";
-export const COVERAGE_ATTRIBUTE = ".spec-sync/drift-coverage.jsonl merge=union";
 
 /**
  * The push flow of PROC-DEV-005, for a repo that lands through PRs — one with
@@ -456,7 +430,6 @@ export const COVERAGE_ATTRIBUTE = ".spec-sync/drift-coverage.jsonl merge=union";
 function checkPushFlow(ctx: CommandContext, add: Add, warn: Add): void {
   if (!hasWorkflows(ctx.repoRoot)) return;
   checkPrePushHook(ctx.repoRoot, add);
-  checkGitattributes(ctx.repoRoot, add);
 
   let config: Config;
   try {
@@ -726,25 +699,6 @@ function checkNpxCache(npmCache: string, add: Add): void {
         `${folder} holds the public npm package \`spec-sync\` — npx runs it in place of the toolkit when the local bin is missing; delete that folder`,
       );
     }
-  }
-}
-
-function checkGitattributes(repoRoot: string, add: Add): void {
-  const path = join(repoRoot, ".gitattributes");
-  const text = existsSync(path) ? readFileSync(path, "utf8") : "";
-  const present = text.split("\n").some((line) => {
-    const [pattern, ...attributes] = line.trim().split(/\s+/u);
-    return (
-      (pattern === ".spec-sync/drift-coverage.jsonl" ||
-        pattern === "/.spec-sync/drift-coverage.jsonl") &&
-      attributes.includes("merge=union")
-    );
-  });
-  if (!present) {
-    add(
-      "gitattributes",
-      `.gitattributes lacks \`${COVERAGE_ATTRIBUTE}\` — add that line so parallel PRs append receipts without a conflict (PROC-DEV-005)`,
-    );
   }
 }
 

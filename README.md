@@ -33,9 +33,7 @@ spec-sync doctor
 spec-sync budget [--session <id|path>] [--label <text>]
 spec-sync handover [--note <text>] [--reason <budget|done|red-2x|question-open|pause|unexpected>] [--session <id|path>]
 spec-sync repin [--ids <a,b>] [--server <url>]
-spec-sync repin --check [--server <url>]
 spec-sync drift [--server <url>]
-spec-sync cover <key>[,<key>…] (--ticket <n> | --editorial "<reason>") [--server <url>] [--dry-run]
 spec-sync pr overlap <open-pr> --merged <merged-pr>
 spec-sync ledger start <issue> [--new-increment] [--dry-run]
 spec-sync ledger build <issue> [--agent impl|impl-fast|impl-deep] [--dry-run]
@@ -143,8 +141,8 @@ process.exit(run.status ?? 1);
 
 ### Push flow with little CI rework (PROC-DEV-005)
 
-The pre-push hook of an app repo runs the merge pre-run and the pin check on the tree being
-pushed (Node hook script, as `simple-git-hooks` calls it):
+The pre-push hook of an app repo runs the merge pre-run on the tree being pushed (Node hook
+script, as `simple-git-hooks` calls it):
 
 ```js
 const stdin = readFileSync(0, "utf8"); // the refs git hands the hook
@@ -154,29 +152,17 @@ const preflight = spawnSync(process.execPath, [cli, "prepush"], {
   stdio: ["pipe", "inherit", "inherit"],
 });
 if (preflight.status !== 0) process.exit(preflight.status ?? 1);
-const pins = spawnSync(process.execPath, [cli, "repin", "--check"], {
-  stdio: "inherit",
-});
-if (pins.status === 2) console.error("• pre-push: spec server unreachable — pin check skipped");
-else if (pins.status !== 0) process.exit(pins.status ?? 1);
 ```
 
-`repin --check` is read-only (no file and no server write). Exit 0: the committed
-`spec-pins.json` and `.spec-sync/drift-coverage.jsonl` are what this push needs. Exit 1, listing
-`stale` keys and `uncommitted` files: either file differs from `HEAD` (uncommitted or untracked),
-or a moved key already carries a valid receipt but is not pinned — `repin` would write it now, so
-it belongs in the same commit as the change. A moved key without a receipt is fresh server drift
-for the loop, not stale for the push: it is counted in `uncovered` and a note, never a red. Exit 2:
-the spec server is unreachable and nothing local is stale — the hook passes with a line. Exit 4:
-no pin file, or `--check` with `--ids`.
+No hook and no gate asks for a current `spec-pins.json` (`SST-DESIGN-025` rev 6): whether a repo
+keeps a pin file at all is its lead's call.
 
 `doctor` checks the push flow in a repo that lands through PRs (one with `.github/workflows`):
 the pre-push hook (`.husky/pre-push`, `.githooks/pre-push`, or `simple-git-hooks` / `husky.hooks`
 in `package.json`, followed one step into the script or npm script it calls) must run
 `node_modules/.bin/spec-sync prepush` (in a Node hook script: `process.execPath` with the
 resolved `spec-sync-toolkit/dist/cli.js` and `prepush`) — otherwise a finding names the file and
-the line to add; `.gitattributes` must carry `.spec-sync/drift-coverage.jsonl merge=union` (finding); and the
-merge profile should carry a `unit-static` phase — a **warning**, listed under `warnings`, which
+the line to add; and the merge profile should carry a `unit-static` phase — a **warning**, listed under `warnings`, which
 never turns the exit red.
 
 In every repo, `doctor` reports each `npx spec-sync` — `npx` followed by `spec-sync`, whatever
@@ -289,16 +275,11 @@ event (`tag`, `toSha`) stops a rerun. Without the block nothing changes.
 "cadence": { "tagsPerDay": 1, "reviewsPerDay": 1, "cleanReviewIssue": false }
 ```
 
-`drift` compares the server's pins with `spec-pins.json` and writes nothing. It lists every moved
-key (changed, added, removed) with `covered`: whether `.spec-sync/drift-coverage.jsonl` already
-holds a receipt for exactly that transition. Exit 0 without moved keys, 1 with moved keys, 2 when
+`drift` compares the server's pins with `spec-pins.json` and writes nothing — a look-up for a
+lead or the weekly review, never a gate (`SST-DESIGN-028` rev 3). It lists every moved key
+(changed, added, removed). Exit 0 without moved keys, 1 with moved keys, 2 when
 the spec server is unreachable (never "no drift"), 4 without a pin file (run `repin` first). Keys
 matching `pinExclude` never count as drift.
-
-`cover` writes that receipt: one line per named key in `.spec-sync/drift-coverage.jsonl`, with the
-`from` and `to` revisions taken from the pin↔server comparison. It takes exactly one disposition,
-`--ticket <n>` or `--editorial "<reason>"`, for all named keys. A key that has not moved is exit 4,
-and then nothing is written. `--dry-run` writes nothing.
 
 `ledger close <issue> --reason "<text>"` ends an orphaned `merge-started` by hand — one that
 `merge` cannot resume because its squash commit predates the current commit subject format. It

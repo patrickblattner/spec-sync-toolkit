@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { excludeMatcher, withoutExcluded } from "../src/pins.js";
+import { computeMoved, excludeMatcher, withoutExcluded } from "../src/pins.js";
 
 describe("excludeMatcher (SST-DESIGN-025 rev 5, pinExclude)", () => {
   it("excludes nothing without patterns", () => {
@@ -47,5 +47,27 @@ describe("withoutExcluded", () => {
     expect(withoutExcluded({ "GL-UI-026": 6, "PROC-DEV-031": 2 }, isExcluded)).toEqual({
       "PROC-DEV-031": 2,
     });
+  });
+});
+
+describe("computeMoved (SST-DESIGN-028)", () => {
+  it("names changed, added and removed keys, sorted, and skips unchanged ones", () => {
+    const moved = computeMoved(
+      { A: 1, B: 2, D: 4 },
+      new Map([
+        ["A", 3],
+        ["B", 2],
+        ["C", 1],
+      ]),
+    );
+    expect(moved).toEqual([
+      { key: "A", from: 1, to: 3 },
+      { key: "C", from: null, to: 1 },
+      { key: "D", from: 4, to: null },
+    ]);
+  });
+
+  it("returns an empty list when nothing moved", () => {
+    expect(computeMoved({ A: 1 }, new Map([["A", 1]]))).toEqual([]);
   });
 });

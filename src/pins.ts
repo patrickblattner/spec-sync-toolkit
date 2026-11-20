@@ -75,3 +75,25 @@ export function withoutExcluded<T extends Map<string, number> | PinsMap>(
   }
   return Object.fromEntries(Object.entries(pins).filter(([key]) => !isExcluded(key))) as T;
 }
+
+export interface MovedEntry {
+  key: string;
+  /** Pinned revision; null when the key is new on the server. */
+  from: number | null;
+  /** Current server revision; null when the spec disappeared. */
+  to: number | null;
+}
+
+/** Every key whose pinned and server revision differ — changed, added, removed (SST-DESIGN-028). */
+export function computeMoved(pinned: PinsMap, fetched: Map<string, number>): MovedEntry[] {
+  const moved: MovedEntry[] = [];
+  for (const [key, to] of fetched) {
+    const from = pinned[key];
+    if (from === undefined) moved.push({ key, from: null, to });
+    else if (from !== to) moved.push({ key, from, to });
+  }
+  for (const [key, from] of Object.entries(pinned)) {
+    if (!fetched.has(key)) moved.push({ key, from, to: null });
+  }
+  return moved.sort((a, b) => a.key.localeCompare(b.key));
+}

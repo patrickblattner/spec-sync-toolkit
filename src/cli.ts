@@ -75,7 +75,7 @@ registerCommand({
   summary: "Verify config, runtime and output contract without touching the repo",
   needsConfig: true,
   run(ctx) {
-    const { norms, source, pinnedSpecs } = loadNorms();
+    const { norms, source } = loadNorms();
     return {
       ok: true,
       notes: source === "defaults" ? ["norms come from the built-in defaults (spec §6)"] : [],
@@ -87,7 +87,6 @@ registerCommand({
           source,
           hold: norms.hold,
           buildLabel: norms.buildLabel,
-          pinnedSpecs: pinnedSpecs.map((spec) => `${spec.key}@${spec.rev}`),
         },
       },
     };

@@ -10,10 +10,12 @@ The spec server at the URL in `.mcp.json` (`http://localhost:8787/mcp`), project
 `SST-VISION-001` with its `SST-DESIGN-0xx` leaves and the `SST-ADR-0xx` subtree. Enter
 through `spec_usage`, then `spec_tree`/`spec_search`, then `spec_get`/`spec_get_many` — a
 leaf is small and self-contained, so read the ones you need, never a whole level. The
-foundation norms come from the `PROC-DEV-015` subtree (Worker-Loop).
+toolkit carries the foundation rules that name it (`SST-DESIGN-015`): gate and profiles
+(`PROC-REL-012`), hygiene (`GL-CODE-002`), review engine (`PROC-DEV-049`), licence inventory
+(`SST-FEATURE-001`).
 
-If the spec does not answer a question: `ask_question` to the architect, note it in the
-ticket, keep working. Do not guess and do not invent a default.
+If the spec does not answer a question: `ask_question` in your own project — the spec master
+answers it — note it in the ticket, keep working. Do not guess and do not invent a default.
 
 ## Before you touch a command
 

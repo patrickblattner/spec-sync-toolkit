@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+No coverage gate, and drift is never a gate (spec master, 2026-11-20: `SST-DESIGN-025` rev 6,
+`SST-DESIGN-028` rev 3, `SST-DESIGN-029` retired, `SST-DESIGN-015` rev 5).
+
+### Removed
+
+- `spec-sync cover` and the receipt ledger code (`SST-DESIGN-029` retired). An existing
+  `.spec-sync/drift-coverage.jsonl` is no longer read or written; it stays where it is.
+- `repin`'s coverage gate: a moved key needs no receipt, the response has no `uncovered`.
+- `repin --check` (the pre-push pin check) — now an unknown flag, exit 4.
+- `drift`'s `covered` field and `counts.covered`; the note no longer says "then cover".
+- `doctor` checks `gitattributes` (union merge of the ledger), `norm-hash` (pinned
+  `PROC-DEV-015` subtree revisions) and the `pins` finding for a repo without `spec-pins.json`
+  (an invalid pin file is still a finding). `ping` no longer lists `norms.pinnedSpecs`.
+
 ## 0.52.0
 
 Security fix: own tools are never called through `npx` (security master, 2026-11-20).
