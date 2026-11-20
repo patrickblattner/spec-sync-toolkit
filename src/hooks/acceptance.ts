@@ -38,7 +38,7 @@ const STOP_PROMPT =
   "Acceptance checker for the turn end of a spec-sync worker session. Judge ONLY the final message " +
   "below. ALLOW when the message does not claim the run has ended (an interim status, a follow-up " +
   "question, an owner dialogue) — never block normal turns. ALLOW a claimed run end for one of three " +
-  "evidenced outcomes: (1) Handover written (npx spec-sync handover, any --reason) — always allow, " +
+  "evidenced outcomes: (1) Handover written (npx --no-install spec-sync handover, any --reason) — always allow, " +
   "never block after a handover. (2) In-sync ending: a proven pin drift with no changes AND an empty " +
   "ticket sweep (auto-audit, type: bug, spec-sync) are named concretely. (3) Run DoD: the goal " +
   "reconciliation names drift→tickets→merges, the assignment of the open issues, the section mapping, " +

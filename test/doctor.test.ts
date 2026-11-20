@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { CommandContext } from "../src/cli.js";
 import {
+  bareNpxLines,
   EFFORT_TABLE_KEY,
   invokesLightPreflight,
   invokesPreflight,
@@ -876,7 +877,7 @@ describe("doctor — push flow of PROC-DEV-005", () => {
     'const stdin = readFileSync(0, "utf8");',
     "const preflight = spawnSync(",
     '  "npx",',
-    '  ["spec-sync", "prepush"],',
+    '  ["--no-install", "spec-sync", "prepush"],',
     '  { input: stdin, stdio: ["pipe", "inherit", "inherit"] },',
     ");",
     "if (preflight.status !== 0) process.exit(preflight.status ?? 1);",
@@ -921,7 +922,7 @@ describe("doctor — push flow of PROC-DEV-005", () => {
     expect(findings).toHaveLength(1);
     expect(findings[0]).toContain("pre-push: scripts/prePush.mjs does not run the merge pre-run");
     expect(findings[0]).toContain(
-      'spawnSync("npx", ["spec-sync", "prepush"], { input: stdin, stdio: ["pipe", "inherit", "inherit"] })',
+      'spawnSync("npx", ["--no-install", "spec-sync", "prepush"], { input: stdin, stdio: ["pipe", "inherit", "inherit"] })',
     );
     expect(result.exit).toBe(EXIT.FAILED);
   });
@@ -941,7 +942,7 @@ describe("doctor — push flow of PROC-DEV-005", () => {
     ]);
   });
 
-  const line = "npx spec-sync prepush\n";
+  const line = "npx --no-install spec-sync prepush\n";
   it.each<[string, Record<string, string>]>([
     ["a husky hook", { ".husky/pre-push": `#!/bin/sh\n${line}` }],
     ["a .githooks hook", { ".githooks/pre-push": `#!/bin/sh\nset -e\n${line}npm run verify\n` }],
@@ -972,18 +973,18 @@ describe("doctor — push flow of PROC-DEV-005", () => {
       },
     });
     expect(findingsOf((await run(root)).data)).toEqual([
-      "pre-push: .husky/pre-push does not run the merge pre-run — add `npx spec-sync prepush` and refuse the push on a non-zero exit (PROC-DEV-005 rev 7)",
+      "pre-push: .husky/pre-push does not run the merge pre-run — add `npx --no-install spec-sync prepush` and refuse the push on a non-zero exit (PROC-DEV-005 rev 7)",
     ]);
   });
 
   it.each<[string, string]>([
     [
       "a script spawning the plain gate",
-      'spawnSync("npx", ["spec-sync", "gate", "--profile", "merge", "--preflight"], { stdio: "inherit" });',
+      'spawnSync("npx", ["--no-install", "spec-sync", "gate", "--profile", "merge", "--preflight"], { stdio: "inherit" });',
     ],
     [
       "a script running the plain gate --changed",
-      "run('npx spec-sync gate --profile merge --preflight --changed')",
+      "run('npx --no-install spec-sync gate --profile merge --preflight --changed')",
     ],
   ])("reports %s as drift: the hook lacks the light preflight (rev 7)", async (_name, prePush) => {
     const findings = findingsOf((await run(appRepo(prePush))).data);
@@ -1035,9 +1036,44 @@ describe("doctor — push flow of PROC-DEV-005", () => {
 
   it("invokesLightPreflight recognises the prepush call in a shell line and an argument array", () => {
     expect(invokesLightPreflight("npx spec-sync prepush")).toBe(true);
+    expect(invokesLightPreflight("npx --no-install spec-sync prepush")).toBe(true);
+    expect(
+      invokesLightPreflight('["--no-install", "spec-sync",\n "prepush", "--cap-min", "10"]'),
+    ).toBe(true);
     expect(invokesLightPreflight('["spec-sync",\n "prepush", "--cap-min", "10"]')).toBe(true);
     expect(invokesLightPreflight("npx spec-sync gate --profile merge --preflight")).toBe(false);
     expect(invokesLightPreflight("spec-sync prepushed")).toBe(false);
+  });
+
+  it("reports each bare npx spec-sync in hook, workflow and scripts/ by file and line", async () => {
+    const root = appRepo('const r = spawnSync(\n  "npx",\n  ["spec-sync", "prepush"],\n);', {
+      files: {
+        ".github/workflows/ci.yml": "jobs:\n  x:\n    steps:\n      - run: npx -y spec-sync gate\n",
+        "scripts/nested/sync.sh":
+          "#!/bin/sh\nnpx --no-install spec-sync repin\nnpx --yes spec-sync map check\n",
+        "scripts/README.md": "npx spec-sync doctor\n",
+        "docs/usage.md": "npx spec-sync doctor\n",
+      },
+    });
+    const findings = findingsOf((await run(root)).data).filter((f) => f.startsWith("npx:"));
+    expect(findings.map((f) => f.split(" ")[1])).toEqual([
+      "scripts/prePush.mjs:2",
+      ".github/workflows/ci.yml:4",
+      "scripts/nested/sync.sh:3",
+    ]);
+    expect(findings[0]).toContain("use `npx --no-install spec-sync`");
+  });
+
+  it("bareNpxLines treats only --no-install without --yes as safe", () => {
+    expect(bareNpxLines("npx spec-sync gate")).toEqual([1]);
+    expect(bareNpxLines("a\nnpx -y spec-sync gate")).toEqual([2]);
+    expect(bareNpxLines("npx --yes spec-sync gate")).toEqual([1]);
+    expect(bareNpxLines('spawnSync("npx", ["spec-sync", "prepush"])')).toEqual([1]);
+    expect(bareNpxLines("npx --no-install spec-sync gate")).toEqual([]);
+    expect(bareNpxLines('spawnSync("npx", ["--no-install", "spec-sync"])')).toEqual([]);
+    expect(bareNpxLines("npx --no-install --yes spec-sync gate")).toEqual([1]);
+    expect(bareNpxLines("spec-sync gate && npx playwright test")).toEqual([]);
+    expect(bareNpxLines("npx spec-sync-toolkit")).toEqual([]);
   });
 
   it("prePushSources follows the hook into the script it calls", () => {

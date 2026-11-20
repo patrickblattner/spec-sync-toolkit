@@ -11,7 +11,9 @@
  * is also checked against the push flow of PROC-DEV-005: the pre-push hook runs
  * the merge pre-run, `.gitattributes` merges the coverage ledger as union, and
  * the merge profile has a `unit-static` phase — the last one a warning, which
- * is listed under `warnings` and never turns the exit red. Findings are reported, never fixed — repairing
+ * is listed under `warnings` and never turns the exit red. Every repo is also
+ * scanned for a bare `npx spec-sync` (no `--no-install`) in its pre-push hook,
+ * workflows and `scripts/`. Findings are reported, never fixed — repairing
  * a drifted norm would decide something the owner has not decided (spec §2).
  *
  * Exit 1 on at least one finding.
@@ -20,7 +22,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import picomatch from "picomatch";
 import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, relative as relativeTo } from "node:path";
 import type { Command, CommandContext, CommandResult } from "../cli.js";
 import { CONFIG_FILENAME, LEGACY_REVIEW_KEYS, loadConfig, type Config } from "../config.js";
 import { readLedger } from "../ledger.js";
@@ -106,6 +108,7 @@ export async function runDoctor(ctx: CommandContext, deps: DoctorDeps): Promise<
   checkPause(ctx.repoRoot, add);
   checkNightly(ctx, add);
   checkPushFlow(ctx, add, warn);
+  checkBareNpx(ctx.repoRoot, add);
 
   // Leftovers of aborted runs (spec §7.7). They need to know which tickets are
   // still open, so this runs after the checks that already reported a broken `gh`.
@@ -418,7 +421,7 @@ function hasWorkflows(repoRoot: string): boolean {
  * push, light): the toolkit's wrapper, which skips code-free pushes and caps
  * the run, fed with the hook's stdin.
  */
-export const PREFLIGHT_COMMAND = "npx spec-sync prepush";
+export const PREFLIGHT_COMMAND = "npx --no-install spec-sync prepush";
 export const UNIT_STATIC_PHASE = "unit-static";
 export const COVERAGE_ATTRIBUTE = ".spec-sync/drift-coverage.jsonl merge=union";
 
@@ -572,7 +575,7 @@ function checkPrePushHook(repoRoot: string, add: Add): void {
     sources.find((source) => !source.file.startsWith("package.json")) ??
     (sources[0] as HookSource);
   const line = /\.(?:mjs|cjs|js|ts)$/u.test(target.file)
-    ? `spawnSync("npx", ["spec-sync", "prepush"], { input: stdin, stdio: ["pipe", "inherit", "inherit"] })`
+    ? `spawnSync("npx", ["--no-install", "spec-sync", "prepush"], { input: stdin, stdio: ["pipe", "inherit", "inherit"] })`
     : target.file === "package.json"
       ? `"pre-push": "${PREFLIGHT_COMMAND} && …"`
       : PREFLIGHT_COMMAND;
@@ -580,6 +583,70 @@ function checkPrePushHook(repoRoot: string, add: Add): void {
     "pre-push",
     `${target.file} does not run the merge pre-run — add \`${line}\` and refuse the push on a non-zero exit (PROC-DEV-005 rev 7)`,
   );
+}
+
+/**
+ * `npx` followed by `spec-sync` without `--no-install` among its flags (`-y`
+ * and `--yes` count as bare too). Quotes, commas and brackets are blanked
+ * length-preserving, so `spawnSync("npx", ["spec-sync", …])` matches across
+ * lines and the match offset still gives the line.
+ */
+const NPX_CALL = /\bnpx((?:\s+-\S+)*)\s+spec-sync(?![\w-])/gu;
+
+/** 1-based lines of the text where `npx` would fetch `spec-sync` from the registry. */
+export function bareNpxLines(text: string): number[] {
+  const blanked = text.replace(/["'`,[\]()]/gu, " ");
+  const lines: number[] = [];
+  for (const match of blanked.matchAll(NPX_CALL)) {
+    const flags = (match[1] ?? "").trim().split(/\s+/u);
+    const safe = flags.includes("--no-install") && !flags.some((f) => /^(?:-y|--yes)$/u.test(f));
+    if (!safe) lines.push(blanked.slice(0, match.index).split("\n").length);
+  }
+  return lines;
+}
+
+/** Every file below `dir`, repo-relative; missing directory → none. */
+function filesBelow(repoRoot: string, dir: string): string[] {
+  const path = join(repoRoot, dir);
+  if (!existsSync(path)) return [];
+  return readdirSync(path, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => relativeTo(repoRoot, join(entry.parentPath, entry.name)));
+}
+
+/**
+ * A bare `npx spec-sync` downloads and runs the unrelated public npm package of
+ * that name whenever the local bin is missing; `npx --no-install` fails instead.
+ * Scanned: the pre-push hook and what it calls, workflows, and `scripts/`.
+ */
+function checkBareNpx(repoRoot: string, add: Add): void {
+  const sources = prePushSources(repoRoot);
+  const seen = new Set(sources.map((source) => source.file));
+  const files = [
+    ...filesBelow(repoRoot, WORKFLOWS_DIR).filter((file) => /\.ya?ml$/u.test(file)),
+    ...filesBelow(repoRoot, "scripts").filter(
+      (file) => !/(?:^|[\\/])node_modules[\\/]|\.md$/u.test(file),
+    ),
+  ];
+  for (const file of files) {
+    if (seen.has(file)) continue;
+    seen.add(file);
+    try {
+      sources.push({ file, text: readFileSync(join(repoRoot, file), "utf8") });
+    } catch {
+      // An unreadable file is not this check's finding.
+    }
+  }
+  for (const source of sources) {
+    for (const line of bareNpxLines(source.text)) {
+      // A package.json entry is a single script string; a line number would mislead.
+      const where = source.file.startsWith("package.json") ? source.file : `${source.file}:${line}`;
+      add(
+        "npx",
+        `${where} runs bare \`npx spec-sync\` — use \`npx --no-install spec-sync\`, otherwise a missing local bin fetches the unrelated public npm package of that name`,
+      );
+    }
+  }
 }
 
 function checkGitattributes(repoRoot: string, add: Add): void {

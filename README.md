@@ -121,7 +121,7 @@ and `scripts/e2e-targeted.mjs` (projects = the ones `main-check` runs for the fu
 import { execFileSync, spawnSync } from "node:child_process";
 
 const FULL_PROJECTS = ["chromium"]; // the full suite's Playwright projects
-const out = execFileSync("npx", ["spec-sync", "e2e-select", "--format", "lines"], {
+const out = execFileSync("npx", ["--no-install", "spec-sync", "e2e-select", "--format", "lines"], {
   encoding: "utf8",
 });
 const lines = out.split("\n").filter(Boolean);
@@ -145,11 +145,17 @@ The pre-push hook of an app repo runs the merge pre-run and the pin check on the
 pushed (Node hook script, as `simple-git-hooks` calls it):
 
 ```js
-const preflight = spawnSync("npx", ["spec-sync", "gate", "--profile", "merge", "--preflight"], {
+const preflight = spawnSync(
+  "npx",
+  ["--no-install", "spec-sync", "gate", "--profile", "merge", "--preflight"],
+  {
+    stdio: "inherit",
+  },
+);
+if (preflight.status !== 0) process.exit(preflight.status ?? 1);
+const pins = spawnSync("npx", ["--no-install", "spec-sync", "repin", "--check"], {
   stdio: "inherit",
 });
-if (preflight.status !== 0) process.exit(preflight.status ?? 1);
-const pins = spawnSync("npx", ["spec-sync", "repin", "--check"], { stdio: "inherit" });
 if (pins.status === 2) console.error("• pre-push: spec server unreachable — pin check skipped");
 else if (pins.status !== 0) process.exit(pins.status ?? 1);
 ```
@@ -170,6 +176,12 @@ in `package.json`, followed one step into the script or npm script it calls) mus
 add; `.gitattributes` must carry `.spec-sync/drift-coverage.jsonl merge=union` (finding); and the
 merge profile should carry a `unit-static` phase — a **warning**, listed under `warnings`, which
 never turns the exit red.
+
+In every repo, `doctor` reports each bare `npx spec-sync` — `npx` followed by `spec-sync` without
+`--no-install` among its flags, `-y`/`--yes` included — in the pre-push hook and what it calls,
+`.github/workflows/*.yml` and files under `scripts/`, by file and line. A bare `npx` downloads and
+runs the unrelated public npm package `spec-sync` whenever the local bin is missing; call
+`npx --no-install spec-sync …` (or bare `spec-sync …` inside a package.json script).
 
 `pr overlap <open-pr> --merged <merged-pr>` decides after a merge whether an open PR is put onto
 the new main. It reads both file lists (`gh pr diff --name-only`). Exit 1 (update): the PRs share
@@ -415,7 +427,7 @@ that transcript freshly, like `budget --session`; without it the session the cli
 (`CLAUDE_CODE_SESSION_ID`) is measured, falling back to that session's newest ledger event;
 with no session known, parallel live transcripts end in exit 3 ("name one with --session"). A
 ledger event of a foreign session never attests. The stop hook's budget block names its own
-session and dictates `npx spec-sync handover --reason budget --session <id>`. `budget` records
+session and dictates `npx --no-install spec-sync handover --reason budget --session <id>`. `budget` records
 the session id on every `context` event, and the handover carries it as `- Session: <id>`.
 
 `stdout` carries exactly one JSON object (`--human` renders text instead). Full command
@@ -590,7 +602,7 @@ every raw key without a mapping and every node without display facts, naming eac
 file to edit. As a phase in `spec-sync.config.json`:
 
 ```jsonc
-{ "name": "map", "cmd": "npx spec-sync map check" }
+{ "name": "map", "cmd": "npx --no-install spec-sync map check" }
 ```
 
 Exit codes: `0` the meaning layer is complete (`check`) or the model was written (`extract`) ·

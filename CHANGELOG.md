@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+Security fix: no toolkit call through `npx` may fetch from the registry.
+
+### Changed
+
+- A bare `npx spec-sync …` silently downloads and runs the unrelated public npm package
+  `spec-sync` whenever the local bin is missing (fresh checkout after `npm ci --ignore-scripts`, a
+  failed `prepare`). Every `npx` call the toolkit dictates now reads `npx --no-install spec-sync …`,
+  which fails instead: the pre-push line `doctor` asks for (`PREFLIGHT_COMMAND`, shell and
+  `spawnSync` form), the handover the budget hook dictates, the acceptance checker's prompt, and the
+  README examples. Bare `spec-sync …` inside a package.json script stays safe and unchanged.
+- `doctor` recognises the light preflight in both the old and the `--no-install` form.
+
+### Added
+
+- `doctor` check `npx`, in every repo: each `npx` followed by `spec-sync` without `--no-install`
+  among its flags (`-y`/`--yes` count as bare) in the pre-push hook and the scripts it calls,
+  `.github/workflows/*.yml` and files under `scripts/` (no `node_modules`, no `.md`) is a finding
+  naming file and line.
+
+### How to adopt (app repos)
+
+- Raise the pin; `doctor` then lists every bare `npx spec-sync` left in the hook, workflows and
+  `scripts/` — change each to `npx --no-install spec-sync`.
+
 ## 0.50.1
 
 Fix for the nightly Codex batch (SST-DESIGN-041, register #2080). Pins `SST-DESIGN-041` rev 2.
