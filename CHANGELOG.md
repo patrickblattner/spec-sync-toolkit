@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.52.0
 
 Security fix: own tools are never called through `npx` (security master, 2026-11-20).
 
