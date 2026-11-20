@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.54.1
 
 `doctor` checks `review.riskGlobs` again (spec master, 2026-11-20: `SST-DESIGN-022` rev 6).
 
