@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.53.0
 
 No coverage gate, and drift is never a gate (spec master, 2026-11-20: `SST-DESIGN-025` rev 6,
 `SST-DESIGN-028` rev 3, `SST-DESIGN-029` retired, `SST-DESIGN-015` rev 5).
