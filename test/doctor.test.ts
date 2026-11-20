@@ -1064,6 +1064,49 @@ describe("doctor — push flow of PROC-DEV-005", () => {
     expect(findings[0]).toContain("use `npx --no-install spec-sync`");
   });
 
+  it.each<[string, string, string, number]>([
+    ["CLAUDE.md", "CLAUDE.md", "# Repo\n\nRun `npx spec-sync gate` before a commit.\n", 3],
+    ["AGENTS.md", "AGENTS.md", "# Agents\n\n- npx -y spec-sync doctor\n", 3],
+    [
+      "the whole package.json",
+      "package.json",
+      JSON.stringify({ name: "app", scripts: { pins: "npx spec-sync repin --check" } }, null, 2),
+      4,
+    ],
+    [
+      ".claude/settings.json",
+      ".claude/settings.json",
+      JSON.stringify({ permissions: { allow: ["Bash(npx spec-sync *)"] } }, null, 2),
+      4,
+    ],
+    [
+      ".claude/settings.local.json",
+      ".claude/settings.local.json",
+      JSON.stringify({ permissions: { allow: ["Bash(npx --yes spec-sync:*)"] } }, null, 2),
+      4,
+    ],
+  ])("reports a bare npx spec-sync in %s with its line", async (_name, file, text, line) => {
+    const root = fakeRepo({ files: { [file]: text } });
+    expect(findingsOf((await run(root)).data)).toEqual([
+      expect.stringMatching(
+        new RegExp(`^npx: ${file.replace(/\./gu, "\\.")}:${line} runs bare`, "u"),
+      ),
+    ]);
+  });
+
+  it("is silent for agent files that use the --no-install form", async () => {
+    const root = fakeRepo({
+      files: {
+        "CLAUDE.md": "npx --no-install spec-sync gate\n",
+        ".claude/settings.json": JSON.stringify({
+          permissions: { allow: ["Bash(npx --no-install spec-sync *)"] },
+        }),
+        "package.json": JSON.stringify({ scripts: { pins: "spec-sync repin --check" } }),
+      },
+    });
+    expect(findingsOf((await run(root)).data)).toEqual([]);
+  });
+
   it("bareNpxLines treats only --no-install without --yes as safe", () => {
     expect(bareNpxLines("npx spec-sync gate")).toEqual([1]);
     expect(bareNpxLines("a\nnpx -y spec-sync gate")).toEqual([2]);

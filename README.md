@@ -145,13 +145,11 @@ The pre-push hook of an app repo runs the merge pre-run and the pin check on the
 pushed (Node hook script, as `simple-git-hooks` calls it):
 
 ```js
-const preflight = spawnSync(
-  "npx",
-  ["--no-install", "spec-sync", "gate", "--profile", "merge", "--preflight"],
-  {
-    stdio: "inherit",
-  },
-);
+const stdin = readFileSync(0, "utf8"); // the refs git hands the hook
+const preflight = spawnSync("npx", ["--no-install", "spec-sync", "prepush"], {
+  input: stdin,
+  stdio: ["pipe", "inherit", "inherit"],
+});
 if (preflight.status !== 0) process.exit(preflight.status ?? 1);
 const pins = spawnSync("npx", ["--no-install", "spec-sync", "repin", "--check"], {
   stdio: "inherit",
@@ -172,14 +170,16 @@ no pin file, or `--check` with `--ids`.
 `doctor` checks the push flow in a repo that lands through PRs (one with `.github/workflows`):
 the pre-push hook (`.husky/pre-push`, `.githooks/pre-push`, or `simple-git-hooks` / `husky.hooks`
 in `package.json`, followed one step into the script or npm script it calls) must run
-`spec-sync gate --profile merge --preflight` — otherwise a finding names the file and the line to
+`npx --no-install spec-sync prepush` — otherwise a finding names the file and the line to
 add; `.gitattributes` must carry `.spec-sync/drift-coverage.jsonl merge=union` (finding); and the
 merge profile should carry a `unit-static` phase — a **warning**, listed under `warnings`, which
 never turns the exit red.
 
 In every repo, `doctor` reports each bare `npx spec-sync` — `npx` followed by `spec-sync` without
 `--no-install` among its flags, `-y`/`--yes` included — in the pre-push hook and what it calls,
-`.github/workflows/*.yml` and files under `scripts/`, by file and line. A bare `npx` downloads and
+`.github/workflows/*.yml`, files under `scripts/`, and the root files agents act on (`CLAUDE.md`,
+`AGENTS.md`, the whole `package.json`, `.claude/settings.json`, `.claude/settings.local.json` —
+an allow rule `Bash(npx spec-sync *)` counts), by file and line. A bare `npx` downloads and
 runs the unrelated public npm package `spec-sync` whenever the local bin is missing; call
 `npx --no-install spec-sync …` (or bare `spec-sync …` inside a package.json script).
 

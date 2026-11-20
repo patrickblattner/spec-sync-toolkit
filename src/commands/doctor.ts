@@ -3,7 +3,7 @@
  *
  * `spec-sync doctor`
  *
- * Six checks, no repairs: the agent types of the effort table exist with a
+ * Checks, no repairs: the agent types of the effort table exist with a
  * valid `effort:` frontmatter, the skill table is internally sound, the repo
  * knows the configured labels, `spec-pins.json` is present, the pinned
  * `PROC-DEV-015` subtree specs still carry their pinned revision (spec §6),
@@ -13,7 +13,7 @@
  * the merge profile has a `unit-static` phase — the last one a warning, which
  * is listed under `warnings` and never turns the exit red. Every repo is also
  * scanned for a bare `npx spec-sync` (no `--no-install`) in its pre-push hook,
- * workflows and `scripts/`. Findings are reported, never fixed — repairing
+ * workflows, `scripts/` and the files agents act on. Findings are reported, never fixed — repairing
  * a drifted norm would decide something the owner has not decided (spec §2).
  *
  * Exit 1 on at least one finding.
@@ -614,15 +614,29 @@ function filesBelow(repoRoot: string, dir: string): string[] {
     .map((entry) => relativeTo(repoRoot, join(entry.parentPath, entry.name)));
 }
 
+/** Root files agents read or act on; `package.json` is read whole, with line numbers. */
+const AGENT_FILES = [
+  "CLAUDE.md",
+  "AGENTS.md",
+  "package.json",
+  join(".claude", "settings.json"),
+  join(".claude", "settings.local.json"),
+];
+
 /**
  * A bare `npx spec-sync` downloads and runs the unrelated public npm package of
  * that name whenever the local bin is missing; `npx --no-install` fails instead.
- * Scanned: the pre-push hook and what it calls, workflows, and `scripts/`.
+ * Scanned: the pre-push hook and what it calls, workflows, `scripts/`, and the
+ * agent files (an allow rule `Bash(npx spec-sync *)` included).
  */
 function checkBareNpx(repoRoot: string, add: Add): void {
-  const sources = prePushSources(repoRoot);
+  // package.json entries of the hook are excerpts; the whole file is read below.
+  const sources = prePushSources(repoRoot).filter(
+    (source) => !source.file.startsWith("package.json"),
+  );
   const seen = new Set(sources.map((source) => source.file));
   const files = [
+    ...AGENT_FILES.filter((file) => existsSync(join(repoRoot, file))),
     ...filesBelow(repoRoot, WORKFLOWS_DIR).filter((file) => /\.ya?ml$/u.test(file)),
     ...filesBelow(repoRoot, "scripts").filter(
       (file) => !/(?:^|[\\/])node_modules[\\/]|\.md$/u.test(file),
@@ -639,11 +653,9 @@ function checkBareNpx(repoRoot: string, add: Add): void {
   }
   for (const source of sources) {
     for (const line of bareNpxLines(source.text)) {
-      // A package.json entry is a single script string; a line number would mislead.
-      const where = source.file.startsWith("package.json") ? source.file : `${source.file}:${line}`;
       add(
         "npx",
-        `${where} runs bare \`npx spec-sync\` — use \`npx --no-install spec-sync\`, otherwise a missing local bin fetches the unrelated public npm package of that name`,
+        `${source.file}:${line} runs bare \`npx spec-sync\` — use \`npx --no-install spec-sync\`, otherwise a missing local bin fetches the unrelated public npm package of that name`,
       );
     }
   }

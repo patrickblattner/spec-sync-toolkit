@@ -11,14 +11,16 @@ Security fix: no toolkit call through `npx` may fetch from the registry.
   failed `prepare`). Every `npx` call the toolkit dictates now reads `npx --no-install spec-sync …`,
   which fails instead: the pre-push line `doctor` asks for (`PREFLIGHT_COMMAND`, shell and
   `spawnSync` form), the handover the budget hook dictates, the acceptance checker's prompt, and the
-  README examples. Bare `spec-sync …` inside a package.json script stays safe and unchanged.
+  README examples (the pre-push example now calls `prepush`). Bare `spec-sync …` inside a package.json script stays safe and unchanged.
 - `doctor` recognises the light preflight in both the old and the `--no-install` form.
 
 ### Added
 
 - `doctor` check `npx`, in every repo: each `npx` followed by `spec-sync` without `--no-install`
   among its flags (`-y`/`--yes` count as bare) in the pre-push hook and the scripts it calls,
-  `.github/workflows/*.yml` and files under `scripts/` (no `node_modules`, no `.md`) is a finding
+  `.github/workflows/*.yml`, files under `scripts/` (no `node_modules`, no `.md`), and the root
+  files agents act on — `CLAUDE.md`, `AGENTS.md`, the whole `package.json`, `.claude/settings.json`,
+  `.claude/settings.local.json` (an allow rule `Bash(npx spec-sync *)` counts) — is a finding
   naming file and line.
 
 ### How to adopt (app repos)
