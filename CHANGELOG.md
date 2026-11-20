@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.54.0
 
 No turn-end hooks, and a lean `doctor` (spec master, 2026-11-20: `SST-DESIGN-015` rev 6,
 `SST-DESIGN-022` rev 5, `SST-DESIGN-023` rev 5).
