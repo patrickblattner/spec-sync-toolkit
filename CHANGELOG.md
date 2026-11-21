@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.55.0
+
+The push flow with bundled tickets and overlap updates is retired (spec master, 2026-11-21:
+`PROC-DEV-005` superseded with nothing replacing it; a later phase-2 push flow gets specified
+fresh; `SST-DESIGN-022` rev 11). In phase development there is no preflight per push
+(`PROC-REL-009`).
+
+### Removed
+
+- The `pr` command with its only subcommand `pr overlap` (update an open PR only on overlap
+  after a merge).
+- The `prepush` command — the capped push preflight with its code-free skip, the refusal of a
+  push onto a ready PR whose required checks run or are green, the PNG-only exception — and the
+  `SPEC_SYNC_REGATE` variable. `gate --preflight` stays.
+- `queue --bundle` (bundle proposal from the head of the queue) with `proposeBundle`,
+  `specArea`, `findSpecKeys` and the issue body fetch.
+- The config blocks `overlap` and `bundle`.
+- The README section on the push flow with its hook snippet, and every citation of
+  `PROC-DEV-005` in code and README.
+
+### Added
+
+- `doctor` finding `config-retired`: one per top-level `overlap` or `bundle` key still in
+  `spec-sync.config.json`. Such a config still loads; the key has no effect.
+
+Leads: drop every call of `spec-sync pr`, `spec-sync prepush` and `queue --bundle`, every
+`SPEC_SYNC_REGATE`, and the `overlap` and `bundle` keys from `spec-sync.config.json`.
+
 ## 0.54.2
 
 `doctor` skips `review-globs` in phase development (spec master, 2026-11-21, Q#6226:
