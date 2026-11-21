@@ -1,8 +1,8 @@
 # spec-sync-toolkit
 
-CLI toolkit that executes the mechanical parts of the worker loop — `gate`, `queue`, `pack`,
-`merge`, `lenses`, `report`, `doctor` — so the model spends turns on decisions, not on
-sequences. Consumed as a pinned devDependency; `bin` name is `spec-sync`.
+CLI toolkit that executes the mechanical parts of a lead engineer's spec-driven workflow —
+`gate`, `queue`, `pack`, `merge`, `lenses`, `report`, `doctor` — so the model spends turns on
+decisions, not on sequences. Consumed as a pinned devDependency; `bin` name is `spec-sync`.
 
 **The spec is authoritative, not this file.** Read it from the spec server
 (`http://localhost:8787/mcp`; the URL lives in `.mcp.json`), project `spec-sync-toolkit`: `SST-VISION-001` with
@@ -52,7 +52,7 @@ one, and pass `field` for a config violation.
 | `src/output.ts` | `EXIT`, `ToolkitError`, `emit()`, `progress()`, JSON and `--human` rendering |
 | `src/config.ts` | zod schema of `spec-sync.config.json`, exit 4 naming the violated field      |
 | `src/logs.ts`   | log directory layout, `firstError()`                                         |
-| `src/norms.ts`  | defaults of the optional loop commands, spec-server HTTP client              |
+| `src/norms.ts`  | defaults of the optional workflow commands, spec-server HTTP client          |
 | `src/pins.ts`   | `spec-pins.json` — the `{key: rev}` pin file `repin` writes                  |
 
 A new command adds a file and one `registerCommand({…})` call — dispatch, timing, exit code

@@ -22,6 +22,11 @@ no attempt to be general. Outside that setup most of it will not make sense.
 
 ## Commands
 
+Run every command from the repo root as `node_modules/.bin/spec-sync <command>` — never through
+`npx` (`GL-SEC-011`); inside a `package.json` script a bare `spec-sync …` is enough. Which
+commands a repo uses is its lead's call: `queue`, `handover`, `budget`, `repin` and `drift` are
+optional, and no hook or gate asks for their result (`SST-DESIGN-015`).
+
 ```bash
 spec-sync gate --profile local|merge|nightly [--changed] [--preflight]
 spec-sync queue [--check | --health | --bundle]
@@ -212,9 +217,9 @@ has no key stands alone. A label area and a key area never count as the same are
 follower that fails ends the run and is listed in `excluded` with its reason; an unbundleable head
 stands alone with its reason. The payload carries `bundle` (ticket numbers, head first), `area`,
 `areaSource` (`label` or `keys`), `lineCap` and `excluded`. The ~300-line cap is
-printed, not enforced — the worker measures the diff after building and splits a bundle that
+printed, not enforced — the lead measures the diff after building and splits a bundle that
 grows past it; whether a ticket is an intended visual change beyond its keywords is also the
-worker's call. No nightly call, nothing written; with `--check` or `--health` exit 4. Optional
+lead's call. No nightly call, nothing written; with `--check` or `--health` exit 4. Optional
 `bundle` block, defaults as shown:
 
 ```jsonc
@@ -230,18 +235,18 @@ worker's call. No nightly call, nothing written; with `--check` or `--health` ex
 `review pr` reviews a draft PR exactly like a ready one — PRs open as drafts and Codex runs before
 ready; the pr-gate overrun is simply not measured while no check has run.
 
-`ledger start <issue>` appends exactly one `work-started` event: the worker runs it when it
-begins building a ticket or a further increment of one, before the build agent starts. It is the
+`ledger start <issue>` appends exactly one `work-started` event: run it when building a ticket
+or a further increment of one begins, before a build agent starts. It is the
 start the product quota of `queue` counts. It calls no `gh`; `--dry-run` writes nothing and returns
 the event it would append. A start while the ticket's increment is still open — no `review` of mode
-`pr`, no `merge-started`/`merge-completed` for it since its last real start (session renewal,
-context-out) — is a continuation: the event carries `resumed: true`, counts as no quota start and
+`pr`, no `merge-started`/`merge-completed` for it since its last real start (a new session
+picking the ticket up again) — is a continuation: the event carries `resumed: true`, counts as no quota start and
 keeps the build-agent count. `--new-increment` forces a fresh start (re-cut after the cap, no PR).
 
-`ledger build <issue>` runs right before the worker spawns a build agent
+`ledger build <issue>` runs right before a build agent is spawned
 (`impl`, `impl-fast`, `impl-deep`). It counts the `build-agent` events of the current increment
 — after the newest `work-started` of the ticket — and appends one more. The third agent is the last:
-a fourth is refused with exit 4 and nothing is written; the worker re-cuts the ticket into smaller
+a fourth is refused with exit 4 and nothing is written; the ticket is then re-cut into smaller
 slices with their own acceptance criteria. A new `ledger start` for a further increment or slice
 (after the PR review or merge, or with `--new-increment`) starts the count again; a continuation
 does not.
@@ -413,10 +418,16 @@ cause, evidence and `avoidable`, cleanness items `K1…`, items without evidence
 `dropped` — goes to `--out` (default `.spec-sync/growth/review-<ISO-year>-W<week>.json`), a skip
 writes its class there too. No comment, no issue, no label; exit 0 ran or skipped.
 
+`budget` and `handover` are plain commands for a session that wants them (SST-DESIGN-023,
+SST-DESIGN-024); no hook asks for either. `budget` measures a session's context level from its
+transcript against `contextBudget` and returns the numbers — whether to go on is the session's
+call. `handover` writes `.spec-sync-handover.md`, a snapshot for the next session: repo, `main`
+HEAD, pin state, the last context measurement, the queue head, unfinished merges and `--note`.
+
 `--reason budget` is bound to the measurement: it is only written when the writing session's
 own context level reaches at least 75 % of the configured context budget —
-otherwise `handover` writes nothing and ends with exit 1 (SST-DESIGN-024 rev 3, PROC-DEV-037).
-The measurement is always the writing session's own (PROC-DEV-037 rev 10): `--session` measures
+otherwise `handover` writes nothing and ends with exit 1 (SST-DESIGN-024 rev 3).
+The measurement is always the writing session's own: `--session` measures
 that transcript freshly, like `budget --session`; without it the session the client names
 (`CLAUDE_CODE_SESSION_ID`) is measured, falling back to that session's newest ledger event;
 with no session known, parallel live transcripts end in exit 3 ("name one with --session"). A
