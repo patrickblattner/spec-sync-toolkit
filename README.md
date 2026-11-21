@@ -146,7 +146,7 @@ keeps a pin file at all is its lead's call.
 
 ### doctor
 
-`doctor` checks exactly five things (`SST-DESIGN-022` rev 11) — the npx calls and npx cache
+`doctor` checks exactly five things (`SST-DESIGN-022` rev 13) — the npx calls and npx cache
 below; `review.riskGlobs` in `spec-sync.config.json` (finding `review-globs`: a missing or
 unloadable config, a missing or empty list, an area without globs, a glob that matches no tracked
 file — without the list the Codex pass on risk paths never runs, `PROC-DEV-002`; skipped when the

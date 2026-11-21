@@ -17,7 +17,7 @@ import { introducedMarkers, ticketOfBranch } from "../src/pack/orphans.js";
 /**
  * Everything `doctor` inspects is built in a temporary repo and a temporary npm
  * cache. The fake tools answer git and `gh issue list` only — a spec-server or
- * label call fails the test (SST-DESIGN-022 rev 5 asks neither).
+ * label call fails the test (SST-DESIGN-022 rev 13 asks neither).
  */
 
 interface RepoOptions {
@@ -221,7 +221,7 @@ describe("doctor (spec §7.7)", () => {
     expect(report).toContain("[pause] .spec-sync-pause exists");
   });
 
-  it("checks nothing beyond its five checks and the leftovers (SST-DESIGN-022 rev 11)", async () => {
+  it("checks nothing beyond its five checks and the leftovers (SST-DESIGN-022 rev 13)", async () => {
     // Everything the former checks reported: workflows without nightlyWorkflow,
     // no pre-push hook, no unit-static phase, a legacy review key, an unfinished
     // merge in the ledger. The fake tools fail on any spec-server or label call.
@@ -238,7 +238,7 @@ describe("doctor (spec §7.7)", () => {
   });
 });
 
-describe("doctor — review.riskGlobs (SST-DESIGN-022 rev 11)", () => {
+describe("doctor — review.riskGlobs (SST-DESIGN-022 rev 13)", () => {
   const run = (root: string, lsFiles?: string[]) =>
     runDoctor(context(root), deps(fakeTools(lsFiles === undefined ? {} : { git: { lsFiles } })));
 
@@ -286,7 +286,7 @@ describe("doctor — review.riskGlobs (SST-DESIGN-022 rev 11)", () => {
   });
 });
 
-describe("doctor — retired config keys (SST-DESIGN-022 rev 11)", () => {
+describe("doctor — retired config keys (SST-DESIGN-022 rev 13)", () => {
   const run = (root: string) => runDoctor(context(root), deps(fakeTools()));
 
   it("reports one config-retired finding per retired top-level key", async () => {

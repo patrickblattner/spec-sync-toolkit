@@ -1,6 +1,6 @@
 /**
  * `doctor` — five checks and the leftovers of aborted runs (spec §7.7,
- * SST-DESIGN-022 rev 11).
+ * SST-DESIGN-022 rev 13).
  *
  * `spec-sync doctor`
  *
@@ -114,7 +114,7 @@ export async function runDoctor(ctx: CommandContext, deps: DoctorDeps): Promise<
 type Add = (check: string, detail: string) => void;
 
 /**
- * `review.riskGlobs` (SST-DESIGN-022 rev 11): without the list the automatic
+ * `review.riskGlobs` (SST-DESIGN-022 rev 13): without the list the automatic
  * Codex pass on risk paths never runs (PROC-DEV-002), and nothing else would
  * notice. A config that is missing or does not load is the same finding; so
  * is an empty list, an area without globs, and a glob that matches no tracked
@@ -159,7 +159,7 @@ function checkRiskGlobs(ctx: CommandContext, tools: Tools, add: Add): void {
   }
 }
 
-/** A retired top-level config key loads without effect; each one is reported for deletion (SST-DESIGN-022 rev 11). */
+/** A retired top-level config key loads without effect; each one is reported for deletion (SST-DESIGN-022 rev 13). */
 function checkRetiredKeys(ctx: CommandContext, add: Add): void {
   for (const key of retiredKeysOf(ctx.repoRoot, ctx.flags.config)) {
     add(
@@ -177,7 +177,7 @@ function checkPins(repoRoot: string, add: Add): void {
   }
 }
 
-/** A lying pause flag is reported, never removed (SST-DESIGN-022 rev 11). */
+/** A lying pause flag is reported, never removed (SST-DESIGN-022 rev 13). */
 function checkPause(repoRoot: string, add: Add): void {
   if (existsSync(join(repoRoot, PAUSE_FILE))) {
     add("pause", `${PAUSE_FILE} exists — the loop is paused`);
