@@ -1,5 +1,6 @@
 {
   "project": "community-platform",
+  "phase": "development",
   "gate": {
     "profiles": {
       "local": ["format", "lint", "typecheck", "unit"],

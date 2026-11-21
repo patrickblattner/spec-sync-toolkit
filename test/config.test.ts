@@ -183,6 +183,17 @@ describe("invalid config → exit 4 naming the field (spec §5)", () => {
     ).toBe("high");
   });
 
+  it("takes phase development or production and leaves it unset when absent (PROC-REL-009)", () => {
+    expect(loadConfig(repoWith(valid)).phase).toBeUndefined();
+    expect(loadConfig(repoWith({ ...valid, phase: "development" })).phase).toBe("development");
+    expect(loadConfig(repoWith({ ...valid, phase: "production" })).phase).toBe("production");
+  });
+
+  it("rejects an unknown phase (PROC-REL-009)", () => {
+    const error = expectPrecondition(() => loadConfig(repoWith({ ...valid, phase: "staging" })));
+    expect(error.field).toBe("phase");
+  });
+
   it("names a wrong type", () => {
     const broken = { ...valid, project: 42 };
     const error = expectPrecondition(() => loadConfig(repoWith(broken)));

@@ -259,6 +259,11 @@ const e2eSelectSchema = z.object({
 const configSchema = z
   .object({
     project: z.string().min(1),
+    /**
+     * The project's phase (PROC-REL-009): `development` or `production`.
+     * Optional; absent counts as `production` wherever a check depends on it.
+     */
+    phase: z.enum(["development", "production"]).optional(),
     gate: gateSchema,
     lenses: z.record(z.string(), z.array(z.string().min(1))).default({}),
     // prefault, not default: the empty object has to run through the schema so

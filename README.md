@@ -165,7 +165,10 @@ keeps a pin file at all is its lead's call.
 `doctor` checks exactly four things (`SST-DESIGN-022` rev 6) — the npx calls and npx cache
 below; `review.riskGlobs` in `spec-sync.config.json` (finding `review-globs`: a missing or
 unloadable config, a missing or empty list, an area without globs, a glob that matches no tracked
-file — without the list the Codex pass on risk paths never runs, `PROC-DEV-002`); a
+file — without the list the Codex pass on risk paths never runs, `PROC-DEV-002`; skipped when the
+config's optional top-level `phase` is `"development"`, because `PROC-DEV-002` binds only in phase
+`production` (`PROC-REL-009`) — `phase` takes `"development"` or `"production"`, any other value
+is a config error, and an absent `phase` runs the check); a
 `spec-pins.json` that exists but is not a valid `{key: rev}` map; and a lying `.spec-sync-pause`
 (reported, never removed) — plus the leftover worktrees and branches of aborted runs. Agent
 types, skill tables, labels, norm revisions, `nightlyWorkflow`, legacy review keys and the

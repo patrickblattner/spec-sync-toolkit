@@ -35,6 +35,8 @@ interface RepoOptions {
   files?: Record<string, string>;
   /** `gate.profiles` override. */
   profiles?: Record<string, string[]>;
+  /** Top-level `phase` of the config (PROC-REL-009); omitted when undefined. */
+  phase?: string;
 }
 
 const config = {
@@ -69,6 +71,7 @@ function fakeRepo(options: RepoOptions = {}): string {
               },
             }),
         ...(options.review === undefined ? {} : { review: options.review }),
+        ...(options.phase === undefined ? {} : { phase: options.phase }),
       }),
     );
   }
@@ -276,6 +279,35 @@ describe("doctor — review.riskGlobs (SST-DESIGN-022 rev 6)", () => {
     expect(findingsOf((await run(root, ["server/auth/login.ts", "README.md"])).data)).toEqual([
       'review-globs: riskGlobs.auth "server/gone/**" matches no file',
       "review-globs: riskGlobs.billing lists no glob",
+    ]);
+  });
+});
+
+describe("doctor — review.riskGlobs by phase (PROC-REL-009)", () => {
+  const run = (root: string) => runDoctor(context(root), deps(fakeTools()));
+  const emptyGlobs = { riskGlobs: {} };
+
+  it("skips the check in phase development, even with an empty riskGlobs", async () => {
+    const result = await run(fakeRepo({ phase: "development", review: emptyGlobs }));
+    expect(findingsOf(result.data)).toEqual([]);
+    expect(result.exit).toBe(EXIT.OK);
+  });
+
+  it.each([["production"], [undefined]])(
+    "runs the check with phase %s as before",
+    async (phase) => {
+      const result = await run(fakeRepo({ phase, review: emptyGlobs }));
+      expect(findingsOf(result.data)).toEqual([
+        "review-globs: review.riskGlobs is missing or empty — the Codex pass on risk paths never runs (PROC-DEV-002)",
+      ]);
+      expect(result.exit).toBe(EXIT.FAILED);
+    },
+  );
+
+  it("reports an invalid phase value as a config that does not load", async () => {
+    const result = await run(fakeRepo({ phase: "staging" }));
+    expect(findingsOf(result.data)).toEqual([
+      expect.stringMatching(/^review-globs: no usable config, .*config invalid at phase: /u),
     ]);
   });
 });

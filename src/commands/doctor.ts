@@ -8,7 +8,8 @@
  * the GL-SEC-011 places — pre-push hook, workflows, `scripts/`, `package.json`,
  * `CLAUDE.md`, `AGENTS.md`, the Claude settings — and a copy of the public npm
  * package `spec-sync` in the user's npx cache; `review.riskGlobs` present and
- * valid in the config (a missing config is the same finding); a `spec-pins.json` that exists
+ * valid in the config (a missing config is the same finding; skipped in phase
+ * `development`, PROC-REL-009); a `spec-pins.json` that exists
  * but is not a valid map; a lying `.spec-sync-pause`. Agent types, skill
  * tables, labels, pins as a duty and norm revisions are the lead's business
  * (PROC-DEV-001), not doctor's. Findings are reported, never fixed.
@@ -116,7 +117,9 @@ type Add = (check: string, detail: string) => void;
  * Codex pass on risk paths never runs (PROC-DEV-002), and nothing else would
  * notice. A config that is missing or does not load is the same finding; so
  * is an empty list, an area without globs, and a glob that matches no tracked
- * file — each guards nothing.
+ * file — each guards nothing. PROC-DEV-002 binds only in phase `production`
+ * (PROC-REL-009), so a config with `phase: "development"` skips the check; an
+ * absent phase runs it.
  */
 function checkRiskGlobs(ctx: CommandContext, tools: Tools, add: Add): void {
   let config: Config;
@@ -129,6 +132,7 @@ function checkRiskGlobs(ctx: CommandContext, tools: Tools, add: Add): void {
     );
     return;
   }
+  if (config.phase === "development") return;
 
   const areas = Object.entries(config.review.riskGlobs);
   if (areas.length === 0) {
