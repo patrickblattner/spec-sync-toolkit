@@ -1,6 +1,6 @@
 /**
- * `doctor` — four checks and the leftovers of aborted runs (spec §7.7,
- * SST-DESIGN-022 rev 9).
+ * `doctor` — five checks and the leftovers of aborted runs (spec §7.7,
+ * SST-DESIGN-022 rev 11).
  *
  * `spec-sync doctor`
  *
@@ -9,7 +9,7 @@
  * `CLAUDE.md`, `AGENTS.md`, the Claude settings — and a copy of the public npm
  * package `spec-sync` in the user's npx cache; `review.riskGlobs` present and
  * valid in the config (a missing config is the same finding; skipped in phase
- * `development`, PROC-REL-009); a `spec-pins.json` that exists
+ * `development`, PROC-REL-009); a retired top-level config key; a `spec-pins.json` that exists
  * but is not a valid map; a lying `.spec-sync-pause`. Agent types, skill
  * tables, labels, pins as a duty and norm revisions are the lead's business
  * (PROC-DEV-001), not doctor's. Findings are reported, never fixed.
@@ -22,7 +22,7 @@ import picomatch from "picomatch";
 import { homedir } from "node:os";
 import { join, relative as relativeTo } from "node:path";
 import type { Command, CommandContext, CommandResult } from "../cli.js";
-import { loadConfig, type Config } from "../config.js";
+import { loadConfig, retiredKeysOf, type Config } from "../config.js";
 import { readLedger } from "../ledger.js";
 import { createLogDir, protectedLogDirs, writePhaseLog } from "../logs.js";
 import { EXIT } from "../output.js";
@@ -52,7 +52,7 @@ export function defaultNpmCache(env: NodeJS.ProcessEnv = process.env, home = hom
 export const doctorCommand: Command = {
   name: "doctor",
   summary:
-    "Report npx calls of spec-sync, missing risk globs, an invalid pin file, the pause flag and leftovers",
+    "Report npx calls of spec-sync, missing risk globs, retired config keys, an invalid pin file, the pause flag and leftovers",
   needsConfig: false,
   run: (ctx) =>
     runDoctor(ctx, {
@@ -75,6 +75,7 @@ export async function runDoctor(ctx: CommandContext, deps: DoctorDeps): Promise<
   const add = (check: string, detail: string): void => void findings.push({ check, detail });
 
   checkRiskGlobs(ctx, deps.tools, add);
+  checkRetiredKeys(ctx, add);
   checkPins(ctx.repoRoot, add);
   checkPause(ctx.repoRoot, add);
   checkNpxCalls(ctx.repoRoot, add);
@@ -113,7 +114,7 @@ export async function runDoctor(ctx: CommandContext, deps: DoctorDeps): Promise<
 type Add = (check: string, detail: string) => void;
 
 /**
- * `review.riskGlobs` (SST-DESIGN-022 rev 9): without the list the automatic
+ * `review.riskGlobs` (SST-DESIGN-022 rev 11): without the list the automatic
  * Codex pass on risk paths never runs (PROC-DEV-002), and nothing else would
  * notice. A config that is missing or does not load is the same finding; so
  * is an empty list, an area without globs, and a glob that matches no tracked
@@ -158,6 +159,16 @@ function checkRiskGlobs(ctx: CommandContext, tools: Tools, add: Add): void {
   }
 }
 
+/** A retired top-level config key loads without effect; each one is reported for deletion (SST-DESIGN-022 rev 11). */
+function checkRetiredKeys(ctx: CommandContext, add: Add): void {
+  for (const key of retiredKeysOf(ctx.repoRoot, ctx.flags.config)) {
+    add(
+      "config-retired",
+      `${key} in spec-sync.config.json is retired since 0.55.0 and has no effect — delete it`,
+    );
+  }
+}
+
 /** Whether a repo keeps a pin file is its lead's call (SST-DESIGN-025 rev 6); one it keeps must parse. */
 function checkPins(repoRoot: string, add: Add): void {
   if (!existsSync(join(repoRoot, PINS_FILE))) return;
@@ -166,7 +177,7 @@ function checkPins(repoRoot: string, add: Add): void {
   }
 }
 
-/** A lying pause flag is reported, never removed (SST-DESIGN-022 rev 5). */
+/** A lying pause flag is reported, never removed (SST-DESIGN-022 rev 11). */
 function checkPause(repoRoot: string, add: Add): void {
   if (existsSync(join(repoRoot, PAUSE_FILE))) {
     add("pause", `${PAUSE_FILE} exists — the loop is paused`);

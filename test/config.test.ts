@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { CONFIG_FILENAME, loadConfig, phasesOfProfile } from "../src/config.js";
+import { CONFIG_FILENAME, loadConfig, phasesOfProfile, retiredKeysOf } from "../src/config.js";
 import { DEFAULT_LOG_RETENTION } from "../src/logs.js";
 import { DEFAULT_CONTEXT_BUDGET } from "../src/budget.js";
 import { EXIT, ToolkitError } from "../src/output.js";
@@ -192,6 +192,21 @@ describe("invalid config → exit 4 naming the field (spec §5)", () => {
   it("rejects an unknown phase (PROC-REL-009)", () => {
     const error = expectPrecondition(() => loadConfig(repoWith({ ...valid, phase: "staging" })));
     expect(error.field).toBe("phase");
+  });
+
+  it("loads a config that still carries the retired overlap and bundle blocks", () => {
+    const root = repoWith({ ...valid, overlap: { generated: [] }, bundle: { maxTickets: 2 } });
+    const config = loadConfig(root) as Record<string, unknown>;
+    expect(config.project).toBe("community-platform");
+    expect(config).not.toHaveProperty("overlap");
+    expect(config).not.toHaveProperty("bundle");
+    expect(retiredKeysOf(root)).toEqual(["overlap", "bundle"]);
+  });
+
+  it("finds no retired key in a clean, missing or broken config", () => {
+    expect(retiredKeysOf(repoWith(valid))).toEqual([]);
+    expect(retiredKeysOf(mkdtempSync(join(tmpdir(), "spec-sync-config-")))).toEqual([]);
+    expect(retiredKeysOf(repoWith("{ not json"))).toEqual([]);
   });
 
   it("names a wrong type", () => {

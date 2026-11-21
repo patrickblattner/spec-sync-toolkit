@@ -29,7 +29,7 @@ optional, and no hook or gate asks for their result (`SST-DESIGN-015`).
 
 ```bash
 spec-sync gate --profile local|merge|nightly [--changed] [--preflight]
-spec-sync queue [--check | --health | --bundle]
+spec-sync queue [--check | --health]
 spec-sync pack <issue>
 spec-sync merge <issue> --branch <name> [--dry-run]
 spec-sync lenses [--base main]
@@ -39,7 +39,6 @@ spec-sync budget [--session <id|path>] [--label <text>]
 spec-sync handover [--note <text>] [--reason <budget|done|red-2x|question-open|pause|unexpected>] [--session <id|path>]
 spec-sync repin [--ids <a,b>] [--server <url>]
 spec-sync drift [--server <url>]
-spec-sync pr overlap <open-pr> --merged <merged-pr>
 spec-sync ledger start <issue> [--new-increment] [--dry-run]
 spec-sync ledger build <issue> [--agent impl|impl-fast|impl-deep] [--dry-run]
 spec-sync ledger close <issue> --reason "<text>" [--dry-run]
@@ -144,7 +143,7 @@ const run = spawnSync("npx", ["playwright", "test", ...projects, ...files], { st
 process.exit(run.status ?? 1);
 ```
 
-### Push flow with little CI rework (PROC-DEV-005)
+### Pre-push hook
 
 The pre-push hook of an app repo runs the merge pre-run on the tree being pushed (Node hook
 script, as `simple-git-hooks` calls it):
@@ -162,13 +161,17 @@ if (preflight.status !== 0) process.exit(preflight.status ?? 1);
 No hook and no gate asks for a current `spec-pins.json` (`SST-DESIGN-025` rev 6): whether a repo
 keeps a pin file at all is its lead's call.
 
-`doctor` checks exactly four things (`SST-DESIGN-022` rev 6) — the npx calls and npx cache
+### doctor
+
+`doctor` checks exactly five things (`SST-DESIGN-022` rev 11) — the npx calls and npx cache
 below; `review.riskGlobs` in `spec-sync.config.json` (finding `review-globs`: a missing or
 unloadable config, a missing or empty list, an area without globs, a glob that matches no tracked
 file — without the list the Codex pass on risk paths never runs, `PROC-DEV-002`; skipped when the
 config's optional top-level `phase` is `"development"`, because `PROC-DEV-002` binds only in phase
 `production` (`PROC-REL-009`) — `phase` takes `"development"` or `"production"`, any other value
-is a config error, and an absent `phase` runs the check); a
+is a config error, and an absent `phase` runs the check); a top-level `overlap` or `bundle` key in
+the config (finding `config-retired`, one per key: both blocks are retired since 0.55.0, the config
+still loads, delete the key); a
 `spec-pins.json` that exists but is not a valid `{key: rev}` map; and a lying `.spec-sync-pause`
 (reported, never removed) — plus the leftover worktrees and branches of aborted runs. Agent
 types, skill tables, labels, norm revisions, `nightlyWorkflow`, legacy review keys and the
@@ -190,53 +193,7 @@ in Node, and bare `spec-sync …` inside a package.json script.
 package `spec-sync` (as its name or a dependency) is a finding (`npx-cache`) that names the
 folder — delete it.
 
-`pr overlap <open-pr> --merged <merged-pr>` decides after a merge whether an open PR is put onto
-the new main. It reads both file lists (`gh pr diff --name-only`). Exit 1 (update): the PRs share
-a file that is not generated, or the merged PR touched visual baselines, registries, translations
-or the schema. Exit 0 (no update): neither. The reason is one line in `notes`. A lockfile counts
-like any other file — only when both PRs touch it; a generated file never counts. The globs
-(picomatch) live in an optional `overlap` block; each key defaults on its own:
-
-```jsonc
-"overlap": {
-  "generated": [".spec-sync/drift-coverage.jsonl"],
-  "visualBaselines": ["**/*-snapshots/**", "**/__screenshots__/**", "**/__image_snapshots__/**"],
-  "registries": ["**/*registry*", "**/*-manifest.json", "**/*-allowlist.json"],
-  "translations": ["**/i18n/**", "**/locales/**", "**/translations/**"],
-  "schema": ["**/migrations/**", "**/schema.sql", "**/*_schema.sql", "**/schema.prisma", "**/data/schema.ts", "**/db/schema.ts"]
-}
-```
-
-`queue --bundle` proposes a bundle from the head of the sorted queue; the order itself is
-untouched. Up to `maxTickets` tickets that stand next to each other, share the same area, are
-each small (the `labels.bug` or `labels.priority.polish` label, or one of `smallLabels`), are not
-blocked, and carry none of `excludeKeywords` (word prefix, case-insensitive) in title or labels.
-The area is the ticket's one area label (`areaPrefix`); the label wins when present. Without one,
-it is the area of the spec keys in title and body (the key shape `pack` parses, bare or
-backticked): the segments between kind and number — `COM-FEATURE-CONT-100` → `CONT`,
-`CPT-FEATURE-TPL-061` → `TPL`, while a foundation key keeps its kind, `GL-UI-034` → `GL-UI`. A
-ticket whose keys span several areas, include a key without an area (`COM-FEATURE-591`), or that
-has no key stands alone. A label area and a key area never count as the same area. The first
-follower that fails ends the run and is listed in `excluded` with its reason; an unbundleable head
-stands alone with its reason. The payload carries `bundle` (ticket numbers, head first), `area`,
-`areaSource` (`label` or `keys`), `lineCap` and `excluded`. The ~300-line cap is
-printed, not enforced — the lead measures the diff after building and splits a bundle that
-grows past it; whether a ticket is an intended visual change beyond its keywords is also the
-lead's call. No nightly call, nothing written; with `--check` or `--health` exit 4. Optional
-`bundle` block, defaults as shown:
-
-```jsonc
-"bundle": {
-  "maxTickets": 3,
-  "maxLines": 300,
-  "areaPrefix": "area: ",
-  "smallLabels": ["bug", "fix", "i18n", "translation", "a11y", "accessibility"],
-  "excludeKeywords": ["schema", "migration", "ratchet", "baseline", "measure", "registry", "registries", "visual"]
-}
-```
-
-`review pr` reviews a draft PR exactly like a ready one — PRs open as drafts and Codex runs before
-ready; the pr-gate overrun is simply not measured while no check has run.
+`review pr` reviews a draft PR exactly like a ready one; the pr-gate overrun is simply not measured while no check has run.
 
 `ledger start <issue>` appends exactly one `work-started` event: run it when building a ticket
 or a further increment of one begins, before a build agent starts. It is the
@@ -349,7 +306,7 @@ exit `75` and nothing runs. `--cap` is required. The command's stdout and stderr
 stdout carries only the response. `slot status` lists the slots (pid, alive, step, holder line),
 the current 1-min `load` against `load_max`, and the last `--last <n>` (default 5) wait records.
 
-`prepush` is the light preflight a repo's pre-push hook calls (PROC-DEV-005 rev 7), with git's
+`prepush` is the light preflight a repo's pre-push hook calls, with git's
 pre-push stdin handed on. A push that changes no code passes with exit 0 and one line saying why:
 only tags, only branch deletes, or commits that change nothing but `spec-pins.json` and
 `.spec-sync/drift-coverage.jsonl` (diffed against the remote sha, or the merge-base with
@@ -359,17 +316,6 @@ group is ended (SIGTERM, SIGKILL after 5 s), the `gate.lock` and box slot it hel
 and the run exits 0 with a notice: the push goes through and the runner's required check decides.
 Within the cap the gate's exit code, `failures`, `error`, `notes` and `logDir` pass through. No ref
 lines on stdin means the preflight runs. The WIP escape and the secret guard stay in the hook.
-
-Before the preflight, `prepush` refuses a push onto a running or green ready PR (PROC-DEV-005
-rev 8). For each pushed branch (not tags or deletes) it asks
-`gh pr list --head <branch> --state open --json number,isDraft`; for an open non-draft PR it reads
-the required checks with `gh pr checks <n> --required --json name,bucket` (what branch protection
-requires). Any `fail`/`cancel` bucket means the last verdict is red and the push goes through;
-otherwise a `pending` bucket (running) or all `pass`/`skipping` (green) refuses it with exit 4,
-naming the PR and the escapes: `gh pr ready <n> --undo`, or `SPEC_SYNC_REGATE=1 git push` for an
-overlap update (`--regate`; git gives hooks no flags). A push whose every changed path is an
-existing PNG with status M goes through. Draft PRs and branches without a PR are never refused.
-If `gh` fails, times out (20 s) or reports no required check, the push goes through with one line.
 
 `measure` changes a file a gate step measures against — size limits, coverage stock, hygiene
 ratchet — and binds the change to a register decision (SST-DESIGN-002, PROC-DEV-047). The file

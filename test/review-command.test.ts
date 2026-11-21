@@ -356,7 +356,7 @@ describe("review pr (acceptance 3, 4)", () => {
     expect(result.data).toMatchObject({ outcome: "clean" });
   });
 
-  it("reviews a draft PR like any other (PROC-DEV-005: Codex runs before ready)", async () => {
+  it("reviews a draft PR like any other", async () => {
     const r = prRepo();
     const codex = fakeCodex({ answers: [answer([highFinding])] });
     const { tools: t, gh } = tools(r.root, { prHead: r.head, draft: true });

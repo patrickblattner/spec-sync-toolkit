@@ -37,6 +37,8 @@ interface RepoOptions {
   profiles?: Record<string, string[]>;
   /** Top-level `phase` of the config (PROC-REL-009); omitted when undefined. */
   phase?: string;
+  /** Extra top-level config keys, written as given (retired keys). */
+  extra?: Record<string, unknown>;
 }
 
 const config = {
@@ -72,6 +74,7 @@ function fakeRepo(options: RepoOptions = {}): string {
             }),
         ...(options.review === undefined ? {} : { review: options.review }),
         ...(options.phase === undefined ? {} : { phase: options.phase }),
+        ...options.extra,
       }),
     );
   }
@@ -218,7 +221,7 @@ describe("doctor (spec §7.7)", () => {
     expect(report).toContain("[pause] .spec-sync-pause exists");
   });
 
-  it("checks nothing beyond its four checks and the leftovers (SST-DESIGN-022 rev 6)", async () => {
+  it("checks nothing beyond its five checks and the leftovers (SST-DESIGN-022 rev 11)", async () => {
     // Everything the former checks reported: workflows without nightlyWorkflow,
     // no pre-push hook, no unit-static phase, a legacy review key, an unfinished
     // merge in the ledger. The fake tools fail on any spec-server or label call.
@@ -235,7 +238,7 @@ describe("doctor (spec §7.7)", () => {
   });
 });
 
-describe("doctor — review.riskGlobs (SST-DESIGN-022 rev 6)", () => {
+describe("doctor — review.riskGlobs (SST-DESIGN-022 rev 11)", () => {
   const run = (root: string, lsFiles?: string[]) =>
     runDoctor(context(root), deps(fakeTools(lsFiles === undefined ? {} : { git: { lsFiles } })));
 
@@ -280,6 +283,29 @@ describe("doctor — review.riskGlobs (SST-DESIGN-022 rev 6)", () => {
       'review-globs: riskGlobs.auth "server/gone/**" matches no file',
       "review-globs: riskGlobs.billing lists no glob",
     ]);
+  });
+});
+
+describe("doctor — retired config keys (SST-DESIGN-022 rev 11)", () => {
+  const run = (root: string) => runDoctor(context(root), deps(fakeTools()));
+
+  it("reports one config-retired finding per retired top-level key", async () => {
+    const result = await run(
+      fakeRepo({ extra: { overlap: { generated: [] }, bundle: { maxTickets: 3 } } }),
+    );
+    expect(findingsOf(result.data)).toEqual([
+      "config-retired: overlap in spec-sync.config.json is retired since 0.55.0 and has no effect — delete it",
+      "config-retired: bundle in spec-sync.config.json is retired since 0.55.0 and has no effect — delete it",
+    ]);
+    expect(result.exit).toBe(EXIT.FAILED);
+  });
+
+  it("reports a retired key in phase development too, and nothing without one", async () => {
+    const development = await run(fakeRepo({ phase: "development", extra: { bundle: {} } }));
+    expect(findingsOf(development.data)).toEqual([
+      expect.stringMatching(/^config-retired: bundle /u),
+    ]);
+    expect(findingsOf((await run(fakeRepo())).data)).toEqual([]);
   });
 });
 

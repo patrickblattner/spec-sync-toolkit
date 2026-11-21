@@ -26,7 +26,6 @@ import { mapCommand } from "./map.js";
 import { measureCommand } from "./measure.js";
 import { reviewCommand } from "./review.js";
 import { licenceInventoryCommand } from "./licence-inventory.js";
-import { prCommand } from "./pr.js";
 import { ledgerCommand } from "./ledger.js";
 import { slotCommand } from "./slot.js";
 import { prepushCommand } from "./prepush.js";
@@ -49,7 +48,6 @@ export const ALL_COMMANDS: readonly Command[] = [
   measureCommand,
   reviewCommand,
   licenceInventoryCommand,
-  prCommand,
   ledgerCommand,
   slotCommand,
   prepushCommand,
