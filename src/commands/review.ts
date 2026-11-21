@@ -5,11 +5,6 @@
  *   spec-sync review batch [--dry-run]
  *   spec-sync review tag <from>..<to>
  *   spec-sync review verdict <pr|issue> <n> <id> (accepted (fixed|ticket <t>|collected <c>) | rejected "<reason>") [--source claude:<lens>]
- *   spec-sync review growth --metrics <file.json> [--since <date>] [--out <file>] [--dry-run]
- *
- * `growth` (SST-DESIGN-040) is the weekly first opinion on the growth and
- * cleanness audit: no triage, always `models.size` at `effort.risk`, result
- * as JSON to `--out`; no comment, no issue, no label.
  *
  * The only way any repo calls Codex. It triages, calls `codex exec` read-only,
  * parses a strict result, posts it, and logs one ledger event. It never edits
@@ -27,8 +22,8 @@
  * critical or high finding is open · 4 precondition failed. A skip is never 2.
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { Command, CommandContext, CommandResult } from "../cli.js";
 import type { Config, ReviewConfig } from "../config.js";
 import { codexReviewsOfDay, lastTagReview, localDay, tagReviewed } from "../cadence.js";
@@ -71,20 +66,11 @@ import {
   type RecheckEntry,
 } from "../review/findings.js";
 import { moveMarker, readMarker } from "../review/marker.js";
-import {
-  assignGrowth,
-  GROWTH_SCHEMA,
-  parseDay,
-  parseGrowthResult,
-  previousWeek,
-  readMetrics,
-  renderGrowthPrompt,
-} from "../review/growth.js";
 import { decideFastLane } from "../review/fastlane.js";
 import { renderPrompt } from "../review/prompt.js";
 import { decide, decideAlways, newModule, parseNumstat, sizeOf } from "../review/triage.js";
 
-const VALUE_FLAGS = ["--issue", "--source", "--metrics", "--since", "--out"];
+const VALUE_FLAGS = ["--issue", "--source"];
 const PR_BASE = "origin/main";
 const MAIN = "origin/main";
 /** Backlog state of a new finding issue (PROC-DEV-010 label taxonomy). */
@@ -100,7 +86,7 @@ export interface ReviewDeps {
 
 export const reviewCommand: Command = {
   name: "review",
-  summary: "Codex second opinion: pr, batch, tag, verdict, growth",
+  summary: "Codex second opinion: pr, batch, tag, verdict",
   needsConfig: true,
   run: (ctx) => runReview(ctx, { tools: defaultTools(ctx.repoRoot) }),
 };
@@ -128,11 +114,9 @@ export async function runReview(ctx: CommandContext, deps: ReviewDeps): Promise<
       return runTag(run, pos);
     case "verdict":
       return runVerdict(run, pos);
-    case "growth":
-      return runGrowth(run, pos);
     default:
       throw new ToolkitError(
-        `review needs a subcommand — pr, batch, tag, verdict or growth`,
+        `review needs a subcommand — pr, batch, tag or verdict`,
         EXIT.PRECONDITION,
         { field: "subcommand" },
       );
@@ -1054,144 +1038,6 @@ async function runVerdict(run: Run, pos: string[]): Promise<CommandResult> {
   };
 }
 
-// ---------------------------------------------------------------- growth
-
-const GROWTH_FORM =
-  "review growth --metrics <file.json> [--since <date>] [--out <file>] [--dry-run]";
-
-/** SST-DESIGN-040: Codex first opinion on the weekly growth and cleanness audit. */
-async function runGrowth(run: Run, pos: string[]): Promise<CommandResult> {
-  const { ctx, deps, review } = run;
-  checkFlags(ctx.args, ["--metrics", "--since", "--out"]);
-  if (pos.length !== 1) usage(GROWTH_FORM, "growth");
-  const metricsArg = valueFlag(ctx.args, "--metrics");
-  if (metricsArg === undefined || metricsArg === "") usage(GROWTH_FORM, "--metrics");
-  const metricsFile = resolve(ctx.repoRoot, metricsArg as string);
-
-  const invalid = (reason: string): never => {
-    throw new ToolkitError(
-      `metrics ${metricsArg as string}: ${reason} — usage: spec-sync ${GROWTH_FORM}`,
-      EXIT.PRECONDITION,
-      { field: "--metrics" },
-    );
-  };
-  let metricsText = "";
-  try {
-    metricsText = readFileSync(metricsFile, "utf8");
-  } catch {
-    invalid("file missing or unreadable");
-  }
-  let data: unknown;
-  try {
-    data = JSON.parse(metricsText);
-  } catch {
-    invalid("not valid JSON");
-  }
-  const metrics = readMetrics(data);
-  if (typeof metrics === "string") invalid(metrics);
-  const { week, measured, targets } = metrics as Exclude<typeof metrics, string>;
-
-  const sinceArg = valueFlag(ctx.args, "--since");
-  if (sinceArg !== undefined && parseDay(sinceArg) === undefined) usage(GROWTH_FORM, "--since");
-  const since = sinceArg ?? previousWeek(measured);
-  const out = valueFlag(ctx.args, "--out") ?? `.spec-sync/growth/review-${week}.json`;
-  const model = review.models.size;
-  const effort = review.effort.risk;
-  const plan = { mode: "growth", week, since, out, model, effort, targets: targets.length };
-
-  if (ctx.flags.dryRun) {
-    return {
-      ok: true,
-      notes: ["dry run — no Codex call, nothing written"],
-      data: { ...plan, outcome: "dry-run" },
-    };
-  }
-
-  let log = git(
-    deps.tools,
-    ["log", "--stat", "--no-color", `--since=${since}`, "HEAD"],
-    "since",
-  ).stdout.trim();
-  if (Buffer.byteLength(log) > review.maxDiffBytes) {
-    log = `${Buffer.from(log).subarray(0, review.maxDiffBytes).toString("utf8")}\n[… cut at ${review.maxDiffBytes} bytes]`;
-  }
-  const prompt = renderGrowthPrompt({
-    REPO: run.config.project,
-    SINCE: since,
-    TARGETS:
-      targets.length > 0
-        ? targets
-            .map((t) => (t.reason === "" ? `- ${t.path}` : `- ${t.path} — ${t.reason}`))
-            .join("\n")
-        : "(none)",
-    METRICS: metricsText.trim(),
-    LOG: log === "" ? "(no commits)" : log,
-  });
-
-  const logDir = newLogDir(run);
-  const engine = runCodex({
-    model,
-    effort,
-    prompt,
-    root: ctx.repoRoot,
-    logDir: join(ctx.repoRoot, logDir),
-    timeoutMs: review.timeoutMs,
-    name: "growth",
-    env: deps.codexEnv,
-    schema: GROWTH_SCHEMA,
-  });
-  const parsed = engine.ok
-    ? parseGrowthResult(engine.raw)
-    : { ok: false as const, class: engine.class, reason: engine.detail };
-
-  const outFile = resolve(ctx.repoRoot, out);
-  mkdirSync(dirname(outFile), { recursive: true });
-  const header = { v: 1, mode: "growth", week, since, metrics: metricsArg, model, effort };
-
-  if (!parsed.ok) {
-    const cls: FailureClass = "class" in parsed ? parsed.class : "unparsable";
-    const detail = parsed.reason;
-    writeFileSync(
-      outFile,
-      `${JSON.stringify({ ...header, outcome: "skipped", class: cls, detail }, null, 2)}\n`,
-    );
-    ledger(run, {
-      mode: "growth",
-      model,
-      effort,
-      trigger: "growth",
-      outcome: "skipped",
-      class: cls,
-    });
-    return {
-      ok: true,
-      exit: EXIT.OK,
-      notes: [`growth review ${week} skipped — ${cls}: ${detail}. No Claude fallback.`],
-      logDir,
-      data: { ...plan, outcome: "skipped", class: cls },
-    };
-  }
-
-  const assigned = assignGrowth(parsed.growth, parsed.cleanness);
-  const items = {
-    growth: assigned.growth.length,
-    cleanness: assigned.cleanness.length,
-    dropped: assigned.dropped.length,
-  };
-  const outcome: Outcome = items.growth + items.cleanness > 0 ? "findings" : "clean";
-  writeFileSync(outFile, `${JSON.stringify({ ...header, outcome, ...assigned }, null, 2)}\n`);
-  ledger(run, { mode: "growth", model, effort, trigger: "growth", outcome, items });
-  return {
-    ok: true,
-    exit: EXIT.OK,
-    notes: [
-      `growth review ${week}: ${items.growth} growth, ${items.cleanness} cleanness, ${items.dropped} dropped → ${out}`,
-    ],
-    logDir,
-    data: { ...plan, outcome, ...items },
-  };
-}
-
 // ---------------------------------------------------------------- helpers
 
 type EngineAnswer =
@@ -1246,8 +1092,6 @@ interface ReviewEvent {
   outcome: Outcome;
   class?: FailureClass;
   counts?: Counts & { stale?: number };
-  /** growth mode: kept and dropped item counts. */
-  items?: { growth: number; cleanness: number; dropped: number };
   overrunMs?: number;
 }
 

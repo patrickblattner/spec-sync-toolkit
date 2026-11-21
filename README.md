@@ -52,7 +52,6 @@ spec-sync review pr <n> [--issue <t>] [--recheck]
 spec-sync review batch [--dry-run]
 spec-sync review tag <from>..<to>
 spec-sync review verdict <pr|issue> <n> <id> (accepted (fixed|ticket <t>|collected <c>) | rejected "<reason>") [--source claude:<lens>]
-spec-sync review growth --metrics <file.json> [--since <date>] [--out <file>] [--dry-run]
 spec-sync licence-inventory [--allowlist <file>]
 spec-sync e2e-select [--format json|lines]
 spec-sync cadence tag
@@ -328,17 +327,6 @@ critical or high finding is open. Configuration lives in the optional `review` b
 ```
 
 `modulesRoot` and `priorityCap` have no default; leave them out instead of writing `null`.
-
-`review growth` (SST-DESIGN-040, PROC-REL-080) is the Monday first opinion on the weekly growth
-metrics: no triage, always `models.size` at `effort.risk`. The prompt carries the metrics file,
-`git log --stat` since `--since` (default: one week before the day the metrics measure) and the
-target list; Codex reads the targets itself. It requires `week` (ISO, `YYYY-Www`) and `targets[]`
-(objects with `path` and `reason`) — either missing or malformed is exit 4 — and hands every other
-field (`previous_week`/`gap_reason`, `chunks`, `ratchet`, `raises`, `dependencies`, `modules`,
-`fta`, `complexity`, `cleanness`, `hotspots`, `cycles`, `check_times`) to the prompt as is. The result — growth items `G1…` with
-cause, evidence and `avoidable`, cleanness items `K1…`, items without evidence listed as
-`dropped` — goes to `--out` (default `.spec-sync/growth/review-<ISO-year>-W<week>.json`), a skip
-writes its class there too. No comment, no issue, no label; exit 0 ran or skipped.
 
 `budget` and `handover` are plain commands for a session that wants them (SST-DESIGN-023,
 SST-DESIGN-024); no hook asks for either. `budget` measures a session's context level from its
