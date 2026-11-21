@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.54.2
+
+`doctor` skips `review-globs` in phase development (spec master, 2026-11-21, Q#6226:
+`PROC-REL-009`).
+
+### Added
+
+- Optional top-level config key `phase`: `"development"` or `"production"`; any other value is a
+  config error. The project's phase rules which duties bind (`PROC-REL-009`).
+
+### Changed
+
+- `doctor` runs the `review-globs` check only when the config does not say
+  `phase: "development"`: the automatic Codex pass on risk paths (`PROC-DEV-002`) binds a lead
+  only in phase production. An absent `phase` and a config that does not load keep today's
+  finding.
+
 ## 0.54.1
 
 `doctor` checks `review.riskGlobs` again (spec master, 2026-11-20: `SST-DESIGN-022` rev 6).

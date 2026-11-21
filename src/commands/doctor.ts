@@ -1,6 +1,6 @@
 /**
  * `doctor` — four checks and the leftovers of aborted runs (spec §7.7,
- * SST-DESIGN-022 rev 6).
+ * SST-DESIGN-022 rev 9).
  *
  * `spec-sync doctor`
  *
@@ -113,7 +113,7 @@ export async function runDoctor(ctx: CommandContext, deps: DoctorDeps): Promise<
 type Add = (check: string, detail: string) => void;
 
 /**
- * `review.riskGlobs` (SST-DESIGN-022 rev 6): without the list the automatic
+ * `review.riskGlobs` (SST-DESIGN-022 rev 9): without the list the automatic
  * Codex pass on risk paths never runs (PROC-DEV-002), and nothing else would
  * notice. A config that is missing or does not load is the same finding; so
  * is an empty list, an area without globs, and a glob that matches no tracked
