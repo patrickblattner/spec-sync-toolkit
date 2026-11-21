@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.56.0
+
+`review growth` is retired (spec master, 2026-11-21: `SST-DESIGN-040` superseded on the test
+master's word). Code growth now lives in the test master's hygiene report; the weekly-growth
+sheets are retired with it.
+
+### Removed
+
+- The subcommand `review growth` with its flags `--metrics`, `--since` and `--out`, its prompt
+  and result schema (`src/review/growth.ts`), the default output folder `.spec-sync/growth/`, the
+  `schema` option of the Codex engine call that only it used, and the `items` field of its ledger
+  event. `review pr`, `batch`, `tag` and `verdict` are unchanged.
+- No config key belonged to it, so `config-retired` (`SST-DESIGN-022` rev 13) gains no key: it
+  still reports `overlap` and `bundle` only. `doctor` now cites rev 13.
+
+Leads: drop every call of `spec-sync review growth` and delete the `weekly-growth` workflow.
+
 ## 0.55.0
 
 The push flow with bundled tickets and overlap updates is retired (spec master, 2026-11-21:
