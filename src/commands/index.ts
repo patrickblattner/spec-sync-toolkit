@@ -28,7 +28,6 @@ import { reviewCommand } from "./review.js";
 import { licenceInventoryCommand } from "./licence-inventory.js";
 import { ledgerCommand } from "./ledger.js";
 import { slotCommand } from "./slot.js";
-import { prepushCommand } from "./prepush.js";
 import { e2eSelectCommand } from "./e2e-select.js";
 import { cadenceCommand } from "./cadence.js";
 
@@ -50,7 +49,6 @@ export const ALL_COMMANDS: readonly Command[] = [
   licenceInventoryCommand,
   ledgerCommand,
   slotCommand,
-  prepushCommand,
   e2eSelectCommand,
   cadenceCommand,
 ];

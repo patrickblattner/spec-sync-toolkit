@@ -683,7 +683,7 @@ describe("doctor — npx calls of spec-sync (GL-SEC-011)", () => {
     'const stdin = readFileSync(0, "utf8");',
     "const preflight = spawnSync(",
     "  process.execPath,",
-    '  [fileURLToPath(import.meta.resolve("spec-sync-toolkit/dist/cli.js")), "prepush"],',
+    '  [fileURLToPath(import.meta.resolve("spec-sync-toolkit/dist/cli.js")), "gate"],',
     '  { input: stdin, stdio: ["pipe", "inherit", "inherit"] },',
     ");",
     "if (preflight.status !== 0) process.exit(preflight.status ?? 1);",
@@ -713,7 +713,7 @@ describe("doctor — npx calls of spec-sync (GL-SEC-011)", () => {
   });
 
   it("reports each npx spec-sync in hook, workflow and scripts/ by file and line", async () => {
-    const root = appRepo('const r = spawnSync(\n  "npx",\n  ["spec-sync", "prepush"],\n);', {
+    const root = appRepo('const r = spawnSync(\n  "npx",\n  ["spec-sync", "gate"],\n);', {
       files: {
         ".github/workflows/ci.yml": "jobs:\n  x:\n    steps:\n      - run: npx -y spec-sync gate\n",
         "scripts/nested/sync.sh":
@@ -798,7 +798,7 @@ describe("doctor — npx calls of spec-sync (GL-SEC-011)", () => {
     expect(npxSpecSyncLines("npx spec-sync gate")).toEqual([1]);
     expect(npxSpecSyncLines("a\nnpx -y spec-sync gate")).toEqual([2]);
     expect(npxSpecSyncLines("npx --yes spec-sync gate")).toEqual([1]);
-    expect(npxSpecSyncLines('spawnSync("npx", ["spec-sync", "prepush"])')).toEqual([1]);
+    expect(npxSpecSyncLines('spawnSync("npx", ["spec-sync", "gate"])')).toEqual([1]);
     expect(npxSpecSyncLines("npx --no-install spec-sync gate")).toEqual([1]);
     expect(npxSpecSyncLines('spawnSync("npx", ["--no-install", "spec-sync"])')).toEqual([1]);
     expect(npxSpecSyncLines("npx --no-install --yes spec-sync gate")).toEqual([1]);
